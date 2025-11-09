@@ -72,7 +72,11 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 	ctx := controller.NewClientContext("tcp-group", 0)
 
 	for {
-		conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+		if err := conn.SetReadDeadline(time.Now().Add(5 * time.Minute)); err != nil {
+			log.Printf("⚠️ SetReadDeadline error: %v", err)
+			return
+		}
+
 		lenBuf := make([]byte, 4)
 		if _, err := io.ReadFull(conn, lenBuf); err != nil {
 			if err != io.EOF {
@@ -132,6 +136,13 @@ func writeResponse(conn net.Conn, msg string) {
 	resp := []byte(msg)
 	respLen := make([]byte, 4)
 	binary.BigEndian.PutUint32(respLen, uint32(len(resp)))
-	conn.Write(respLen)
-	conn.Write(resp)
+
+	if _, err := conn.Write(respLen); err != nil {
+		log.Printf("⚠️ Write length error: %v", err)
+		return
+	}
+	if _, err := conn.Write(resp); err != nil {
+		log.Printf("⚠️ Write response error: %v", err)
+		return
+	}
 }

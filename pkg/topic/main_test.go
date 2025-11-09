@@ -50,6 +50,5 @@ func TestTopicManager(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 		t.Logf("successful: did not receive duplicate message.")
 	}
-	time.Sleep(2 * time.Second)
 	tm.CleanupDedup()
 }

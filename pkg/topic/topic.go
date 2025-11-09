@@ -133,7 +133,6 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *Cons
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// 이미 등록된 그룹이면 반환
 	if g, ok := t.consumerGroups[groupName]; ok {
 		return g
 	}
@@ -143,7 +142,6 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *Cons
 		Consumers: make([]*Consumer, consumerCount),
 	}
 
-	// Consumers 생성
 	for i := 0; i < consumerCount; i++ {
 		group.Consumers[i] = &Consumer{
 			ID:    i,
@@ -151,7 +149,6 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *Cons
 		}
 	}
 
-	// 각 partition에 group 전용 채널 연결
 	for pid, p := range t.Partitions {
 		groupCh := p.RegisterGroup(groupName)
 		if groupCh == nil {

@@ -11,6 +11,7 @@ This directory contains various documents explaining different aspects of the pr
 | **[Architecture](architecture/README.md)** | Introduces and explains the **overall design and architectural plan** for the project implementation. | `architecture/README.md` |
 
 ## 📝 Contribution and Maintenance
+
 We welcome any contributions or suggestions to improve our documentation. Please refer to the respective links for detailed information.
 
 - To add new documentation or suggest improvements to existing files, please create a Pull Request.
