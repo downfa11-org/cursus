@@ -3,10 +3,11 @@ package disk
 import (
 	"bufio"
 	"fmt"
-	"go-broker/pkg/types"
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/downfa11-org/go-broker/pkg/types"
 )
 
 type DiskManager struct {

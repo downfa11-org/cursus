@@ -1,6 +1,14 @@
 **Releases:**
 [![Release Version](https://img.shields.io/github/v/release/downfa11-org/go-broker?label=go-broker)](https://github.com/downfa11-org/go-broker/releases/latest)
 
+[![GitHub](https://img.shields.io/github/stars/downfa11-org/go-broker.svg?style=social)](https://github.com/downfa11-org/go-broker)
+[![Contributors](https://img.shields.io/github/contributors/downfa11-org/go-broker.svg)](https://github.com/downfa11-org/go-broker/contributors)
+[![Commits](https://img.shields.io/github/commit-activity/m/downfa11-org/go-broker.svg)](https://github.com/downfa11-org/go-broker/pulse)
+
+[![Build Status](https://github.com/downfa11-org/go-broker/actions/workflows/ci-build.yml/badge.svg?branch=main)](https://github.com/downfa11-org/go-broker/actions/workflows/ci-build.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/downfa11-org/go-broker)](https://goreportcard.com/report/github.com/downfa11-org/go-broker)
+[![CodeCov](https://img.shields.io/codecov/c/github/downfa11-org/go-broker)](https://codecov.io/gh/downfa11-org/go-broker)
+[![Godoc](http://img.shields.io/badge/go-documentation-blue.svg?style=flat-square)](https://godoc.org/github.com/downfa11-org/go-broker)
 
 # Go-broker
 
@@ -10,8 +18,6 @@ Go-broker is a **lightweight message broker** inspired by Kafka’s design philo
 _logically separated but physically distributed data management_.
 
 It aims to provide a minimal, efficient, and extensible messaging backbone for small-scale environments.
-
-<br>
 
 ## Why Go-broker?
 

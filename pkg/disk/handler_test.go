@@ -1,9 +1,10 @@
 package disk_test
 
 import (
-	"go-broker/pkg/disk"
 	"os"
 	"testing"
+
+	"github.com/downfa11-org/go-broker/pkg/disk"
 )
 
 func TestAppendMessage(t *testing.T) {

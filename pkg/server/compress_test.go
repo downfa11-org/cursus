@@ -2,8 +2,9 @@ package server_test
 
 import (
 	"bytes"
-	"go-broker/pkg/server"
 	"testing"
+
+	"github.com/downfa11-org/go-broker/pkg/server"
 )
 
 func TestCompressDecompress(t *testing.T) {

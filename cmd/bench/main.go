@@ -3,8 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
-	"go-broker/pkg/bench"
 	"os"
+
+	"github.com/downfa11-org/go-broker/pkg/bench"
 )
 
 func main() {

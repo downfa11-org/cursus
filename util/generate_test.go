@@ -1,8 +1,9 @@
 package util_test
 
 import (
-	"go-broker/util"
 	"testing"
+
+	"github.com/downfa11-org/go-broker/util"
 )
 
 func TestGenerateID(t *testing.T) {

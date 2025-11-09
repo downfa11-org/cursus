@@ -2,10 +2,11 @@ package topic
 
 import (
 	"fmt"
-	"go-broker/pkg/disk"
-	"go-broker/pkg/types"
-	"go-broker/util"
 	"sync"
+
+	"github.com/downfa11-org/go-broker/pkg/disk"
+	"github.com/downfa11-org/go-broker/pkg/types"
+	"github.com/downfa11-org/go-broker/util"
 )
 
 // Topic represents a logical message stream divided into partitions and groups.

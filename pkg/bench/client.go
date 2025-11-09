@@ -2,11 +2,12 @@ package bench
 
 import (
 	"fmt"
-	"go-broker/pkg/server"
-	"go-broker/util"
 	"net"
 	"strings"
 	"sync"
+
+	"github.com/downfa11-org/go-broker/pkg/server"
+	"github.com/downfa11-org/go-broker/util"
 )
 
 type BenchClient struct {

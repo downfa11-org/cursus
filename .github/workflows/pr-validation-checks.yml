@@ -1,0 +1,26 @@
+name: PR Validation Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  dco_check:
+    name: 📝 Developer Certificate of Origin (DCO)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify Signed-Off-By
+        uses: tim-actions/dco@v1
+
+  commit_lint:
+    name: 🏷️ PR Title/Commit Message Lint (Conventional Commit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 
+      
+      - name: Check PR Title/Commits
+        uses: wagoid/commitlint-github-action@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

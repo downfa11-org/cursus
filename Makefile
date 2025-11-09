@@ -11,7 +11,7 @@ BUILD_FLAGS := -ldflags="-s -w"
 all: build
 
 .PHONY: lint
-lint:
+lint: tools
 	@echo "[MAKE] Running linter..."
 	$(GOLINT) run ./...
 
@@ -19,11 +19,6 @@ lint:
 test:
 	@echo "[MAKE] Running unit tests..."
 	$(GO) test $(TEST_FLAGS) ./...
-
-.PHONY: e2e
-e2e:
-	@echo "[MAKE] Running end-to-end tests..."
-	$(GO) test $(TEST_FLAGS) ./tests/e2e/...
 
 .PHONY: bench
 bench:
@@ -35,8 +30,8 @@ build: build-api build-cli build-bench
 
 .PHONY: build-api
 build-api:
-	@echo "[MAKE] Building broker API..."
-	CGO_ENABLED=0 GOOS=linux $(GO) build $(BUILD_FLAGS) -o bin/$(APP_NAME) ./cmd/api/main.go
+	@echo "[MAKE] Building API server..."
+	CGO_ENABLED=0 GOOS=linux $(GO) build $(BUILD_FLAGS) -o bin/$(APP_NAME) ./pkg/main.go
 
 .PHONY: build-cli
 build-cli:
@@ -51,12 +46,12 @@ build-bench:
 .PHONY: clean
 clean:
 	@echo "[MAKE] Cleaning build artifacts..."
-	rm -rf bin/*
+	rm -rf bin/* pkg/topic/test-topic/* pkg/topic/topic1/* pkg/server/testconn/*
 
 .PHONY: run
 run:
 	@echo "[MAKE] Running broker..."
-	$(GO) run ./cmd/api/main.go
+	$(GO) run ./pkg/main.go
 
 .PHONY: cli
 cli:

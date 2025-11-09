@@ -1,57 +1,55 @@
 package topic
 
 import (
-	"go-broker/pkg/config"
-	"go-broker/pkg/disk"
-	"go-broker/pkg/types"
 	"testing"
 	"time"
+
+	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/go-broker/pkg/disk"
+	"github.com/downfa11-org/go-broker/pkg/types"
 )
 
 func TestTopicManager(t *testing.T) {
 	cfg := &config.Config{CleanupInterval: 1}
 	dm := disk.NewDiskManager(cfg.LogDir, cfg.BufferSize)
 	tm := NewTopicManager(cfg, dm)
+	defer tm.Stop()
 
-	t1 := tm.CreateTopic("topic1", 4)
-	t2 := tm.GetTopic("topic1")
+	topicName := "test-topic"
+	groupName := "test-group"
+
+	t1 := tm.CreateTopic(topicName, 4)
+	t2 := tm.GetTopic(topicName)
 	if t1 != t2 {
 		t.Errorf("CreateTopic/GetTopic returned different instances")
 	}
 
-	tm.Publish("topic1", types.Message{Payload: "hello"})
-	time.Sleep(50 * time.Millisecond)
-
-	total := 0
-	for _, p := range t1.Partitions {
-		total += len(p.ch)
-	}
-	if total != 1 {
-		t.Errorf("expected total size 1 after first publish, got %d", total)
+	tm.RegisterConsumerGroup(topicName, groupName, 1)
+	consumerCh := tm.Consume(topicName, groupName, 0)
+	if consumerCh == nil {
+		t.Fatalf("Consume failed: consumer channel is nil")
 	}
 
-	tm.Publish("topic1", types.Message{Payload: "hello"})
-	time.Sleep(20 * time.Millisecond)
+	msg1 := types.Message{Payload: "unique-message-1"}
+	tm.Publish(topicName, msg1)
 
-	total = 0
-	for _, p := range t1.Partitions {
-		total += len(p.ch)
-	}
-	if total != 1 {
-		t.Errorf("duplicate message inserted, total=%d", total)
+	select {
+	case receivedMsg := <-consumerCh:
+		if string(receivedMsg.Payload) != "unique-message-1" {
+			t.Errorf("expected payload 'unique-message-1', got %s", receivedMsg.Payload)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("first publish failed: timed out waiting for message reception")
 	}
 
+	tm.Publish(topicName, msg1)
+
+	select {
+	case receivedMsg := <-consumerCh:
+		t.Errorf("duplicate message inserted: received message %v", receivedMsg)
+	case <-time.After(50 * time.Millisecond):
+		t.Logf("successful: did not receive duplicate message.")
+	}
 	time.Sleep(2 * time.Second)
 	tm.CleanupDedup()
-
-	for _, p := range t1.Partitions {
-		for len(p.ch) > 0 {
-			<-p.ch
-		}
-	}
-	for i, p := range t1.Partitions {
-		if len(p.ch) != 0 {
-			t.Errorf("partition[%d] cleanup failed, size=%d", i, len(p.ch))
-		}
-	}
 }

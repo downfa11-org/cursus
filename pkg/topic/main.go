@@ -2,13 +2,14 @@ package topic
 
 import (
 	"fmt"
-	"go-broker/pkg/config"
-	"go-broker/pkg/disk"
-	"go-broker/pkg/metrics"
-	"go-broker/pkg/types"
-	"go-broker/util"
 	"sync"
 	"time"
+
+	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/go-broker/pkg/disk"
+	"github.com/downfa11-org/go-broker/pkg/metrics"
+	"github.com/downfa11-org/go-broker/pkg/types"
+	"github.com/downfa11-org/go-broker/util"
 )
 
 // TopicManager manages all topics and deduplication

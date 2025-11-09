@@ -2,14 +2,15 @@ package server_test
 
 import (
 	"encoding/binary"
-	"go-broker/pkg/config"
-	"go-broker/pkg/disk"
-	"go-broker/pkg/server"
-	"go-broker/pkg/topic"
-	"go-broker/util"
 	"net"
 	"testing"
 	"time"
+
+	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/go-broker/pkg/disk"
+	"github.com/downfa11-org/go-broker/pkg/server"
+	"github.com/downfa11-org/go-broker/pkg/topic"
+	"github.com/downfa11-org/go-broker/util"
 )
 
 func TestHandleConnection(t *testing.T) {

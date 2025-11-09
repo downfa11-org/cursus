@@ -3,12 +3,13 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"go-broker/pkg/config"
-	"go-broker/pkg/controller"
-	"go-broker/pkg/disk"
-	"go-broker/pkg/topic"
 	"os"
 	"strings"
+
+	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/go-broker/pkg/controller"
+	"github.com/downfa11-org/go-broker/pkg/disk"
+	"github.com/downfa11-org/go-broker/pkg/topic"
 )
 
 func main() {

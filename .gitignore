@@ -1,0 +1,4 @@
+coverage.out
+pkg/topic/test-topic/*
+pkg/topic/topic1/*
+pkg/server/testconn/*
