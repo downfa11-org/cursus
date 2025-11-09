@@ -51,7 +51,6 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           files: ./coverage.out
-          : ${{ secrets.CODECOV_TOKEN }}
         
   build:
     runs-on: ubuntu-latest
