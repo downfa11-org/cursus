@@ -31,7 +31,7 @@ build: build-api build-cli build-bench
 .PHONY: build-api
 build-api:
 	@echo "[MAKE] Building API server..."
-	CGO_ENABLED=0 GOOS=linux $(GO) build $(BUILD_FLAGS) -o bin/$(APP_NAME) ./pkg/main.go
+	CGO_ENABLED=0 GOOS=linux $(GO) build $(BUILD_FLAGS) -o bin/$(APP_NAME) ./cmd/broker/main.go
 
 .PHONY: build-cli
 build-cli:
@@ -51,7 +51,7 @@ clean:
 .PHONY: run
 run:
 	@echo "[MAKE] Running broker..."
-	$(GO) run ./pkg/main.go
+	$(GO) run ./cmd/broker/main.go
 
 .PHONY: cli
 cli:
