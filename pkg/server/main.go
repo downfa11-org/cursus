@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/config"
@@ -21,15 +22,15 @@ import (
 )
 
 const (
-	maxWorkers      = 1000
-	readDeadline    = 5 * time.Minute // Read deadline defined as a constant
-	HealthCheckPort = 9080            // Port for health check endpoint
+	maxWorkers             = 1000
+	readDeadline           = 5 * time.Minute // Read deadline defined as a constant
+	DefaultHealthCheckPort = 9080
 )
+
+var brokerReady = &atomic.Bool{}
 
 // RunServer starts the broker with optional TLS and gzip
 func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager) error {
-	startHealthCheckServer(HealthCheckPort)
-
 	if cfg.EnableExporter {
 		metrics.StartMetricsServer(cfg.ExporterPort)
 		log.Printf("📈 Prometheus exporter started on port %d", cfg.ExporterPort)
@@ -49,6 +50,12 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager)
 	if err != nil {
 		return err
 	}
+
+	healthPort := cfg.HealthCheckPort
+	if healthPort == 0 {
+		healthPort = DefaultHealthCheckPort
+	}
+	startHealthCheckServer(healthPort, tm, brokerReady)
 
 	log.Printf("🧩 Broker listening on %s (TLS=%v, Gzip=%v)", addr, cfg.UseTLS, cfg.EnableGzip)
 
@@ -155,14 +162,26 @@ func writeResponse(conn net.Conn, msg string) {
 }
 
 // startHealthCheckServer starts a simple HTTP server for health checks
-func startHealthCheckServer(port int) {
+func startHealthCheckServer(port int, tm *topic.TopicManager, brokerReady *atomic.Bool) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+
+	healthHandler := func(w http.ResponseWriter, r *http.Request) {
+		if !brokerReady.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			if _, err := w.Write([]byte("Broker not ready: Main listener not active")); err != nil {
+				log.Printf("⚠️ Health check response write error: %v", err)
+			}
+			return
+		}
+
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte("OK")); err != nil {
 			log.Printf("⚠️ Health check response write error: %v", err)
 		}
-	})
+	}
+
+	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/", healthHandler)
 
 	addr := fmt.Sprintf(":%d", port)
 
@@ -171,5 +190,5 @@ func startHealthCheckServer(port int) {
 			log.Printf("❌ Health check server failed: %v", err)
 		}
 	}()
-	log.Printf("🩺 Health check endpoint /health started on port %d", port)
+	log.Printf("🩺 Health check endpoint started on port %d", port)
 }

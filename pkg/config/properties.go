@@ -13,6 +13,7 @@ import (
 type Config struct {
 	// Common
 	BrokerPort      int    `yaml:"broker_port" json:"broker.port"`
+	HealthCheckPort int    `yaml:"health_check_port" json:"health.check.port"`
 	LogDir          string `yaml:"log_dir" json:"log.dir"`
 	EnableExporter  bool   `yaml:"enable_exporter" json:"enable.exporter"`
 	ExporterPort    int    `yaml:"exporter_port" json:"exporter.port"`
@@ -42,6 +43,7 @@ func LoadConfig() (*Config, error) {
 
 	// default
 	flag.IntVar(&cfg.BrokerPort, "port", 9000, "Broker port")
+	flag.IntVar(&cfg.HealthCheckPort, "health-port", 9080, "Health check server port")
 	flag.StringVar(&cfg.LogDir, "log-dir", "broker_logs", "Path for logs")
 	flag.BoolVar(&cfg.EnableExporter, "exporter", true, "Enable Prometheus exporter")
 	flag.IntVar(&cfg.ExporterPort, "exporter-port", 9100, "Exporter port")
@@ -52,7 +54,7 @@ func LoadConfig() (*Config, error) {
 	flag.BoolVar(&cfg.UseTLS, "tls", false, "Enable TLS")
 	flag.StringVar(&cfg.TLSCertPath, "tls-cert", "", "TLS certificate path")
 	flag.StringVar(&cfg.TLSKeyPath, "tls-key", "", "TLS key path")
-	flag.BoolVar(&cfg.EnableGzip, "gzip", false, "Enable gzip compression")
+	flag.BoolVar(&cfg.EnableGzip, "gzip", true, "Enable gzip compression")
 
 	configPath := flag.String("config", "", "Path to YAML/JSON config file")
 
