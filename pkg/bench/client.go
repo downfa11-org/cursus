@@ -1,14 +1,19 @@
 package bench
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/server"
 	"github.com/downfa11-org/go-broker/util"
 )
+
+const AckTimeout = 5 * time.Second
 
 type BenchClient struct {
 	Addr        string
@@ -18,8 +23,33 @@ type BenchClient struct {
 	Partitions  int
 }
 
+func (c *BenchClient) RunTopicCreationPhase() error {
+	conn, err := net.Dial("tcp", c.Addr)
+	if err != nil {
+		return fmt.Errorf("connect to broker for topic creation: %w", err)
+	}
+	defer conn.Close()
+
+	createPayload := fmt.Sprintf("CREATE %s %d", c.Topic, c.Partitions)
+	createPayload = strings.TrimSpace(createPayload)
+
+	if err := c.sendCommand(conn, c.Topic, createPayload); err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			fmt.Printf("Topic '%s' already exists, continuing...\n", c.Topic)
+			return nil
+		}
+		return fmt.Errorf("topic creation failed: %w", err)
+	}
+
+	return nil
+}
+
 // sendCommand sends an encoded topic/payload command and validates the response.
 func (c *BenchClient) sendCommand(conn net.Conn, topic, payload string) error {
+	if err := conn.SetReadDeadline(time.Now().Add(AckTimeout)); err != nil {
+		return fmt.Errorf("set read deadline: %w", err)
+	}
+
 	cmdBytes := util.EncodeMessage(topic, payload)
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
 		return fmt.Errorf("send command: %w", err)
@@ -30,9 +60,11 @@ func (c *BenchClient) sendCommand(conn net.Conn, topic, payload string) error {
 		return fmt.Errorf("read response: %w", err)
 	}
 
-	_, respPayload := util.DecodeMessage(respBuf)
-	resp := strings.TrimSpace(respPayload)
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		fmt.Printf("Warning: Failed to clear read deadline: %v\n", err)
+	}
 
+	resp := strings.TrimSpace(string(respBuf))
 	upperResp := strings.ToUpper(resp)
 
 	if !(strings.Contains(upperResp, "OK") ||
@@ -46,59 +78,164 @@ func (c *BenchClient) sendCommand(conn net.Conn, topic, payload string) error {
 }
 
 // sendMessagesToPartition sends benchmark messages for a specific partition.
-func (c *BenchClient) sendMessagesToPartition(pid, count int, wg *sync.WaitGroup) {
+func (c *BenchClient) sendMessagesToPartition(producerID int, partitionID int, count int, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	conn, err := net.Dial("tcp", c.Addr)
 	if err != nil {
-		fmt.Printf("[P%d] connection failed: %v\n", pid, err)
+		fmt.Printf("[P%d/Part%d] connection failed: %v\n", producerID, partitionID, err)
 		return
 	}
 	defer conn.Close()
 
 	for i := 0; i < count; i++ {
-		payload := fmt.Sprintf("bench-msg-%d-%d", pid, i)
+		payload := fmt.Sprintf("bench-msg-P%d-Part%d-Msg%d", producerID, partitionID, i)
 		data := util.EncodeMessage(c.Topic, payload)
 
 		msgBytes, err := server.CompressMessage(data, c.EnableGzip)
 		if err != nil {
-			fmt.Printf("[P%d] compress failed: %v\n", pid, err)
+			fmt.Printf("[P%d/Part%d] compress failed: %v\n", producerID, partitionID, err)
 			return
 		}
 
 		if err := util.WriteWithLength(conn, msgBytes); err != nil {
-			fmt.Printf("[P%d] send failed: %v\n", pid, err)
+			fmt.Printf("[P%d/Part%d] send failed: %v\n", producerID, partitionID, err)
 			return
 		}
 
+		if err := conn.SetReadDeadline(time.Now().Add(AckTimeout)); err != nil {
+			fmt.Printf("[P%d/Part%d] set read deadline failed: %v. Continuing...\n", producerID, partitionID, err)
+		}
+
 		if _, err := util.ReadWithLength(conn); err != nil {
-			fmt.Printf("[P%d] read resp failed: %v\n", pid, err)
-			return
+			fmt.Printf("[P%d/Part%d] read resp failed: %v\n", producerID, partitionID, err)
+		}
+
+		if err := conn.SetReadDeadline(time.Time{}); err != nil {
+			fmt.Printf("Warning: Failed to clear read deadline: %v\n", err)
 		}
 	}
 }
 
-// Run executes the full benchmark workflow.
-func (c *BenchClient) Run() error {
-	conn, err := net.Dial("tcp", c.Addr)
-	if err != nil {
-		return fmt.Errorf("connect to broker: %w", err)
-	}
-	defer conn.Close()
+func (c *BenchClient) RunMessageProductionPhase(producerID int) error {
+	var wg sync.WaitGroup
 
-	createPayload := fmt.Sprintf("CREATE %s %d", c.Topic, c.Partitions)
-	if err := c.sendCommand(conn, c.Topic, createPayload); err != nil {
-		if !strings.Contains(err.Error(), "already exists") {
-			return fmt.Errorf("topic creation failed: %w", err)
+	msgsPerPartition := c.NumMessages / c.Partitions
+	remainder := c.NumMessages % c.Partitions
+
+	for p := 0; p < c.Partitions; p++ {
+		messagesToSend := msgsPerPartition
+		if p < remainder {
+			messagesToSend++
+		}
+
+		if messagesToSend > 0 {
+			wg.Add(1)
+			go c.sendMessagesToPartition(producerID, p, messagesToSend, &wg)
 		}
 	}
 
-	var wg sync.WaitGroup
-	msgsPerPartition := c.NumMessages / c.Partitions
+	wg.Wait()
+	return nil
+}
 
-	for p := 0; p < c.Partitions; p++ {
+// consumeMessagesFromPartition connects and sends a CONSUME command, then reads all expected messages.
+func (c *BenchClient) consumeMessagesFromPartition(cid, count int, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	conn, err := net.Dial("tcp", c.Addr)
+	if err != nil {
+		fmt.Printf("[C%d] connection failed: %v\n", cid, err)
+		return
+	}
+	defer conn.Close()
+
+	partitionID := cid % c.Partitions
+	startOffset := 0
+
+	consumeCmd := fmt.Sprintf("CONSUME %s %d %d", c.Topic, partitionID, startOffset)
+	consumeCmd = strings.TrimSpace(consumeCmd)
+	cmdBytes := util.EncodeMessage(c.Topic, consumeCmd)
+
+	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
+		fmt.Printf("[C%d] send command failed: %v\n", cid, err)
+		return
+	}
+
+	if err := conn.SetReadDeadline(time.Now().Add(AckTimeout * 2)); err != nil {
+		fmt.Printf("[C%d] set read deadline failed: %v. Continuing...\n", cid, err)
+	}
+
+	consumedCount := 0
+	for i := 0; i < count; i++ {
+		msgBytes, err := util.ReadWithLength(conn)
+		if err := conn.SetReadDeadline(time.Now().Add(AckTimeout * 2)); err != nil {
+			fmt.Printf("[C%d] Warning: Failed to reset read deadline: %v\n", cid, err)
+		}
+
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			fmt.Printf("[C%d] Read message %d failed: %v\n", cid, i, err)
+			return
+		}
+
+		if len(msgBytes) == 0 {
+			continue
+		}
+
+		consumedCount++
+	}
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		fmt.Printf("Warning: Failed to clear read deadline: %v\n", err)
+	}
+
+	fmt.Printf("Consumer%d finished reading %d/%d messages.\n", cid, consumedCount, count)
+}
+
+func (b *BenchmarkRunner) RunConcurrentProducerPhase() error {
+	var pWg sync.WaitGroup
+	var producerErrors []error
+	var mu sync.Mutex
+
+	for i := 0; i < b.NumProducers; i++ {
+		pWg.Add(1)
+		go func(pid int) {
+			defer pWg.Done()
+			client := &BenchClient{
+				Addr:        b.Addr,
+				EnableGzip:  b.EnableGzip,
+				NumMessages: b.MessagesPerProducer,
+				Topic:       b.Topic,
+				Partitions:  b.Partitions,
+			}
+
+			if err := client.RunMessageProductionPhase(pid); err != nil {
+				mu.Lock()
+				producerErrors = append(producerErrors, fmt.Errorf("producer %d error: %w", pid, err))
+				mu.Unlock()
+			}
+		}(i)
+	}
+	pWg.Wait()
+
+	if len(producerErrors) > 0 {
+		return fmt.Errorf("%d producer(s) failed, first error: %w", len(producerErrors), producerErrors[0])
+	}
+	return nil
+}
+
+// RunConsumerPhase executes the consumption benchmark workflow.
+func (c *BenchClient) RunConsumerPhase(numConsumers int) error {
+	var wg sync.WaitGroup
+
+	totalMessagesProduced := c.NumMessages
+	msgsPerConsumer := totalMessagesProduced / numConsumers
+
+	for i := 0; i < numConsumers; i++ {
 		wg.Add(1)
-		go c.sendMessagesToPartition(p, msgsPerPartition, &wg)
+		go c.consumeMessagesFromPartition(i, msgsPerConsumer, &wg)
 	}
 
 	wg.Wait()
