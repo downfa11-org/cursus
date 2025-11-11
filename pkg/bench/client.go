@@ -34,7 +34,7 @@ func (c *BenchClient) RunTopicCreationPhase() error {
 	createPayload = strings.TrimSpace(createPayload)
 
 	if err := c.sendCommand(conn, c.Topic, createPayload); err != nil {
-		if strings.Contains(err.Error(), "already exists") {
+		if strings.Contains(err.Error(), "topic exists") {
 			fmt.Printf("Topic '%s' already exists, continuing...\n", c.Topic)
 			return nil
 		}
@@ -64,16 +64,15 @@ func (c *BenchClient) sendCommand(conn net.Conn, topic, payload string) error {
 	}
 
 	resp := strings.TrimSpace(string(respBuf))
-	upperResp := strings.ToUpper(resp)
-
-	if !(strings.Contains(upperResp, "OK") ||
-		strings.Contains(upperResp, "TOPIC") ||
-		strings.Contains(resp, "✅") ||
-		strings.Contains(upperResp, "CREATED") ||
-		strings.Contains(upperResp, "EXISTS")) {
-		return fmt.Errorf("unexpected response: %s", resp)
+	switch resp {
+	case "OK", "TOPIC CREATED":
+		return nil
+	case "TOPIC EXISTS":
+		fmt.Printf("Topic '%s' already exists, continuing...\n", topic)
+		return nil
+	default:
+		return fmt.Errorf("broker rejected response: %s", resp)
 	}
-	return nil
 }
 
 // sendMessagesToPartition sends benchmark messages for a specific partition.
@@ -241,12 +240,17 @@ func (b *BenchmarkRunner) RunConcurrentProducerPhase() error {
 func (c *BenchClient) RunConsumerPhase(numConsumers int) error {
 	var wg sync.WaitGroup
 
-	totalMessagesProduced := c.NumMessages
-	msgsPerConsumer := totalMessagesProduced / numConsumers
+	total := c.NumMessages
+	msgsPerConsumer := total / numConsumers
+	remainder := total % numConsumers
 
 	for i := 0; i < numConsumers; i++ {
+		count := msgsPerConsumer
+		if i < remainder {
+			count++
+		}
 		wg.Add(1)
-		go c.consumeMessagesFromPartition(i, msgsPerConsumer, &wg)
+		go c.consumeMessagesFromPartition(i, count, &wg)
 	}
 
 	wg.Wait()
