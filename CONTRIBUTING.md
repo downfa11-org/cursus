@@ -37,7 +37,7 @@ A suggested workflow for contributing:
 
 ### Requirements
 
-- Go 1.23+
+- Go 1.25+
 
 - Docker (for integration testing)
 
