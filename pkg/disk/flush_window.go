@@ -31,7 +31,9 @@ func (d *DiskHandler) SendCurrentSegmentToConn(conn net.Conn) error {
 	if d.writer != nil {
 		d.writer.Flush()
 	}
-	d.file.Seek(0, 0)
+	if _, err := d.file.Seek(0, 0); err != nil {
+		return err
+	}
 	_, err := io.Copy(conn, d.file)
 	return err
 }

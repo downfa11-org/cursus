@@ -30,7 +30,9 @@ func (d *DiskHandler) flushLoop() {
 			}
 			if d.file != nil {
 				d.writer.Flush()
-				d.file.Sync()
+				if err := d.file.Sync(); err != nil {
+					log.Printf("ERROR: Sync failed during shutdown: %v", err)
+				}
 				d.file.Close()
 			}
 			return
@@ -45,7 +47,10 @@ func (d *DiskHandler) writeBatch(batch []string) {
 	defer d.ioMu.Unlock()
 
 	if d.file == nil {
-		d.openSegment()
+		if err := d.openSegment(); err != nil {
+			log.Printf("FATAL: failed to open segment: %v", err)
+			return
+		}
 	}
 
 	var lenBuf [4]byte
@@ -84,7 +89,10 @@ func (d *DiskHandler) WriteDirect(msg string) {
 	var lenBuf [4]byte
 
 	if d.file == nil {
-		d.openSegment()
+		if err := d.openSegment(); err != nil {
+			log.Printf("FATAL: failed to open segment: %v", err)
+			return
+		}
 	}
 
 	data := []byte(msg)
@@ -93,7 +101,10 @@ func (d *DiskHandler) WriteDirect(msg string) {
 	totalLen := 4 + len(data)
 
 	if d.CurrentOffset+totalLen > d.SegmentSize {
-		d.rotateSegment()
+		if err := d.rotateSegment(); err != nil {
+			log.Printf("FATAL: rotateSegment failed to rotate segment: %v", err)
+			return
+		}
 	}
 
 	if _, err := d.writer.Write(lenBuf[:]); err != nil {
