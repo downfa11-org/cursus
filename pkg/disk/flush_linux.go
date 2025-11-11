@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 
@@ -47,7 +48,9 @@ func (d *DiskHandler) SendCurrentSegmentToConn(conn net.Conn) error {
 	size := info.Size()
 	sysConn, ok := conn.(*net.TCPConn)
 	if !ok {
-		d.file.Seek(0, 0)
+		if _, err := d.file.Seek(0, 0); err != nil {
+			log.Printf("ERROR: Seek failed: %v", err)
+		}
 		_, err := io.Copy(conn, d.file)
 		return err
 	}
@@ -58,7 +61,7 @@ func (d *DiskHandler) SendCurrentSegmentToConn(conn net.Conn) error {
 	}
 
 	var sendErr error
-	rawConn.Control(func(fd uintptr) {
+	if err := rawConn.Control(func(fd uintptr) {
 		inFd := int(d.file.Fd())
 		outFd := int(fd)
 		for offset < size {
@@ -71,6 +74,8 @@ func (d *DiskHandler) SendCurrentSegmentToConn(conn net.Conn) error {
 				break
 			}
 		}
-	})
+	}); err != nil {
+		log.Printf("ERROR: rawConn.Control failed: %v", err)
+	}
 	return sendErr
 }
