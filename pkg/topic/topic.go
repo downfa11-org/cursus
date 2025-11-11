@@ -25,7 +25,7 @@ type Partition struct {
 	ch     chan types.Message
 	subs   map[string]chan types.Message
 	mu     sync.RWMutex
-	dh     interface{} // disk.DiskHandler 대신 interface{}로, 실제 구현 주입
+	dh     interface{}
 	closed bool
 }
 

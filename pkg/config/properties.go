@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Config represents the broker configuration including tunable performance options
 type Config struct {
 	// Common
 	BrokerPort      int    `yaml:"broker_port" json:"broker.port"`
@@ -35,16 +36,25 @@ type Config struct {
 	BufferSize                 int      `yaml:"buffer_size" json:"buffer.size"`
 	BatchSize                  int      `yaml:"batch_size" json:"batch.size"`
 	MaxInflightRequestsPerConn int      `yaml:"max_inflight_requests_per_conn" json:"max.inflight.requests.per.connection"`
+
+	// DiskHandler tuning
+	DiskFlushBatchSize int `yaml:"disk_flush_batch_size" json:"disk.flush.batch.size"`
+	LingerMS           int `yaml:"linger_ms" json:"linger.ms"`
+	ChannelBufferSize  int `yaml:"channel_buffer_size" json:"channel.buffer.size"`
+	DiskWriteTimeoutMS int `yaml:"disk_write_timeout_ms" json:"disk.write.timeout.ms"`
+
+	// Partition / Topic tuning
+	PartitionChannelBufSize int `yaml:"partition_channel_buffer_size" json:"partition.channel.buffer.size"`
+	ConsumerChannelBufSize  int `yaml:"consumer_channel_buffer_size" json:"consumer.channel.buffer.size"`
 }
 
-// LoadConfig merges CLI, YAML, and JSON configs.
 func LoadConfig() (*Config, error) {
 	cfg := &Config{}
 
-	// default
+	// default flags
 	flag.IntVar(&cfg.BrokerPort, "port", 9000, "Broker port")
 	flag.IntVar(&cfg.HealthCheckPort, "health-port", 9080, "Health check server port")
-	flag.StringVar(&cfg.LogDir, "log-dir", "broker_logs", "Path for logs")
+	flag.StringVar(&cfg.LogDir, "log-dir", "broker-logs", "Path for logs")
 	flag.BoolVar(&cfg.EnableExporter, "exporter", true, "Enable Prometheus exporter")
 	flag.IntVar(&cfg.ExporterPort, "exporter-port", 9100, "Exporter port")
 	flag.BoolVar(&cfg.EnableBenchmark, "benchmark", false, "Enable benchmark mode")
@@ -55,6 +65,16 @@ func LoadConfig() (*Config, error) {
 	flag.StringVar(&cfg.TLSCertPath, "tls-cert", "", "TLS certificate path")
 	flag.StringVar(&cfg.TLSKeyPath, "tls-key", "", "TLS key path")
 	flag.BoolVar(&cfg.EnableGzip, "gzip", false, "Enable gzip compression")
+
+	// DiskHandler tuning
+	flag.IntVar(&cfg.DiskFlushBatchSize, "disk-flush-batch", 50, "Number of messages per disk flush")
+	flag.IntVar(&cfg.LingerMS, "linger-ms", 50, "Maximum time to wait before flush (ms)")
+	flag.IntVar(&cfg.ChannelBufferSize, "channel-buffer", 1024, "DiskHandler write channel buffer size")
+	flag.IntVar(&cfg.DiskWriteTimeoutMS, "disk-write-timeout", 5, "Synchronous write timeout if channel is full (ms)")
+
+	// Partition / Topic tuning
+	flag.IntVar(&cfg.PartitionChannelBufSize, "partition-ch-buffer", 10000, "Partition input channel buffer size")
+	flag.IntVar(&cfg.ConsumerChannelBufSize, "consumer-ch-buffer", 1000, "Consumer channel buffer size")
 
 	configPath := flag.String("config", "", "Path to YAML/JSON config file")
 
