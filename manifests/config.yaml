@@ -10,10 +10,7 @@ broker:
 
   channel_buffer_size: 10000 
   disk_flush_batch_size: 500 
-  linger_ms: 100 
-  partition_channel_buf_size: 10000 
-  disk_write_timeout_ms: 10
-  consumer_channel_buf_size: 5000
+  linger_ms: 100
   
 benchmark:
   enable: false
