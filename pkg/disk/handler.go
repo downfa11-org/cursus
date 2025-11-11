@@ -72,10 +72,37 @@ func NewDiskHandler(cfg *config.Config, topicName string, partitionID, segmentSi
 
 // AppendMessage sends a message to the internal write channel for asynchronous disk persistence.
 func (d *DiskHandler) AppendMessage(msg string) {
-	select {
-	case d.writeCh <- msg:
-	default:
-		fmt.Printf("⚠️ WARNING: DiskHandler channel full, message dropped: %s\n", msg)
+	for {
+		select {
+		case <-d.done:
+			return
+		case d.writeCh <- msg:
+			return
+		default:
+		}
+
+		if d.writeTimeout > 0 {
+			timer := time.NewTimer(d.writeTimeout)
+			select {
+			case <-d.done:
+				timer.Stop()
+				return
+			case d.writeCh <- msg:
+				timer.Stop()
+				return
+			case <-timer.C:
+				timer.Stop()
+				log.Printf("⚠️ DiskHandler enqueue timed out after %s; retrying", d.writeTimeout)
+			}
+			continue
+		}
+
+		select {
+		case <-d.done:
+			return
+		case d.writeCh <- msg:
+			return
+		}
 	}
 }
 
