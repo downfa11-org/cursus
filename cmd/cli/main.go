@@ -19,7 +19,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	dm := disk.NewDiskManager(cfg.LogDir, cfg.BufferSize)
+	dm := disk.NewDiskManager(cfg)
 	tm := topic.NewTopicManager(cfg, dm)
 	ctx := controller.NewClientContext("cli-group", 0)
 	ch := controller.NewCommandHandler(tm, dm)

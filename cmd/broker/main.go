@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-	// --- Configuration ---
+	// Configuration
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		log.Fatalf("❌ Failed to load config: %v", err)
@@ -20,8 +20,8 @@ func main() {
 	fmt.Printf("🚀 Starting broker on port %d\n", cfg.BrokerPort)
 	fmt.Printf("🧠 Benchmark: %v | 📊 Exporter: %v\n", cfg.EnableBenchmark, cfg.EnableExporter)
 
-	// --- Initialization ---
-	dm := disk.NewDiskManager(cfg.LogDir, cfg.BufferSize)
+	// Initialization
+	dm := disk.NewDiskManager(cfg)
 	tm := topic.NewTopicManager(cfg, dm)
 
 	if err := server.RunServer(cfg, tm, dm); err != nil {
