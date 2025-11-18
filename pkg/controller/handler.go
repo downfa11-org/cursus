@@ -7,7 +7,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/disk"
+	"github.com/downfa11-org/go-broker/pkg/offset"
 	"github.com/downfa11-org/go-broker/pkg/topic"
 	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
@@ -16,8 +18,10 @@ import (
 const STREAM_DATA_SIGNAL = "STREAM_DATA"
 
 type CommandHandler struct {
-	TopicManager *topic.TopicManager
-	DiskManager  *disk.DiskManager
+	TopicManager  *topic.TopicManager
+	DiskManager   *disk.DiskManager
+	Config        *config.Config
+	OffsetManager *offset.OffsetManager
 }
 
 type ConsumeArgs struct {
@@ -26,8 +30,13 @@ type ConsumeArgs struct {
 	Offset    int
 }
 
-func NewCommandHandler(tm *topic.TopicManager, dm *disk.DiskManager) *CommandHandler {
-	return &CommandHandler{TopicManager: tm, DiskManager: dm}
+func NewCommandHandler(tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, om *offset.OffsetManager) *CommandHandler {
+	return &CommandHandler{
+		TopicManager:  tm,
+		DiskManager:   dm,
+		Config:        cfg,
+		OffsetManager: om,
+	}
 }
 
 func (ch *CommandHandler) logCommandResult(cmd, response string) {
@@ -41,7 +50,7 @@ func (ch *CommandHandler) logCommandResult(cmd, response string) {
 }
 
 // HandleConsumeCommand is responsible for parsing the CONSUME command and streaming messages.
-func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string) (int, error) {
+func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx *ClientContext) (int, error) {
 	// Parse CONSUME <topic> <partition> <offset>
 	parts := strings.Fields(rawCmd)
 	if len(parts) != 4 {
@@ -53,7 +62,7 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string) (in
 	if err != nil {
 		return 0, fmt.Errorf("invalid partition ID: %w", err)
 	}
-	offset, err := strconv.Atoi(parts[3])
+	requestedOffset, err := strconv.Atoi(parts[3])
 	if err != nil {
 		return 0, fmt.Errorf("invalid offset: %w", err)
 	}
@@ -63,12 +72,52 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string) (in
 		return 0, fmt.Errorf("failed to get disk handler: %w", err)
 	}
 
-	messages, err := dh.ReadMessages(offset, 8192)
+	// Resolve offset using auto.offset.reset policy
+	actualOffset := requestedOffset
+	if requestedOffset == -1 {
+		// Try to get saved offset from OffsetManager
+		if ch.OffsetManager != nil {
+			savedOffset, err := ch.OffsetManager.GetOffset(ctx.ConsumerGroup, topicName, partition)
+			if err == nil && savedOffset >= 0 {
+				actualOffset = int(savedOffset)
+				log.Printf("[OFFSET] Using saved offset %d for group '%s', topic '%s', partition %d",
+					actualOffset, ctx.ConsumerGroup, topicName, partition)
+			} else {
+				// No saved offset, apply auto.offset.reset policy
+				if ch.Config.AutoOffsetReset == "earliest" {
+					actualOffset = 0
+					log.Printf("[OFFSET] No saved offset, using 'earliest' (0) for group '%s'", ctx.ConsumerGroup)
+				} else { // "latest"
+					latestOffset, err := dh.GetLatestOffset()
+					if err != nil {
+						return 0, fmt.Errorf("failed to get latest offset: %w", err)
+					}
+					actualOffset = latestOffset
+					log.Printf("[OFFSET] No saved offset, using 'latest' (%d) for group '%s'",
+						actualOffset, ctx.ConsumerGroup)
+				}
+			}
+		} else {
+			// OffsetManager not available, use config default
+			if ch.Config.AutoOffsetReset == "earliest" {
+				actualOffset = 0
+			} else {
+				latestOffset, err := dh.GetLatestOffset()
+				if err != nil {
+					return 0, fmt.Errorf("failed to get latest offset: %w", err)
+				}
+				actualOffset = latestOffset
+			}
+		}
+	}
+
+	messages, err := dh.ReadMessages(actualOffset, 8192)
 	if err != nil {
 		return 0, fmt.Errorf("failed to read messages from disk: %w", err)
 	}
 
 	streamedCount := 0
+	lastOffset := actualOffset
 	for _, msg := range messages {
 		msgBytes := []byte(msg.Payload)
 
@@ -76,6 +125,14 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string) (in
 			return streamedCount, fmt.Errorf("failed to stream message: %w", err)
 		}
 		streamedCount++
+		lastOffset++
+	}
+
+	// Optionally commit offset after successful consumption
+	if ch.OffsetManager != nil && streamedCount > 0 {
+		if err := ch.OffsetManager.CommitOffset(ctx.ConsumerGroup, topicName, partition, int64(lastOffset)); err != nil {
+			log.Printf("[OFFSET_WARN] Failed to commit offset: %v", err)
+		}
 	}
 
 	return streamedCount, nil
@@ -106,14 +163,15 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 	switch {
 	case strings.EqualFold(cmd, "HELP"):
 		resp = `Available commands:
-  CREATE <topic> [<partitions>] - create topic (default=4)
-  DELETE <topic>                - delete topic
-  LIST                          - list all topics
-  SUBSCRIBE <topic> [<group>]  - subscribe to an existing topic (default group: "default")
-  PUBLISH <topic> <message>     - publish a message
+  SETGROUP <group-name>          - set consumer group name
+  CREATE <topic> [<partitions>]  - create topic (default=4)
+  DELETE <topic>                 - delete topic
+  LIST                           - list all topics
+  SUBSCRIBE <topic> [<group>]    - subscribe to an existing topic (default group: "default")
+  PUBLISH <topic> <message>      - publish a message
   CONSUME <topic> <pID> <offset> - consume messages (streaming)
-  HELP                          - show this help message
-  EXIT                          - exit`
+  HELP                           - show this help message
+  EXIT                           - exit`
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "CREATE "):
 		args := strings.Fields(cmd[7:])
@@ -200,6 +258,15 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 			break
 		}
 		resp = fmt.Sprintf("📤 Published to '%s'", topicName)
+
+	case strings.HasPrefix(strings.ToUpper(cmd), "SETGROUP "):
+		groupName := strings.TrimSpace(cmd[9:])
+		if groupName == "" {
+			resp = "ERROR: group name cannot be empty"
+			break
+		}
+		ctx.SetConsumerGroup(groupName)
+		resp = fmt.Sprintf("✅ Consumer group set to '%s'", groupName)
 
 	case strings.EqualFold(cmd, "CONSUME"):
 		var output []string

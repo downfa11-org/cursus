@@ -16,6 +16,7 @@ import (
 	"github.com/downfa11-org/go-broker/pkg/controller"
 	"github.com/downfa11-org/go-broker/pkg/disk"
 	"github.com/downfa11-org/go-broker/pkg/metrics"
+	"github.com/downfa11-org/go-broker/pkg/offset"
 	"github.com/downfa11-org/go-broker/pkg/topic"
 	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
@@ -30,7 +31,7 @@ const (
 var brokerReady = &atomic.Bool{}
 
 // RunServer starts the broker with optional TLS and gzip
-func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager) error {
+func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager, om *offset.OffsetManager) error {
 	if cfg.EnableExporter {
 		metrics.StartMetricsServer(cfg.ExporterPort)
 		log.Printf("📈 Prometheus exporter started on port %d", cfg.ExporterPort)
@@ -64,7 +65,7 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager)
 	for i := 0; i < maxWorkers; i++ {
 		go func() {
 			for conn := range workerCh {
-				HandleConnection(conn, tm, dm, cfg)
+				HandleConnection(conn, tm, dm, cfg, om)
 			}
 		}()
 	}
@@ -80,11 +81,11 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager)
 }
 
 // HandleConnection processes a single client connection
-func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config) {
+func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, om *offset.OffsetManager) {
 	defer conn.Close()
 
-	cmdHandler := controller.NewCommandHandler(tm, dm)
-	ctx := controller.NewClientContext("tcp-group", 0)
+	cmdHandler := controller.NewCommandHandler(tm, dm, cfg, om)
+	ctx := controller.NewClientContext("default-group", 0)
 
 	for {
 		if err := conn.SetReadDeadline(time.Now().Add(readDeadline)); err != nil {
@@ -173,7 +174,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 		}
 
 		if resp == controller.STREAM_DATA_SIGNAL {
-			streamed, err := cmdHandler.HandleConsumeCommand(conn, cmdStr)
+			streamed, err := cmdHandler.HandleConsumeCommand(conn, cmdStr, ctx)
 			if err != nil {
 				errMsg := fmt.Sprintf("ERROR: %v", err)
 				log.Printf("[CONSUME_ERR] Error streaming data for command [%s]: %v", cmdStr, err)

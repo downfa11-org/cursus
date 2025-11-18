@@ -13,3 +13,7 @@ func NewClientContext(group string, idx int) *ClientContext {
 		CurrentTopics: make(map[string]struct{}),
 	}
 }
+
+func (ctx *ClientContext) SetConsumerGroup(groupName string) {
+	ctx.ConsumerGroup = groupName
+}

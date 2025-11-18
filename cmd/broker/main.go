@@ -6,6 +6,7 @@ import (
 
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/disk"
+	"github.com/downfa11-org/go-broker/pkg/offset"
 	"github.com/downfa11-org/go-broker/pkg/server"
 	"github.com/downfa11-org/go-broker/pkg/topic"
 )
@@ -23,8 +24,9 @@ func main() {
 	// Initialization
 	dm := disk.NewDiskManager(cfg)
 	tm := topic.NewTopicManager(cfg, dm)
+	om := offset.NewOffsetManager()
 
-	if err := server.RunServer(cfg, tm, dm); err != nil {
+	if err := server.RunServer(cfg, tm, dm, om); err != nil {
 		log.Fatalf("❌ Broker failed: %v", err)
 	}
 }
