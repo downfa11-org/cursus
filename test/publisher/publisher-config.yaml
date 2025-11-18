@@ -1,0 +1,6 @@
+broker_addr: "localhost:9000"  
+max_retries: 3  
+retry_backoff_ms: 100  
+ack_timeout_ms: 5000  
+topic: "my-topic"  
+partitions: 4
