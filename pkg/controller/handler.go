@@ -109,7 +109,7 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
   CREATE <topic> [<partitions>] - create topic (default=4)
   DELETE <topic>                - delete topic
   LIST                          - list all topics
-  SUBSCRIBE <topic>             - subscribe to an existing topic
+  SUBSCRIBE <topic> [<group>]  - subscribe to an existing topic (default group: "default")
   PUBLISH <topic> <message>     - publish a message
   CONSUME <topic> <pID> <offset> - consume messages (streaming)
   HELP                          - show this help message
@@ -152,16 +152,28 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 		resp = strings.Join(names, ", ")
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "SUBSCRIBE "):
-		topicName := strings.TrimSpace(cmd[10:])
+		parts := strings.Fields(cmd[10:])
+		if len(parts) == 0 {
+			resp = "ERROR: missing topic name"
+			break
+		}
+
+		topicName := parts[0]
+		groupName := "default"
+
+		if len(parts) > 1 {
+			groupName = parts[1]
+		}
+
 		t := tm.GetTopic(topicName)
 		if t == nil {
 			resp = fmt.Sprintf("ERROR: topic '%s' does not exist", topicName)
 			break
 		}
 		ctx.CurrentTopics[topicName] = struct{}{}
-		t.RegisterConsumerGroup(ctx.ConsumerGroup, 1)
+		t.RegisterConsumerGroup(groupName, 1)
 
-		resp = fmt.Sprintf("✅ Subscribed to '%s'", topicName)
+		resp = fmt.Sprintf("✅ Subscribed to '%s' with group '%s'", topicName, groupName)
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "PUBLISH "):
 		parts := strings.SplitN(cmd[8:], " ", 2)
