@@ -1,7 +1,7 @@
 # Core Systems
 
-This document provides a detailed technical overview of the three major subsystems that comprise go-broker's core functionality: 
-- the Server System, Topic Management System, and Disk Persistence System. 
+This document provides a detailed technical overview of the three major subsystems that comprise go-broker's core functionality:
+- the Server System, Topic Management System, and Disk Persistence System.
 
 Each system operates semi-independently while integrating through well-defined interfaces to provide a complete message broker implementation
 

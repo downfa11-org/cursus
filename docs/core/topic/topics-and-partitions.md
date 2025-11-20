@@ -187,7 +187,7 @@ Key Points:
 
 - **Protects**: counter, consumerGroups map
 - **Acquired during**: partition selection, consumer group registration
-- **Type*8: sync.RWMutex for read-heavy operations
+- **Type**: sync.RWMutex for read-heavy operations
 
 ### Partition-Level Lock:
 

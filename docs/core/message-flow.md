@@ -4,8 +4,8 @@ This document explains how messages flow through go-broker from publication to c
 
 For detailed information about specific aspects of message flow:
 
-- **Publishing mechanics and partition selection**: see [Publishing Messages](./message-flow.md)
-- **Consumer registration and message streaming**: see [Consuming Messages](./message-flow.md)
+- **Publishing mechanics and partition selection**: see Publishing Messages section below
+- **Consumer registration and message streaming**: see Consuming Messages section below
 - **Command protocol and processing**: see [Command Processing](../reference/api-reference.md)
 - **Disk persistence implementation**: see [Disk Persistence System](./storage/disk-persistence.md)
 

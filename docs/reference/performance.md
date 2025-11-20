@@ -228,8 +228,7 @@ The fundamental trade-off in disk persistence:
 Memory consumption calculation:
 
 ```
-Total Memory = (num_partitions × partition_buffer_size × avg_msg_size) +
-               (num_consumers × consumer_buffer_size × avg_msg_size)
+Total Memory = (num_partitions × partition_buffer_size × avg_msg_size) + (num_consumers × consumer_buffer_size avg_msg_size)
 ```
 
 Example:

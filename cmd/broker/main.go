@@ -24,10 +24,9 @@ func main() {
 
 	// Initialization
 	dm := disk.NewDiskManager(cfg)
-	coord := coordinator.NewCoordinator(cfg)
-	tm := topic.NewTopicManager(cfg, dm, coord)
-	om := offset.NewOffsetManager()
 	cd := coordinator.NewCoordinator(cfg)
+	tm := topic.NewTopicManager(cfg, dm, cd)
+	om := offset.NewOffsetManager()
 
 	// Static consumer groups
 	for _, gcfg := range cfg.StaticConsumerGroups {
@@ -37,12 +36,14 @@ func main() {
 				t = tm.CreateTopic(topicName, 4)
 			}
 			if t != nil {
-				tm.RegisterConsumerGroup(topicName, gcfg.Name, gcfg.ConsumerCount)
+				if err := tm.RegisterConsumerGroup(topicName, gcfg.Name, gcfg.ConsumerCount); err != nil {
+					log.Printf("⚠️ Failed to register static consumer group %q on topic %q: %v", gcfg.Name, topicName, err)
+				}
 			}
 		}
 	}
 
-	go coord.Start()
+	go cd.Start()
 
 	if err := server.RunServer(cfg, tm, dm, om, cd); err != nil {
 		log.Fatalf("❌ Broker failed: %v", err)

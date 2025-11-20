@@ -99,11 +99,11 @@ The DecompressMessage function handles decompression transparently.
 ### Simple Commands
 
 - Commands other than CONSUME return a simple string response:
-    ```
+    ```text
     [4-byte length][response string]
     ```
 - The writeResponse function handles this encoding:
-    ```
+    ```text
     Streaming Commands (CONSUME)
     ```
 - CONSUME returns multiple length-prefixed messages:
@@ -172,3 +172,4 @@ Commands respect these configuration parameters:
 | Partition buffer size | `partition_channel_buffer_size` | 10000     | CREATE command partition capacity    |
 | Consumer buffer size  | `consumer_channel_buffer_size`  | 1000      | SUBSCRIBE consumer channel capacity |
 | Read batch size       | N/A               | 8192 bytes| CONSUME read size                   |
+

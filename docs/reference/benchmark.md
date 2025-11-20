@@ -10,7 +10,7 @@ For information about performance tuning configuration parameters that affect be
 
 The go-broker benchmarking system consists of three primary components:
 
-### Component	Purpose	Key Methods
+### Component
 
 The benchmark tool executes a three-phase workflow:
 

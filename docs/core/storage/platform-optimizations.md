@@ -20,21 +20,11 @@ When opening a segment file on Linux, go-broker provides a hint to the kernel ab
 
 The fadvise call provides performance benefits:
 
-Optimization	Description	Benefit
-Aggressive Read-Ahead적극적인 미리 읽기	Kernel pre-fetches more data from disk
-커널은 디스크에서 더 많은 데이터를 미리 가져옵니다.
-Reduces read latency for sequential scans
-순차 스캔의 읽기 대기 시간 감소
-Reduced Page Cache Priority
-페이지 캐시 우선 순위 감소
-Pages are evicted sooner after use
-페이지 사용 후 더 빨리 제거됩니다.
-Frees memory for more valuable cached data
-더 가치 있는 캐시된 데이터를 위해 메모리를 확보합니다.
-I/O Scheduling HintI/O 스케줄링 힌트	Kernel can optimize disk I/O scheduling
-커널은 디스크 I/O 스케줄링을 최적화할 수 있습니다.
-Better disk throughput for sequential workloads
-순차적 워크로드를 위한 디스크 처리량 향상
+| Optimization                  | Description                                   | Benefit                                              |
+|-------------------------------|-----------------------------------------------|------------------------------------------------------|
+| Aggressive Read-Ahead         | Kernel pre-fetches more data from disk        | Reduces read latency for sequential scans            |
+| Reduced Page Cache Priority   | Pages are evicted sooner after use            | Frees memory for more valuable cached data           |
+| I/O Scheduling Hint           | Kernel can optimize disk I/O scheduling       | Better disk throughput for sequential workloads      |
 
 The signature used is:
 
