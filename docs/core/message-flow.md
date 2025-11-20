@@ -429,13 +429,12 @@ The `util.WriteWithLength` helper writes a 4-byte big-endian length prefix follo
 
 ### Connection Lifecycle
 
-The CONSUME command is terminal for the TCP connection:
+The `CONSUME` command is terminal for the TCP connection:
 
 After `HandleConsumeCommand` completes (successfully or with error), the `HandleConnection` function returns which triggers the deferred `conn.Close()` 
 
- This design ensures that:
-
-- Each CONSUME command gets a fresh connection
+This design ensures that:
+- Each `CONSUME` command gets a fresh connection
 - No state is maintained between consume operations
 - Resource cleanup is automatic
 
@@ -452,17 +451,16 @@ It's important to distinguish between two consumption mechanisms:
 
 ### Consumer Groups (In-Memory)
 
-Consumer groups are registered via the SUBSCRIBE command and receive messages in real-time:
+Consumer groups are registered via the `SUBSCRIBE` command and receive messages in real-time:
 
 This mechanism:
-
 - Provides low latency (in-memory channels)
 - Requires the consumer to be connected when messages are published
 - Uses load balancing: each partition's messages go to one consumer in the group
 
 ### CONSUME Command (Disk-Based)
 
-The CONSUME command reads historical messages from disk:
+The `CONSUME` command reads historical messages from disk:
 
 This mechanism:
 
