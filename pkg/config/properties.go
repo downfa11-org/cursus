@@ -51,6 +51,7 @@ type Config struct {
 	HeartbeatIntervalMS  int                   `yaml:"heartbeat_interval_ms"`
 	SessionTimeoutMS     int                   `yaml:"session_timeout_ms"`
 	RebalanceTimeoutMS   int                   `yaml:"rebalance_timeout_ms"`
+	MaxPollRecords       int                   `yaml:"max_poll_records" json:"max.poll.records"`
 
 	// DiskHandler tuning
 	DiskFlushBatchSize int `yaml:"disk_flush_batch_size" json:"disk.flush.batch.size"`
@@ -94,6 +95,7 @@ func LoadConfig() (*Config, error) {
 	flag.IntVar(&cfg.HeartbeatIntervalMS, "heartbeat-interval", 3000, "Heartbeat interval in milliseconds")
 	flag.IntVar(&cfg.SessionTimeoutMS, "session-timeout", 30000, "Session timeout in milliseconds")
 	flag.IntVar(&cfg.RebalanceTimeoutMS, "rebalance-timeout", 60000, "Rebalance timeout in milliseconds")
+	flag.IntVar(&cfg.MaxPollRecords, "max-poll-records", 8192, "Maximum messages per CONSUME request")
 
 	// DiskHandler tuning
 	flag.IntVar(&cfg.DiskFlushBatchSize, "disk-flush-batch", 50, "Number of messages per disk flush")

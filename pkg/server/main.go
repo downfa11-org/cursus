@@ -62,6 +62,11 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 	}
 	startHealthCheckServer(healthPort, brokerReady)
 
+	if cd != nil {
+		cd.Start()
+		log.Printf("🔄 Coordinator started with heartbeat monitoring")
+	}
+
 	workerCh := make(chan net.Conn, maxWorkers)
 	for i := 0; i < maxWorkers; i++ {
 		go func() {
@@ -193,7 +198,8 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 }
 
 func isCommand(s string) bool {
-	keywords := []string{"CREATE", "DELETE", "LIST", "SUBSCRIBE", "PUBLISH", "CONSUME", "HELP"}
+	keywords := []string{"CREATE", "DELETE", "LIST", "SUBSCRIBE", "PUBLISH", "CONSUME", "HELP",
+		"SETGROUP", "HEARTBEAT", "JOIN_GROUP", "LEAVE_GROUP", "COMMIT_OFFSET", "REGISTER_GROUP"}
 	for _, k := range keywords {
 		if strings.HasPrefix(strings.ToUpper(s), k) {
 			return true
