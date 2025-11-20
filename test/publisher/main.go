@@ -34,7 +34,7 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 	flag.StringVar(&cfg.Topic, "topic", "my-topic", "Topic name")
 	flag.IntVar(&cfg.Partitions, "partitions", 4, "Number of partitions")
 
-	configPath := flag.String("config", "", "Path to YAML/JSON config file")
+	configPath := flag.String("config", "/config.yaml", "Path to YAML/JSON config file")
 	flag.Parse()
 
 	if *configPath != "" {
@@ -65,7 +65,7 @@ func NewPublisher(cfg *PublisherConfig) *Publisher {
 	return &Publisher{config: cfg}
 }
 
-func (p *Publisher) WriteWithLength(conn net.Conn, data []byte) error {
+func WriteWithLength(conn net.Conn, data []byte) error {
 	lenBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(lenBuf, uint32(len(data)))
 
@@ -80,7 +80,7 @@ func (p *Publisher) WriteWithLength(conn net.Conn, data []byte) error {
 	return nil
 }
 
-func (p *Publisher) ReadWithLength(conn net.Conn) ([]byte, error) {
+func ReadWithLength(conn net.Conn) ([]byte, error) {
 	lenBuf := make([]byte, 4)
 	if _, err := io.ReadFull(conn, lenBuf); err != nil {
 		return nil, fmt.Errorf("read length: %w", err)
@@ -96,15 +96,21 @@ func (p *Publisher) ReadWithLength(conn net.Conn) ([]byte, error) {
 	return msgBuf, nil
 }
 
-func (p *Publisher) EncodeMessage(topic, payload string) []byte {
-	return []byte(fmt.Sprintf("%s:%s", topic, payload))
+func EncodeMessage(topic, payload string) []byte {
+	topicBytes := []byte(topic)
+	payloadBytes := []byte(payload)
+	data := make([]byte, 2+len(topicBytes)+len(payloadBytes))
+	binary.BigEndian.PutUint16(data[:2], uint16(len(topicBytes)))
+	copy(data[2:2+len(topicBytes)], topicBytes)
+	copy(data[2+len(topicBytes):], payloadBytes)
+	return data
 }
 
 func (p *Publisher) SendWithRetry(conn net.Conn, data []byte) error {
 	ackTimeout := time.Duration(p.config.AckTimeoutMS) * time.Millisecond
 
 	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
-		if err := p.WriteWithLength(conn, data); err != nil {
+		if err := WriteWithLength(conn, data); err != nil {
 			if attempt == p.config.MaxRetries {
 				return fmt.Errorf("max retries exceeded: %w", err)
 			}
@@ -120,7 +126,7 @@ func (p *Publisher) SendWithRetry(conn net.Conn, data []byte) error {
 			return fmt.Errorf("set read deadline: %w", err)
 		}
 
-		resp, err := p.ReadWithLength(conn)
+		resp, err := ReadWithLength(conn)
 		if err != nil {
 			if attempt == p.config.MaxRetries {
 				return fmt.Errorf("ack timeout after %d retries: %w", p.config.MaxRetries, err)
@@ -146,8 +152,14 @@ func (p *Publisher) SendWithRetry(conn net.Conn, data []byte) error {
 	return fmt.Errorf("failed after %d attempts", p.config.MaxRetries+1)
 }
 
-func (p *Publisher) CreateTopic(conn net.Conn) error {
-	createCmd := p.EncodeMessage("admin", fmt.Sprintf("CREATE %s %d", p.config.Topic, p.config.Partitions))
+func (p *Publisher) CreateTopic() error {
+	conn, err := net.Dial("tcp", p.config.BrokerAddr)
+	if err != nil {
+		return fmt.Errorf("connect to broker: %w", err)
+	}
+	defer conn.Close()
+
+	createCmd := EncodeMessage(p.config.Topic, fmt.Sprintf("CREATE %s %d", p.config.Topic, p.config.Partitions))
 
 	if err := p.SendWithRetry(conn, createCmd); err != nil {
 		if strings.Contains(err.Error(), "topic exists") || strings.Contains(err.Error(), "already exists") {
@@ -161,8 +173,14 @@ func (p *Publisher) CreateTopic(conn net.Conn) error {
 	return nil
 }
 
-func (p *Publisher) PublishMessage(conn net.Conn, message string) error {
-	msgBytes := p.EncodeMessage(p.config.Topic, message)
+func (p *Publisher) PublishMessage(message string) error {
+	conn, err := net.Dial("tcp", p.config.BrokerAddr)
+	if err != nil {
+		return fmt.Errorf("connect to broker: %w", err)
+	}
+	defer conn.Close()
+
+	msgBytes := EncodeMessage(p.config.Topic, message)
 	return p.SendWithRetry(conn, msgBytes)
 }
 
@@ -182,16 +200,7 @@ func main() {
 
 	publisher := NewPublisher(cfg)
 
-	conn, err := net.Dial("tcp", cfg.BrokerAddr)
-	if err != nil {
-		fmt.Printf("Connection failed: %v\n", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-
-	fmt.Printf("Connected to go-broker at %s\n\n", cfg.BrokerAddr)
-
-	if err := publisher.CreateTopic(conn); err != nil {
+	if err := publisher.CreateTopic(); err != nil {
 		fmt.Printf("Failed to create topic: %v\n", err)
 		os.Exit(1)
 	}
@@ -200,7 +209,7 @@ func main() {
 	for i := 0; i < 10; i++ {
 		message := fmt.Sprintf("Hello from Go client! Message #%d", i)
 
-		if err := publisher.PublishMessage(conn, message); err != nil {
+		if err := publisher.PublishMessage(message); err != nil {
 			fmt.Printf("Failed to publish message %d: %v\n", i, err)
 			continue
 		}
@@ -209,5 +218,5 @@ func main() {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	fmt.Println("\nAll messages published successfully!")
+	fmt.Println("\n All messages published successfully!")
 }
