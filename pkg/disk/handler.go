@@ -56,7 +56,10 @@ func NewDiskHandler(cfg *config.Config, topicName string, partitionID, segmentSi
 	if len(files) > 0 {
 		for _, f := range files {
 			var segNum int
-			fmt.Sscanf(filepath.Base(f), "partition_%d_segment_%d.log", &partitionID, &segNum)
+			_, err := fmt.Sscanf(filepath.Base(f), "partition_%d_segment_%d.log", &partitionID, &segNum)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse filename %s: %w", f, err)
+			}
 			if segNum > currentSegment {
 				currentSegment = segNum
 			}
