@@ -43,6 +43,10 @@ type ConsumerConfig struct {
 	// Join group retry
 	JoinGroupMaxRetries   int `yaml:"join_group_max_retries" json:"join_group_max_retries"`
 	JoinGroupRetryDelayMS int `yaml:"join_group_retry_delay_ms" json:"join_group_retry_delay_ms"`
+
+	DefaultPartitions []int `yaml:"default_partitions" json:"default_partitions"`
+	EmptyPollDelayMS  int   `yaml:"empty_poll_delay_ms" json:"empty_poll_delay_ms"`
+	PollTimeoutMS     int   `yaml:"poll_timeout_ms" json:"poll_timeout_ms"`
 }
 
 // Message represents a consumed message
@@ -104,6 +108,8 @@ func LoadConsumerConfig() (*ConsumerConfig, error) {
 	flag.IntVar(&cfg.RetryBackoffMS, "retry-backoff-ms", 100, "Initial backoff time in milliseconds")
 	flag.IntVar(&cfg.JoinGroupMaxRetries, "join-group-max-retries", 10, "Maximum retry attempts for JOIN_GROUP")
 	flag.IntVar(&cfg.JoinGroupRetryDelayMS, "join-group-retry-delay-ms", 500, "Retry delay in milliseconds for JOIN_GROUP")
+	flag.IntVar(&cfg.EmptyPollDelayMS, "empty-poll-delay-ms", 50, "Delay when no messages available in milliseconds")
+	flag.IntVar(&cfg.PollTimeoutMS, "poll-timeout-ms", 5000, "Poll timeout in milliseconds")
 
 	configPath := flag.String("config", "/config.yaml", "Path to YAML/JSON config file")
 	flag.Parse()
@@ -143,7 +149,11 @@ func NewConsumer(cfg *ConsumerConfig) (*Consumer, error) {
 	}
 
 	if len(cfg.Partitions) == 0 {
-		cfg.Partitions = []int{0, 1, 2, 3} // default 4 partitions
+		if len(cfg.DefaultPartitions) > 0 {
+			cfg.Partitions = cfg.DefaultPartitions
+		} else {
+			cfg.Partitions = []int{0, 1, 2, 3}
+		}
 	}
 
 	if err := consumer.joinGroup(); err != nil {
@@ -252,6 +262,13 @@ func (c *Consumer) Poll(timeout time.Duration) ([]Message, error) {
 			continue
 		}
 
+		if len(messages) > 0 {
+			if c.config.AutoCommit {
+				lastOffset := messages[len(messages)-1].Offset
+				c.offsetManager.Commit(partition, lastOffset+1)
+			}
+		}
+
 		allMessages = append(allMessages, messages...)
 
 		// auto commit
@@ -265,6 +282,10 @@ func (c *Consumer) Poll(timeout time.Duration) ([]Message, error) {
 		time.Duration(c.config.AutoCommitIntervalMS)*time.Millisecond {
 		c.commitOffsets()
 		c.lastCommitTime = time.Now()
+	}
+
+	if len(allMessages) == 0 {
+		time.Sleep(time.Duration(c.config.EmptyPollDelayMS) * time.Millisecond)
 	}
 
 	return allMessages, nil
@@ -299,6 +320,10 @@ func (c *Consumer) fetchMessages(partition, offset int) ([]Message, error) {
 			Offset:    offset + i,
 			Payload:   string(msgBytes),
 		})
+	}
+
+	if len(messages) == 0 {
+		c.offsetManager.Commit(partition, offset+1)
 	}
 
 	return messages, nil

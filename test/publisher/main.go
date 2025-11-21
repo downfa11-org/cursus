@@ -21,6 +21,8 @@ type PublisherConfig struct {
 	AckTimeoutMS   int    `yaml:"ack_timeout_ms" json:"ack_timeout_ms"`
 	Topic          string `yaml:"topic" json:"topic"`
 	Partitions     int    `yaml:"partitions" json:"partitions"`
+	NumMessages    int    `yaml:"num_messages" json:"num_messages"`
+	PublishDelayMS int    `yaml:"publish_delay_ms" json:"publish_delay_ms"`
 }
 
 func LoadPublisherConfig() (*PublisherConfig, error) {
@@ -33,6 +35,8 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 	flag.IntVar(&cfg.AckTimeoutMS, "ack-timeout-ms", 5000, "ACK timeout in milliseconds")
 	flag.StringVar(&cfg.Topic, "topic", "my-topic", "Topic name")
 	flag.IntVar(&cfg.Partitions, "partitions", 4, "Number of partitions")
+	flag.IntVar(&cfg.NumMessages, "num-messages", 10, "Number of messages to publish")
+	flag.IntVar(&cfg.PublishDelayMS, "publish-delay-ms", 100, "Delay between messages in milliseconds")
 
 	configPath := flag.String("config", "/config.yaml", "Path to YAML/JSON config file")
 	flag.Parse()
@@ -214,7 +218,7 @@ func main() {
 	}
 
 	fmt.Println("\nPublishing messages...")
-	for i := 0; i < 10; i++ {
+	for i := 0; i < cfg.NumMessages; i++ {
 		message := fmt.Sprintf("Hello from Go client! Message #%d", i)
 
 		if err := publisher.PublishMessage(message); err != nil {
@@ -223,7 +227,7 @@ func main() {
 		}
 
 		fmt.Printf("Message %d published successfully\n", i)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(time.Duration(cfg.PublishDelayMS) * time.Millisecond)
 	}
 
 	fmt.Println("\n All messages published successfully!")
