@@ -58,7 +58,7 @@ type ConsumerGroup struct {
 
 type Coordinator interface {
 	RegisterGroup(topicName, groupName string, partitionCount int) error
-	AddConsumer(groupName, consumerID string) (map[string][]int, error) // return allocated partitions
+	AddConsumer(groupName, consumerID string) ([]int, error) // return allocated partitions
 	RemoveConsumer(groupName, consumerID string) error
 	GetAssignments(groupName string) map[string][]int
 }
@@ -145,8 +145,10 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *Cons
 		g.Consumers = append(g.Consumers, newConsumer)
 
 		if t.coordinator != nil {
-			assignments, err := t.coordinator.AddConsumer(groupName, fmt.Sprintf("%d", newConsumerID))
-			if err == nil {
+			if _, err := t.coordinator.AddConsumer(groupName, fmt.Sprintf("%d", newConsumerID)); err != nil {
+				fmt.Printf("❌ failed to add consumer %d: %v\n", newConsumerID, err)
+			} else {
+				assignments := t.coordinator.GetAssignments(groupName)
 				t.applyAssignments(groupName, assignments)
 			}
 		}
@@ -291,11 +293,20 @@ func (t *Topic) applyAssignments(groupName string, assignments map[string][]int)
 				continue
 			}
 
-			go func(ch <-chan types.Message, c *Consumer) {
-				for msg := range ch {
-					c.MsgCh <- msg
+			stopCh := consumer.stopCh
+			go func(ch <-chan types.Message, c *Consumer, stop <-chan struct{}) {
+				for {
+					select {
+					case <-stop:
+						return
+					case msg, ok := <-ch:
+						if !ok {
+							return
+						}
+						c.MsgCh <- msg
+					}
 				}
-			}(groupCh, consumer)
+			}(groupCh, consumer, stopCh)
 		}
 	}
 }

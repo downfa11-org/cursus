@@ -89,15 +89,11 @@ func (c *Coordinator) AddConsumer(groupName, consumerID string) ([]int, error) {
 	group.Members[consumerID] = &MemberMetadata{
 		ID:            consumerID,
 		LastHeartbeat: time.Now(),
+		Assignments:   nil,
 	}
 
-	c.rebalanceRange(groupName)
-
-	assignments := group.Members[consumerID].Assignments
-	log.Printf("[JOIN_SUCCESS] ✅ Consumer '%s' joined group '%s' with %d partitions: %v",
-		consumerID, groupName, len(assignments), assignments)
-
-	return assignments, nil
+	log.Printf("[JOIN_SUCCESS] ✅ Consumer '%s' joined group '%s'", consumerID, groupName)
+	return nil, nil
 }
 
 func (c *Coordinator) RemoveConsumer(groupName, consumerID string) error {
@@ -114,12 +110,17 @@ func (c *Coordinator) RemoveConsumer(groupName, consumerID string) error {
 		consumerID, groupName, len(group.Members))
 
 	delete(group.Members, consumerID)
-	c.rebalanceRange(groupName)
 
 	log.Printf("[LEAVE_SUCCESS] ✅ Consumer '%s' left group '%s'. Remaining members: %d",
 		consumerID, groupName, len(group.Members))
 
 	return nil
+}
+
+func (c *Coordinator) Rebalance(groupName string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rebalanceRange(groupName)
 }
 
 func (c *Coordinator) RecordHeartbeat(groupName, consumerID string) error {

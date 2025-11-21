@@ -39,14 +39,21 @@ func (c *Coordinator) rebalanceRange(groupName string) {
 			count++
 		}
 
+		var newAssignments []int
+		if partitionIdx < len(group.Partitions) {
+			end := partitionIdx + count
+			if end > len(group.Partitions) {
+				end = len(group.Partitions)
+			}
+			newAssignments = group.Partitions[partitionIdx:end]
+		}
+
 		oldAssignments := group.Members[memberID].Assignments
-		newAssignments := group.Partitions[partitionIdx : partitionIdx+count]
 		group.Members[memberID].Assignments = newAssignments
+		partitionIdx += len(newAssignments)
 
 		log.Printf("[REBALANCE_ASSIGN] 📋 Consumer '%s': assigned partitions %v (previously: %v)",
 			memberID, newAssignments, oldAssignments)
-
-		partitionIdx += count
 	}
 
 	log.Printf("[REBALANCE_COMPLETE] ✅ Rebalance completed for group '%s'. Total members: %d, Total partitions: %d",

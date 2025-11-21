@@ -17,6 +17,7 @@ import (
 	"github.com/downfa11-org/go-broker/util"
 )
 
+const DefaultMaxPollRecords = 8192
 const STREAM_DATA_SIGNAL = "STREAM_DATA"
 
 type CommandHandler struct {
@@ -89,35 +90,25 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 				log.Printf("[OFFSET] Using saved offset %d for group '%s', topic '%s', partition %d",
 					actualOffset, ctx.ConsumerGroup, topicName, partition)
 			} else {
-				// No saved offset, apply auto.offset.reset policy
-				if ch.Config.AutoOffsetReset == "earliest" {
-					actualOffset = 0
-					log.Printf("[OFFSET] No saved offset, using 'earliest' (0) for group '%s'", ctx.ConsumerGroup)
-				} else { // "latest"
-					latestOffset, err := dh.GetLatestOffset()
-					if err != nil {
-						return 0, fmt.Errorf("failed to get latest offset: %w", err)
-					}
-					actualOffset = latestOffset
-					log.Printf("[OFFSET] No saved offset, using 'latest' (%d) for group '%s'",
-						actualOffset, ctx.ConsumerGroup)
+				actualOffset, err = ch.resolveAutoOffset(dh, ctx.ConsumerGroup)
+				if err != nil {
+					return 0, err
 				}
 			}
+		}
+	} else {
+		// OffsetManager not available, use config default
+		if ch.Config.AutoOffsetReset == "earliest" {
+			actualOffset = 0
 		} else {
-			// OffsetManager not available, use config default
-			if ch.Config.AutoOffsetReset == "earliest" {
-				actualOffset = 0
-			} else {
-				latestOffset, err := dh.GetLatestOffset()
-				if err != nil {
-					return 0, fmt.Errorf("failed to get latest offset: %w", err)
-				}
-				actualOffset = latestOffset
+			actualOffset, err = ch.resolveAutoOffset(dh, ctx.ConsumerGroup)
+			if err != nil {
+				return 0, err
 			}
 		}
 	}
 
-	maxMessages := 8192 // default
+	maxMessages := DefaultMaxPollRecords // default
 	if ch.Config != nil && ch.Config.MaxPollRecords > 0 {
 		maxMessages = ch.Config.MaxPollRecords
 	}
@@ -154,6 +145,21 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		streamedCount, topicName, partition, duration)
 
 	return streamedCount, nil
+}
+
+// resolveAutoOffset applies the auto.offset.reset policy to determine the starting offset
+func (ch *CommandHandler) resolveAutoOffset(dh *disk.DiskHandler, groupName string) (int, error) {
+	if ch.Config.AutoOffsetReset == "earliest" {
+		log.Printf("[OFFSET] Using 'earliest' (0) for group '%s'", groupName)
+		return 0, nil
+	}
+	// "latest"
+	latestOffset, err := dh.GetLatestOffset()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get latest offset: %w", err)
+	}
+	log.Printf("[OFFSET] Using 'latest' (%d) for group '%s'", latestOffset, groupName)
+	return latestOffset, nil
 }
 
 // HandleCommand processes non-streaming commands and returns a signal for streaming commands.
