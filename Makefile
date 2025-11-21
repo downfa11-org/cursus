@@ -19,7 +19,7 @@ lint: tools
 .PHONY: test  
 test:  
 	@echo "[MAKE] Running unit tests..."  
-	$(GO) test $(TEST_FLAGS) ./...  
+	$(GO) test $(TEST_FLAGS) $(shell go list ./... | grep -v /test/e2e)
 
 .PHONY: e2e  
 e2e: e2e-build  
@@ -125,7 +125,7 @@ fmt:
 .PHONY: coverage  
 coverage:  
 	@echo "[MAKE] Running tests with coverage..."  
-	$(GO) test $(TEST_FLAGS) -coverprofile=coverage.out ./...  
+	$(GO) test $(TEST_FLAGS) -coverprofile=coverage.out $(shell go list ./... | grep -v /test/e2e)    
 	@echo "Coverage report saved to coverage.out"  
   
 .PHONY: help  
