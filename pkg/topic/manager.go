@@ -67,7 +67,7 @@ func (tm *TopicManager) CreateTopic(name string, partitionCount int) *Topic {
 		}
 	}
 
-	t, err := NewTopic(name, partitionCount, tm.hp)
+	t, err := NewTopic(name, partitionCount, tm.hp, tm.coordinator)
 	if err != nil {
 		fmt.Printf("❌ failed to create topic '%s': %v\n", name, err)
 		return nil

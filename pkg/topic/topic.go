@@ -51,8 +51,9 @@ type Consumer struct {
 
 // ConsumerGroup contains consumers subscribed to the same topic.
 type ConsumerGroup struct {
-	Name      string
-	Consumers []*Consumer
+	Name             string
+	Consumers        []*Consumer
+	CommittedOffsets map[int]int64
 }
 
 type Coordinator interface {
@@ -68,7 +69,7 @@ type DiskAppender interface {
 }
 
 // NewTopic initializes a topic with partitions.
-func NewTopic(name string, partitionCount int, hp HandlerProvider) (*Topic, error) {
+func NewTopic(name string, partitionCount int, hp HandlerProvider, coordinator Coordinator) (*Topic, error) {
 	partitions := make([]*Partition, partitionCount)
 	for i := 0; i < partitionCount; i++ {
 		dh, err := hp.GetHandler(name, i)
@@ -81,6 +82,7 @@ func NewTopic(name string, partitionCount int, hp HandlerProvider) (*Topic, erro
 		Name:           name,
 		Partitions:     partitions,
 		consumerGroups: make(map[string]*ConsumerGroup),
+		coordinator:    coordinator,
 	}, nil
 }
 
@@ -156,8 +158,9 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *Cons
 	}
 
 	group := &ConsumerGroup{
-		Name:      groupName,
-		Consumers: make([]*Consumer, consumerCount),
+		Name:             groupName,
+		Consumers:        make([]*Consumer, consumerCount),
+		CommittedOffsets: make(map[int]int64),
 	}
 
 	for i := 0; i < consumerCount; i++ {
@@ -271,7 +274,10 @@ func (t *Topic) applyAssignments(groupName string, assignments map[string][]int)
 	}
 
 	for _, consumer := range group.Consumers {
-		if consumer.stopCh != nil {
+		select {
+		case <-consumer.stopCh:
+			// already close
+		default:
 			close(consumer.stopCh)
 		}
 		consumer.stopCh = make(chan struct{})
@@ -310,6 +316,35 @@ func (t *Topic) applyAssignments(groupName string, assignments map[string][]int)
 			}(groupCh, consumer, stopCh)
 		}
 	}
+}
+
+func (t *Topic) GetCommittedOffset(groupName string, partition int) (int64, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	group, ok := t.consumerGroups[groupName]
+	if !ok {
+		return 0, false
+	}
+
+	offset, ok := group.CommittedOffsets[partition]
+	return offset, ok
+}
+
+func (t *Topic) CommitOffset(groupName string, partition int, offset int64) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	group, ok := t.consumerGroups[groupName]
+	if !ok {
+		return fmt.Errorf("consumer group '%s' not found", groupName)
+	}
+
+	if group.CommittedOffsets == nil {
+		group.CommittedOffsets = make(map[int]int64)
+	}
+	group.CommittedOffsets[partition] = offset
+	return nil
 }
 
 // Close shuts down the partition.

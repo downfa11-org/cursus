@@ -120,16 +120,21 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 			return
 		}
 
-		topicName, payload := util.DecodeMessage(data)
+		consumerGroupOrTopic, payload := util.DecodeMessage(data)
 		clientAddr := conn.RemoteAddr().String()
 
-		if topicName == "" || payload == "" {
+		if consumerGroupOrTopic == "" || payload == "" {
 			rawInput := strings.TrimSpace(string(data))
 			log.Printf("[INPUT_WARN] [%s] Received unrecognized input (not cmd/msg format): %s", clientAddr, rawInput)
 			return
 		}
 
-		log.Printf("[REQ] [%s] Received request. Topic: '%s', Payload: '%s'", clientAddr, topicName, payload)
+		if isCommand(payload) {
+			ctx.SetConsumerGroup(consumerGroupOrTopic)
+			log.Printf("[%s] Received command. Group: '%s', Payload: '%s'", clientAddr, consumerGroupOrTopic, payload)
+		} else {
+			log.Printf("[%s] Received request. Topic: '%s', Payload: '%s'", clientAddr, consumerGroupOrTopic, payload)
+		}
 
 		var resp string
 		cmdStr := payload
@@ -137,6 +142,8 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 		if isCommand(payload) {
 			resp = cmdHandler.HandleCommand(payload, ctx)
 		} else {
+			topicName := consumerGroupOrTopic
+
 			switch cfg.Acks {
 			case "0":
 				err := tm.Publish(topicName, types.Message{

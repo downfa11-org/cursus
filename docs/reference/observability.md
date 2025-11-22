@@ -185,7 +185,7 @@ All connection-related logs include the remote client address for request tracin
 
 ```
 clientAddr := conn.RemoteAddr().String()
-log.Printf("[REQ] [%s] Received request. Topic: '%s', Payload: '%s'", 
+log.Printf("[%s] Received request. Topic: '%s', Payload: '%s'", 
     clientAddr, topicName, payload)
 ```
 
