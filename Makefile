@@ -32,14 +32,7 @@ e2e-up:
 	@echo "[MAKE] Starting E2E test containers..."    
 	docker compose -f $(E2E_COMPOSE_FILE) up -d    
 	@echo "[MAKE] Waiting for broker health check..."    
-	@for i in $$(seq 1 30); do \  
-		if curl -f http://localhost:9080/health 2>/dev/null; then \  
-			echo "Broker is healthy"; \  
-			exit 0; \  
-		fi; \  
-		sleep 2; \  
-	done; \  
-	echo "Broker failed to start" && make e2e-logs && exit 1
+	@bash -c 'for i in {1..30}; do if curl -f http://localhost:9080/health 2>/dev/null; then echo "Broker is healthy"; exit 0; fi; if [ $$i -eq 30 ]; then echo "Broker failed to start"; exit 1; fi; sleep 2; done'
 
 .PHONY: e2e-verbose  
 e2e-verbose: e2e-build  
