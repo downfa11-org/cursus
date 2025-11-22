@@ -6,7 +6,7 @@ GO := go
 GOLINT := golangci-lint  
 TEST_FLAGS := -v -race -cover  
 BUILD_FLAGS := -ldflags="-s -w"  
-E2E_COMPOSE_FILE := test/docker-compose.yml  
+E2E_COMPOSE_FILE := test/e2e/docker-compose.yml  
 
 .PHONY: all  
 all: build  

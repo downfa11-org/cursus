@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	e2eComposeFile      = "test/docker-compose.yml"
+	e2eComposeFile      = "test/e2e/docker-compose.yml"
 	healthCheckURL      = "http://localhost:9080/health"
 	defaultBrokerAddr   = "localhost:9000"
 	healthCheckRetries  = 30
@@ -209,7 +209,10 @@ func (a *Actions) ConsumeMessages() *Actions {
 			continue
 		}
 
-		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		err = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if err != nil {
+			a.ctx.t.Errorf("Failed to set read deadline for partition %d: %v", partition, err)
+		}
 
 		partitionCount := 0
 		for {
@@ -227,7 +230,10 @@ func (a *Actions) ConsumeMessages() *Actions {
 				totalConsumed++
 			}
 
-			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			err = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			if err != nil {
+				a.ctx.t.Errorf("Failed to set read deadline for partition %d: %v", partition, err)
+			}
 		}
 
 		a.ctx.t.Logf("Consumed %d messages from partition %d", partitionCount, partition)
