@@ -26,6 +26,8 @@ func TestPublisherRetryLogic(t *testing.T) {
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("retry-test").
+		WithPartitions(1).
+		WithNumMessages(5).
 		When().
 		StartBroker().
 		StopBroker().

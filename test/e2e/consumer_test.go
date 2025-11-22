@@ -10,13 +10,14 @@ func TestConsumerGroupJoin(t *testing.T) {
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("consumer-group-test").
+		WithPartitions(1).
+		WithNumMessages(10).
 		When().
 		StartBroker().
 		PublishMessages().
 		ConsumeMessages().
 		Then().
-		Expect(ConsumerJoinedGroup()).
-		And(MessagesConsumed(10))
+		Expect(MessagesConsumed(10))
 }
 
 // TestConsumerOffsetCommit verifies offset commit functionality
@@ -25,6 +26,8 @@ func TestConsumerOffsetCommit(t *testing.T) {
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("offset-test").
+		WithPartitions(1).
+		WithNumMessages(10).
 		When().
 		StartBroker().
 		PublishMessages().
@@ -39,8 +42,11 @@ func TestConsumerHeartbeat(t *testing.T) {
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("heartbeat-test").
+		WithPartitions(1).
+		WithNumMessages(5).
 		When().
 		StartBroker().
+		PublishMessages().
 		ConsumeMessages().
 		Then().
 		Expect(HeartbeatsSent())

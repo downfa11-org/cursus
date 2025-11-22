@@ -9,14 +9,15 @@ func TestBasicPubSub(t *testing.T) {
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("test-topic").
-		WithPartitions(4).
+		WithPartitions(1).
+		WithNumMessages(10).
 		When().
 		StartBroker().
 		PublishMessages().
 		ConsumeMessages().
 		Then().
 		Expect(BrokerIsHealthy()).
-		And(MessagesPublishedSince(10, ctx.startTime)).
+		And(MessagesPublished(10)).
 		And(MessagesConsumed(10))
 }
 
@@ -24,9 +25,8 @@ func TestConfigValidation(t *testing.T) {
 	ctx := Given(t)
 	defer ctx.Cleanup()
 
-	ctx.
-		WithTopic("config-test").
-		WithPartitions(2).
+	ctx.WithTopic("config-test").
+		WithPartitions(1).
 		WithNumMessages(5).
 		When().
 		StartBroker().

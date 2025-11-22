@@ -228,7 +228,11 @@ func (cfg *Config) Normalize() {
 	// bootstrap
 	if len(cfg.BootstrapServers) == 1 &&
 		strings.Contains(cfg.BootstrapServers[0], ",") {
-		cfg.BootstrapServers = strings.Split(cfg.BootstrapServers[0], ",")
+		servers := strings.Split(cfg.BootstrapServers[0], ",")
+		for i := range servers {
+			servers[i] = strings.TrimSpace(servers[i])
+		}
+		cfg.BootstrapServers = servers
 	}
 	if len(cfg.BootstrapServers) == 0 {
 		cfg.BootstrapServers = []string{"localhost:9000"}
