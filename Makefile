@@ -44,11 +44,11 @@ e2e-build:
 	@echo "[MAKE] Building E2E test images..."    
 	docker compose -f $(E2E_COMPOSE_FILE) build
 
-.PHONY: e2e-clean  
-e2e-clean:  
-	@echo "[MAKE] Cleaning E2E test environment..."  
-	docker compose -f $(E2E_COMPOSE_FILE) down -v  # docker-compose → docker compose  
-	rm -rf test/logs/*   
+.PHONY: e2e-clean    
+e2e-clean:    
+	@echo "[MAKE] Cleaning E2E test environment..."    
+	docker compose -f $(E2E_COMPOSE_FILE) down -v  
+	-docker run --rm -v $(PWD)/test/logs:/logs alpine rm -rf /logs/*
   
 .PHONY: e2e-logs  
 e2e-logs:  

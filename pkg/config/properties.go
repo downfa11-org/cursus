@@ -253,13 +253,14 @@ func (cfg *Config) Normalize() {
 	if cfg.UseTLS {
 		if cfg.TLSCertPath == "" || cfg.TLSKeyPath == "" {
 			cfg.UseTLS = false
-			return
 		}
-		cert, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
-		if err != nil {
-			cfg.UseTLS = false
-		} else {
-			cfg.TLSCert = cert
+		if cfg.UseTLS {
+			cert, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
+			if err != nil {
+				cfg.UseTLS = false
+			} else {
+				cfg.TLSCert = cert
+			}
 		}
 	}
 

@@ -63,36 +63,26 @@ func (c *Context) When() *Actions {
 	return &Actions{ctx: c}
 }
 
-// runDockerCompose executes docker-compose command with given arguments
-func runDockerCompose(args ...string) *exec.Cmd {
-	return exec.Command("docker", append([]string{"compose"}, args...)...)
-}
-
-// StartBroker starts the broker using docker-compose and waits for health check
+// StartBroker verifies that the broker is already running (started by Makefile)
 func (a *Actions) StartBroker() *Actions {
-	cmd := runDockerCompose("-f", "test/docker-compose.yml", "up", "-d")
-
-	a.ctx.t.Logf("Executing: %s %v", cmd.Path, cmd.Args)
-
-	if err := cmd.Run(); err != nil {
-		a.ctx.t.Fatalf("Failed to start broker: %v", err)
-	}
+	a.ctx.t.Log("Verifying broker is already running...")
 
 	if err := waitForHealth(); err != nil {
-		a.ctx.t.Fatalf("Broker failed to became healthy: %v", err)
+		a.ctx.t.Fatalf("Broker is not healthy: %v", err)
 	}
 
+	a.ctx.t.Log("Broker is healthy and ready")
 	return a
 }
 
 func waitForHealth() error {
 	for i := 0; i < 30; i++ {
 		resp, err := http.Get("http://localhost:9080/health")
-		if err == nil {
-			if resp.StatusCode == http.StatusOK {
-				resp.Body.Close()
-				return nil
-			}
+		if err == nil && resp.StatusCode == http.StatusOK {
+			resp.Body.Close()
+			return nil
+		}
+		if resp != nil {
 			resp.Body.Close()
 		}
 		time.Sleep(1 * time.Second)
@@ -102,8 +92,7 @@ func waitForHealth() error {
 
 // StopBroker stops the broker for retry testing
 func (a *Actions) StopBroker() *Actions {
-	cmd := runDockerCompose("-f", "test/docker-compose.yml", "stop", "broker")
-
+	cmd := exec.Command("docker", "compose", "-f", "test/docker-compose.yml", "stop", "broker")
 	if err := cmd.Run(); err != nil {
 		a.ctx.t.Logf("Warning: Failed to stop broker: %v", err)
 	}
@@ -111,12 +100,10 @@ func (a *Actions) StopBroker() *Actions {
 	return a
 }
 
-// Cleanup tears down the test environment
+// Cleanup is now a no-op since Makefile handles cleanup
 func (c *Context) Cleanup() {
-	cmd := runDockerCompose("-f", "test/docker-compose.yml", "down", "-v")
-	if err := cmd.Run(); err != nil {
-		c.t.Logf("Warning: Cleanup failed: %v", err)
-	}
+	// Makefile의 e2e-clean이 모든 정리를 담당
+	c.t.Log("Cleanup will be handled by Makefile")
 }
 
 // PublishMessages waits for publisher to complete message publishing
