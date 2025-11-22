@@ -131,6 +131,62 @@ func LoadConsumerConfig() (*ConsumerConfig, error) {
 		}
 	}
 
+	if strings.TrimSpace(cfg.BrokerAddr) == "" {
+		cfg.BrokerAddr = "localhost:9000"
+	}
+
+	if strings.TrimSpace(cfg.GroupID) == "" {
+		cfg.GroupID = "default-group"
+	}
+
+	if strings.TrimSpace(cfg.Topic) == "" {
+		cfg.Topic = "default-topic"
+	}
+
+	if cfg.HeartbeatIntervalMS <= 0 {
+		cfg.HeartbeatIntervalMS = 1000
+	}
+
+	if cfg.SessionTimeoutMS <= 0 {
+		cfg.SessionTimeoutMS = 5000
+	}
+
+	if cfg.MaxPollRecords <= 0 {
+		cfg.MaxPollRecords = 1
+	}
+
+	if cfg.PollIntervalMS <= 0 {
+		cfg.PollIntervalMS = 200
+	}
+
+	if cfg.AutoCommitIntervalMS <= 0 {
+		cfg.AutoCommitIntervalMS = 1000
+	}
+
+	if cfg.MaxRetries < 0 {
+		cfg.MaxRetries = 0
+	}
+
+	if cfg.RetryBackoffMS <= 0 {
+		cfg.RetryBackoffMS = 50
+	}
+
+	if cfg.JoinGroupMaxRetries <= 0 {
+		cfg.JoinGroupMaxRetries = 5
+	}
+
+	if cfg.JoinGroupRetryDelayMS <= 0 {
+		cfg.JoinGroupRetryDelayMS = 200
+	}
+
+	if cfg.EmptyPollDelayMS < 0 {
+		cfg.EmptyPollDelayMS = 0
+	}
+
+	if cfg.PollTimeoutMS <= 0 {
+		cfg.PollTimeoutMS = 1000
+	}
+
 	if cfg.ConsumerID == "" {
 		cfg.ConsumerID = fmt.Sprintf("consumer-%d", time.Now().UnixNano())
 	}
@@ -298,6 +354,11 @@ func (c *Consumer) fetchMessages(partition, offset int) ([]Message, error) {
 	}
 	defer conn.Close()
 
+	timeout := time.Duration(c.config.PollTimeoutMS) * time.Millisecond
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, fmt.Errorf("set read deadline: %w", err)
+	}
+
 	consumeCmd := fmt.Sprintf("CONSUME %s %d %d", c.config.Topic, partition, offset)
 	cmdBytes := EncodeMessage(c.config.Topic, consumeCmd)
 
@@ -307,9 +368,16 @@ func (c *Consumer) fetchMessages(partition, offset int) ([]Message, error) {
 
 	var messages []Message
 	for i := 0; i < c.config.MaxPollRecords; i++ {
+		if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			return messages, fmt.Errorf("reset read deadline: %w", err)
+		}
+
 		msgBytes, err := ReadWithLength(conn)
 		if err != nil {
 			if err == io.EOF || strings.Contains(err.Error(), "EOF") {
+				break
+			}
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				break
 			}
 			return messages, err
@@ -320,6 +388,10 @@ func (c *Consumer) fetchMessages(partition, offset int) ([]Message, error) {
 			Offset:    offset + i,
 			Payload:   string(msgBytes),
 		})
+	}
+
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		log.Printf("Warning: Failed to clear read deadline: %v", err)
 	}
 
 	if len(messages) == 0 {

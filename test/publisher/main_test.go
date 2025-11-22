@@ -43,7 +43,19 @@ func (p *Publisher) PublishMessage(msg string) error {
 }
 
 func EncodeMessage(topic, payload string) []byte {
-	return append([]byte(topic), []byte(payload)...)
+	// Use length-prefix encoding: [topic-length][topic][payload]
+	topicBytes := []byte(topic)
+	payloadBytes := []byte(payload)
+	result := make([]byte, 4+len(topicBytes)+len(payloadBytes))
+
+	result[0] = byte(len(topicBytes) >> 24)
+	result[1] = byte(len(topicBytes) >> 16)
+	result[2] = byte(len(topicBytes) >> 8)
+	result[3] = byte(len(topicBytes))
+
+	copy(result[4:], topicBytes)
+	copy(result[4+len(topicBytes):], payloadBytes)
+	return result
 }
 
 func TestPublisher_CreateTopic(t *testing.T) {

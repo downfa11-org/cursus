@@ -108,20 +108,8 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		}
 	} else {
 		log.Printf("[DEBUG] Requested offset is specified: %d", requestedOffset)
-		if ch.OffsetManager == nil {
-			if ch.Config.AutoOffsetReset == "earliest" {
-				log.Printf("[WARN] OffsetManager nil, applying earliest offset")
-				actualOffset = 0
-			} else {
-				actualOffset, err = ch.resolveAutoOffset(dh, ctx.ConsumerGroup)
-				if err != nil {
-					return 0, err
-				}
-				log.Printf("[OFFSET] OffsetManager nil, applying latest offset: %d", actualOffset)
-			}
-		} else {
-			log.Printf("[DEBUG] Using requested offset as actual offset: %d", actualOffset)
-		}
+		// actualOffset already set
+		log.Printf("[DEBUG] Using requested offset as actual offset: %d", actualOffset)
 	}
 
 	maxMessages := DefaultMaxPollRecords

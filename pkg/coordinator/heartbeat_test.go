@@ -27,8 +27,8 @@ func TestHeartbeatMonitor_TimeoutRemovesMember(t *testing.T) {
 			groups: map[string]*GroupMetadata{
 				"testGroup": {
 					Members: map[string]*MemberMetadata{
-						"consumer1": {LastHeartbeat: time.Now().Add(-10 * time.Second)}, // timeout 유발
-						"consumer2": {LastHeartbeat: time.Now()},                        // 정상
+						"consumer1": {LastHeartbeat: time.Now().Add(-10 * time.Second)}, // will timeout
+						"consumer2": {LastHeartbeat: time.Now()},                        // healthy
 					},
 				},
 			},

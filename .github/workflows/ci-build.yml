@@ -9,8 +9,6 @@ on:
 jobs:  
   setup:  
     runs-on: ubuntu-latest  
-    outputs:  
-      go-path: ${{ steps.go-path.outputs.go-path }}  
     steps:  
       - uses: actions/checkout@v4  
       - uses: actions/setup-go@v5  

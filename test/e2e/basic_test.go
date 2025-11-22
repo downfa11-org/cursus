@@ -21,9 +21,13 @@ func TestBasicPubSub(t *testing.T) {
 }
 
 func TestConfigValidation(t *testing.T) {
-	Given(t).
+	ctx := Given(t)
+	defer ctx.Cleanup()
+
+	ctx.
 		WithTopic("config-test").
 		WithPartitions(2).
+		WithNumMessages(5).
 		When().
 		StartBroker().
 		PublishMessages().

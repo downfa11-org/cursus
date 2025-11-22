@@ -62,8 +62,9 @@ func TestWriteBatchRotation(t *testing.T) {
 	dh.WriteDirect(string(msg))
 	dh.WriteDirect(string(msg))
 
-	if dh.GetCurrentSegment() != 1 {
-		t.Fatalf("expected CurrentSegment 1 after rotation, got %d", dh.CurrentSegment)
+	currentSeg := dh.GetCurrentSegment()
+	if currentSeg != 1 {
+		t.Fatalf("expected CurrentSegment 1 after rotation, got %d", currentSeg)
 	}
 }
 

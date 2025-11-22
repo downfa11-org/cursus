@@ -26,7 +26,13 @@ func MessagesPublished(count int) Expectation {
 			return err
 		}
 
-		published := strings.Count(string(output), "published successfully")
+		lines := strings.Split(string(output), "\n")
+		published := 0
+		for _, line := range lines {
+			if strings.Contains(line, "Message ") && strings.Contains(line, "published successfully") {
+				published++
+			}
+		}
 		if published != count {
 			return fmt.Errorf("expected %d messages, got %d", count, published)
 		}

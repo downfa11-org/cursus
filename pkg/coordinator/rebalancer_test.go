@@ -17,8 +17,12 @@ func TestRebalanceRange_AssignsPartitionsEvenly(t *testing.T) {
 		t.Fatalf("RegisterGroup failed: %v", err)
 	}
 
-	_, _ = c.AddConsumer(groupName, "c1")
-	_, _ = c.AddConsumer(groupName, "c2")
+	if _, err := c.AddConsumer(groupName, "c1"); err != nil {
+		t.Fatalf("AddConsumer c1 failed: %v", err)
+	}
+	if _, err := c.AddConsumer(groupName, "c2"); err != nil {
+		t.Fatalf("AddConsumer c2 failed: %v", err)
+	}
 
 	c.rebalanceRange(groupName)
 
@@ -61,9 +65,15 @@ func TestRebalanceRange_MoreMembersThanPartitions(t *testing.T) {
 		t.Fatalf("RegisterGroup failed: %v", err)
 	}
 
-	_, _ = c.AddConsumer(groupName, "c1")
-	_, _ = c.AddConsumer(groupName, "c2")
-	_, _ = c.AddConsumer(groupName, "c3")
+	if _, err := c.AddConsumer(groupName, "c1"); err != nil {
+		t.Fatalf("AddConsumer c1 failed: %v", err)
+	}
+	if _, err := c.AddConsumer(groupName, "c2"); err != nil {
+		t.Fatalf("AddConsumer c2 failed: %v", err)
+	}
+	if _, err := c.AddConsumer(groupName, "c3"); err != nil {
+		t.Fatalf("AddConsumer c3 failed: %v", err)
+	}
 
 	c.rebalanceRange(groupName)
 

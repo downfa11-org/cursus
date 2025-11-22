@@ -105,12 +105,12 @@ docker:
 .PHONY: compose-up  
 compose-up:  
 	@echo "[MAKE] Starting docker-compose..."  
-	docker compose -f manifests/docker-compose.yaml up -d
+	docker compose -f manifests/docker-compose.yml up -d
   
 .PHONY: compose-down  
 compose-down:  
 	@echo "[MAKE] Stopping docker-compose..."  
-	docker compose -f manifests/docker-compose.yaml down  
+	docker compose -f manifests/docker-compose.yml down  
 
 .PHONY: tools  
 tools:  
@@ -134,19 +134,12 @@ help:
 	@echo "  make lint            Run linter"  
 	@echo "  make test            Run unit tests"  
 	@echo "  make e2e             Run E2E tests (builds images first)"  
-	@echo "  make e2e-verbose     Run E2E tests with race detection"  
-	@echo "  make e2e-build       Build E2E test Docker images"  
-	@echo "  make e2e-clean       Clean E2E test environment"  
-	@echo "  make e2e-logs        Show E2E test container logs"  
-	@echo "  make e2e-coverage    Run E2E tests with coverage"  
+	@echo "  make e2e-verbose     Run E2E tests with race detection" 
+	@echo "  make e2e-logs        Show E2E test container logs" 
 	@echo "  make bench           Run benchmarks"  
 	@echo "  make build           Build all binaries (api, cli, bench)"  
 	@echo "  make clean           Remove build artifacts"  
-	@echo "  make run             Run broker in dev mode"  
-	@echo "  make cli             Run CLI in dev mode"  
-	@echo "  make docker          Build Docker image"  
-	@echo "  make compose-up      Start docker-compose stack"  
-	@echo "  make compose-down    Stop docker-compose stack"  
+	@echo "  make run             Run broker in dev mode" 
 	@echo "  make tools           Install or update development tools"  
 	@echo "  make fmt             Format code according to Go standards"  
 	@echo "  make coverage        Run tests with coverage report"

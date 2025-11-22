@@ -79,18 +79,21 @@ func (a *Actions) StartBroker() *Actions {
 	}
 
 	if err := waitForHealth(); err != nil {
-		a.ctx.t.Fatal(err)
+		a.ctx.t.Fatalf("Broker failed to became healthy: %v", err)
 	}
 
-	a.ctx.t.Fatal("Broker failed to become healthy")
 	return a
 }
 
 func waitForHealth() error {
 	for i := 0; i < 30; i++ {
 		resp, err := http.Get("http://localhost:9080/health")
-		if err == nil && resp.StatusCode == 200 {
-			return nil
+		if err == nil {
+			if resp.StatusCode == http.StatusOK {
+				resp.Body.Close()
+				return nil
+			}
+			resp.Body.Close()
 		}
 		time.Sleep(1 * time.Second)
 	}

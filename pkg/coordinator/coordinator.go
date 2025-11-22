@@ -14,6 +14,7 @@ type Coordinator struct {
 	groups map[string]*GroupMetadata // All consumer groups
 	mu     sync.RWMutex              // Global lock for coordinator state
 	cfg    *config.Config            // Configuration reference
+	stopCh chan struct{}
 }
 
 // GroupMetadata holds metadata for a single consumer group.
@@ -37,12 +38,18 @@ func NewCoordinator(cfg *config.Config) *Coordinator {
 	return &Coordinator{
 		groups: make(map[string]*GroupMetadata),
 		cfg:    cfg,
+		stopCh: make(chan struct{}),
 	}
 }
 
 // Start launches background monitoring processes (e.g., heartbeat monitor).
 func (c *Coordinator) Start() {
 	go c.monitorHeartbeats()
+}
+
+// Stop launches background monitoring processes (graceful shutdown)
+func (c *Coordinator) Stop() {
+	close(c.stopCh)
 }
 
 // RegisterGroup creates a new consumer group for a topic.

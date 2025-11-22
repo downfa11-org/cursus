@@ -58,6 +58,28 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 		}
 	}
 
+	if cfg.MaxRetries < 0 {
+		cfg.MaxRetries = 0
+	}
+	if cfg.RetryBackoffMS <= 0 {
+		cfg.RetryBackoffMS = 100
+	}
+	if cfg.AckTimeoutMS <= 0 {
+		cfg.AckTimeoutMS = 1
+	}
+	if cfg.Partitions <= 0 {
+		cfg.Partitions = 1
+	}
+	if cfg.NumMessages < 0 {
+		cfg.NumMessages = 0
+	}
+	if cfg.PublishDelayMS < 0 {
+		cfg.PublishDelayMS = 0
+	}
+	if strings.TrimSpace(cfg.Topic) == "" {
+		cfg.Topic = "default-topic"
+	}
+
 	return cfg, nil
 }
 
