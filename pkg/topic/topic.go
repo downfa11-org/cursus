@@ -2,6 +2,7 @@ package topic
 
 import (
 	"fmt"
+	"runtime"
 	"strconv"
 	"sync"
 	"time"
@@ -312,7 +313,19 @@ func (t *Topic) applyAssignments(groupName string, assignments map[string][]int)
 						if !ok {
 							return
 						}
-						c.MsgCh <- msg
+						for {
+							select {
+							case <-stop:
+								return
+							case c.MsgCh <- msg:
+								// delivered
+								goto NEXT
+							default:
+								// MsgCh full → yield, retry
+								runtime.Gosched()
+							}
+						}
+					NEXT:
 					}
 				}
 			}(groupCh, consumer, stopCh)
@@ -336,6 +349,10 @@ func (t *Topic) GetCommittedOffset(groupName string, partition int) (int64, bool
 func (t *Topic) CommitOffset(groupName string, partition int, offset int64) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	if partition < 0 || partition >= len(t.Partitions) {
+		return fmt.Errorf("partition %d out of range [0, %d)", partition, len(t.Partitions))
+	}
 
 	group, ok := t.consumerGroups[groupName]
 	if !ok {

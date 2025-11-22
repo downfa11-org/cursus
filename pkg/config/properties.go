@@ -70,6 +70,7 @@ type Config struct {
 
 func LoadConfig() (*Config, error) {
 	cfg := &Config{}
+	configPath := flag.String("config", "", "Path to YAML/JSON config file")
 
 	// default flags
 	flag.IntVar(&cfg.BrokerPort, "port", 9000, "Broker port")
@@ -111,11 +112,10 @@ func LoadConfig() (*Config, error) {
 	flag.IntVar(&cfg.ConsumerChannelBufSize, "consumer-ch-buffer", 1000, "Consumer channel buffer size")
 	flag.BoolVar(&cfg.AutoCreateTopics, "auto-create-topics", true, "Auto-create topics on publish")
 
-	configPath := flag.String("config", "", "Path to YAML/JSON config file")
-
 	if envPath := os.Getenv("CONFIG_PATH"); envPath != "" && *configPath == "" {
 		*configPath = envPath
 	}
+
 	flag.Parse()
 
 	// file load (YAML or JSON)

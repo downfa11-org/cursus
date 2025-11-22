@@ -2,6 +2,8 @@ package topic
 
 import (
 	"fmt"
+	"log"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -84,9 +86,11 @@ func (tm *TopicManager) GetTopic(name string) *Topic {
 }
 
 func (tm *TopicManager) Publish(topicName string, msg types.Message) error {
-	msg.ID = util.GenerateID(msg.Payload)
+	idSource := fmt.Sprintf("%s-%d-%d", msg.Payload, time.Now().UnixNano(), rand.Int63())
+	msg.ID = util.GenerateID(idSource)
 	now := time.Now()
 	if _, loaded := tm.dedupMap.LoadOrStore(msg.ID, now); loaded {
+		log.Printf("[DEBUG] Message %d already exists in dedupMap, skipping", msg.ID) // test
 		return nil
 	}
 
@@ -95,13 +99,14 @@ func (tm *TopicManager) Publish(topicName string, msg types.Message) error {
 		if tm.cfg.AutoCreateTopics {
 			t = tm.CreateTopic(topicName, 4) // auto-create topic (default: 4 partition)
 			if t == nil {
+				log.Printf("[DEBUG] Topic '%s' auto-created, but topic is nil", topicName) // test
 				return fmt.Errorf("failed to auto-create topic '%s'", topicName)
 			}
 		} else {
+			log.Printf("[DEBUG] Topic '%s' not found", topicName) // test
 			return fmt.Errorf("topic '%s' does not exist", topicName)
 		}
 	}
-
 	start := time.Now()
 	t.Publish(msg)
 	elapsed := time.Since(start).Seconds()

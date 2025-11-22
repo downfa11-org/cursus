@@ -88,7 +88,7 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	log.Printf("Requested offset: %d for group '%s'", requestedOffset, ctx.ConsumerGroup)
 
 	// check consumer group's committed offset
-	if requestedOffset == 0 || requestedOffset == -1 {
+	if requestedOffset == -1 || requestedOffset == 0 {
 		log.Printf("Checking consumer group '%s' committed offset for topic '%s' partition %d",
 			ctx.ConsumerGroup, topicName, partition)
 
@@ -96,7 +96,7 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 			actualOffset = int(committedOffset)
 			log.Printf("[OFFSET] Using consumer group committed offset %d for group '%s', topic '%s', partition %d",
 				actualOffset, ctx.ConsumerGroup, topicName, partition)
-		} else if requestedOffset == -1 {
+		} else {
 			if ch.OffsetManager != nil {
 				savedOffset, err := ch.OffsetManager.GetOffset(ctx.ConsumerGroup, topicName, partition)
 				if err == nil && savedOffset >= 0 {
@@ -119,9 +119,6 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 				}
 				log.Printf("[OFFSET] Fallback offset applied: %d for group '%s'", actualOffset, ctx.ConsumerGroup)
 			}
-		} else {
-			actualOffset = 0
-			log.Printf("[OFFSET] No committed offset found, starting from 0 for group '%s'", ctx.ConsumerGroup)
 		}
 	} else {
 		log.Printf("Requested offset is specified: %d for group '%s'", requestedOffset, ctx.ConsumerGroup)

@@ -157,10 +157,13 @@ func (d *DiskHandler) AppendMessage(msg string) {
 	for {
 		select {
 		case <-d.done:
+			log.Printf("[DEBUG] done channel closed for %s", d.BaseName) // test
 			return
 		case d.writeCh <- msg:
+			log.Printf("[DEBUG] Message sent to writeCh for %s", d.BaseName) // test
 			return
 		default:
+			log.Printf("[DEBUG] writeCh full for %s, retrying...", d.BaseName) // test
 		}
 
 		if d.writeTimeout > 0 {

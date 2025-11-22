@@ -1,19 +1,10 @@
-broker:
-  port: 9000
-  cleanup_interval: 60
-  enable_exporter: true
-  exporter_port: 9100
-  use_tls: false
-  tls_cert_path: "certs/server.crt"
-  tls_key_path: "certs/server.key"
-  enable_gzip: false
-
-  channel_buffer_size: 10000 
-  disk_flush_batch_size: 500 
-  linger_ms: 100
-  
-benchmark:
-  enable: false
-prometheus:
-  scrape_interval: "5s"
-  scrape_timeout: "3s"
+broker_port: 9000  
+cleanup_interval: 60  
+enable_exporter: true  
+exporter_port: 9100  
+use_tls: false  
+tls_cert_path: "certs/server.crt"  
+tls_key_path: "certs/server.key"  
+enable_gzip: false  
+channel_buffer_size: 10000   
+auto_offset_reset: "earliest"

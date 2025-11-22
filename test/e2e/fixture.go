@@ -158,7 +158,7 @@ func (c *Context) Cleanup() {
 
 func (a *Actions) PublishMessages() *Actions {
 	a.ctx.t.Logf("Publishing %d messages to topic '%s'...", a.ctx.numMessages, a.ctx.topic)
-
+	timestamp := time.Now().UnixNano()
 	for i := 0; i < a.ctx.numMessages; i++ {
 		conn, err := net.Dial("tcp", a.ctx.brokerAddr)
 		if err != nil {
@@ -166,7 +166,7 @@ func (a *Actions) PublishMessages() *Actions {
 			continue
 		}
 
-		payload := fmt.Sprintf("test-message-%d", i)
+		payload := fmt.Sprintf("test-message-%d-%d", i, timestamp)
 		publishCmd := fmt.Sprintf("PUBLISH %s %s", a.ctx.topic, payload)
 		cmdBytes := util.EncodeMessage(a.ctx.topic, publishCmd)
 
@@ -198,7 +198,6 @@ func (a *Actions) PublishMessages() *Actions {
 	}
 
 	a.ctx.t.Logf("Published %d/%d messages successfully", a.ctx.publishedCount, a.ctx.numMessages)
-	time.Sleep(500 * time.Millisecond)
 	return a
 }
 
@@ -213,8 +212,34 @@ func (a *Actions) ConsumeMessages() *Actions {
 			continue
 		}
 
+		// setgroup
+		setGroupCmd := fmt.Sprintf("SETGROUP %s", a.ctx.consumerGroup)
+		setGroupBytes := util.EncodeMessage(a.ctx.topic, setGroupCmd)
+
+		if err := util.WriteWithLength(conn, setGroupBytes); err != nil {
+			a.ctx.t.Errorf("Failed to send SETGROUP for partition %d: %v", partition, err)
+			conn.Close()
+			continue
+		}
+
+		setGroupResp, err := util.ReadWithLength(conn)
+		if err != nil {
+			a.ctx.t.Errorf("Failed to read SETGROUP response for partition %d: %v", partition, err)
+			conn.Close()
+			continue
+		}
+
+		respStr := string(setGroupResp)
+		if strings.HasPrefix(respStr, "ERROR:") {
+			a.ctx.t.Errorf("SETGROUP failed for partition %d: %s", partition, respStr)
+			conn.Close()
+			continue
+		}
+		a.ctx.t.Logf("SETGROUP successful for partition %d: %s", partition, respStr)
+
+		// consume
 		consumeCmd := fmt.Sprintf("CONSUME %s %d 0", a.ctx.topic, partition)
-		cmdBytes := util.EncodeMessage(a.ctx.consumerGroup, consumeCmd)
+		cmdBytes := util.EncodeMessage(a.ctx.topic, consumeCmd)
 
 		if err := util.WriteWithLength(conn, cmdBytes); err != nil {
 			a.ctx.t.Errorf("Failed to send CONSUME command for partition %d: %v", partition, err)
