@@ -31,6 +31,7 @@ type Context struct {
 	startTime      time.Time
 	publishedCount int
 	consumedCount  int
+	consumerGroup  string
 }
 
 type Actions struct {
@@ -50,6 +51,7 @@ func Given(t *testing.T) *Context {
 		numMessages:    10,
 		publishDelayMS: 100,
 		startTime:      time.Now(),
+		consumerGroup:  fmt.Sprintf("test-group-%d", time.Now().UnixNano()),
 	}
 }
 
@@ -65,6 +67,16 @@ func (c *Context) WithPartitions(n int) *Context {
 
 func (c *Context) WithNumMessages(n int) *Context {
 	c.numMessages = n
+	return c
+}
+
+func (c *Context) WithConsumerGroup(group string) *Context {
+	c.consumerGroup = group
+	return c
+}
+
+func (c *Context) WithDefaultConsumerGroup() *Context {
+	c.consumerGroup = "default-group"
 	return c
 }
 
@@ -201,7 +213,7 @@ func (a *Actions) ConsumeMessages() *Actions {
 		}
 
 		consumeCmd := fmt.Sprintf("CONSUME %s %d 0", a.ctx.topic, partition)
-		cmdBytes := util.EncodeMessage(a.ctx.topic, consumeCmd)
+		cmdBytes := util.EncodeMessage(a.ctx.consumerGroup, consumeCmd)
 
 		if err := util.WriteWithLength(conn, cmdBytes); err != nil {
 			a.ctx.t.Errorf("Failed to send CONSUME command for partition %d: %v", partition, err)
