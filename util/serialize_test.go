@@ -1,6 +1,7 @@
 package util_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/downfa11-org/go-broker/util"
@@ -85,5 +86,86 @@ func TestDecodeIdempotentMessageCorruptedData(t *testing.T) {
 	_, _, _, _, _, err := util.DecodeIdempotentMessage(data)
 	if err == nil {
 		t.Errorf("Expected error for corrupted data, got nil")
+	}
+}
+
+func TestIdempotentMessageEmptyFields(t *testing.T) {
+	data := util.EncodeIdempotentMessage("", "", "", 0, 0)
+	_, seq, epoch, topic, payload, err := util.DecodeIdempotentMessage(data)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if seq != 0 || epoch != 0 || topic != "" || payload != "" {
+		t.Errorf("Unexpected values: seq=%d epoch=%d topic=%s payload=%s",
+			seq, epoch, topic, payload)
+	}
+}
+
+func TestIdempotentMessageExtremeNumbers(t *testing.T) {
+	producerID := "id"
+	topic := "t"
+	payload := "p"
+
+	data := util.EncodeIdempotentMessage(
+		topic, payload, producerID,
+		math.MaxUint64, math.MinInt64,
+	)
+
+	_, seq, epoch, _, _, err := util.DecodeIdempotentMessage(data)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	if seq != math.MaxUint64 {
+		t.Errorf("expected %v, got %d", uint64(math.MaxUint64), seq)
+	}
+	if epoch != math.MinInt64 {
+		t.Errorf("expected %d, got %d", math.MinInt64, epoch)
+	}
+}
+
+func TestUnicodeMessage(t *testing.T) {
+	topic := "🚀"
+	payload := "🌏"
+	producerID := "🔑"
+
+	data := util.EncodeIdempotentMessage(topic, payload, producerID, 1, 1)
+	pid, _, _, decTopic, decPayload, err := util.DecodeIdempotentMessage(data)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pid != producerID || decTopic != topic || decPayload != payload {
+		t.Errorf("unicode round-trip failed")
+	}
+}
+
+func TestIdempotentMessagePartialTruncation(t *testing.T) {
+	topic := "topic"
+	payload := "payload"
+	producerID := "pid"
+
+	data := util.EncodeIdempotentMessage(topic, payload, producerID, 10, 20)
+	corrupted := data[:len(data)/2]
+
+	_, _, _, _, _, err := util.DecodeIdempotentMessage(corrupted)
+	if err == nil {
+		t.Errorf("expected error for truncated message")
+	}
+}
+
+func TestIdempotentMessageCorruptedLengthField(t *testing.T) {
+	topic := "topic"
+	payload := "payload"
+	producerID := "pid"
+
+	data := util.EncodeIdempotentMessage(topic, payload, producerID, 10, 20)
+	data[0] = 0xFF
+	data[1] = 0xFF
+
+	_, _, _, _, _, err := util.DecodeIdempotentMessage(data)
+	if err == nil {
+		t.Errorf("expected error for corrupted length field")
 	}
 }

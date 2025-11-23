@@ -2,6 +2,7 @@ package util
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -74,61 +75,88 @@ func EncodeIdempotentMessage(topic, payload, producerID string, seqNum uint64, e
 	return buf
 }
 
-// DecodeIdempotentMessage decodes a message with Producer ID, SeqNum, and Epoch
-func DecodeIdempotentMessage(data []byte) (producerID string, seqNum uint64, epoch int64, topic string, payload string, err error) {
-	if len(data) < 14 { // Minimum: 2 (producerID len) + 8 (seqNum) + 8 (epoch) + 2 (topic len) + 2 (payload len)
-		return "", 0, 0, "", "", fmt.Errorf("data too short")
+// DecodeIdempotentMessage safely decodes the message and validates all lengths.
+func DecodeIdempotentMessage(data []byte) (
+	producerID string,
+	seq uint64,
+	epoch int64,
+	topic string,
+	payload string,
+	err error,
+) {
+	read := func(offset, size int) ([]byte, bool) {
+		if offset+size > len(data) {
+			return nil, false
+		}
+		return data[offset : offset+size], true
 	}
 
 	offset := 0
 
-	// Read producer ID
-	producerIDLen := binary.BigEndian.Uint16(data[offset:])
+	// producerID length
+	lenBytes, ok := read(offset, 2)
+	if !ok {
+		return "", 0, 0, "", "", errors.New("corrupted: cannot read producerID length")
+	}
+	pidLen := int(binary.BigEndian.Uint16(lenBytes))
 	offset += 2
-	if offset+int(producerIDLen) > len(data) {
-		return "", 0, 0, "", "", fmt.Errorf("invalid producer ID length")
-	}
-	producerID = string(data[offset : offset+int(producerIDLen)])
-	offset += int(producerIDLen)
 
-	// Read sequence number
-	if offset+8 > len(data) {
-		return "", 0, 0, "", "", fmt.Errorf("invalid seqNum")
+	// producerID
+	pidBytes, ok := read(offset, pidLen)
+	if !ok {
+		return "", 0, 0, "", "", errors.New("corrupted: producerID truncated")
 	}
-	seqNum = binary.BigEndian.Uint64(data[offset:])
+	producerID = string(pidBytes)
+	offset += pidLen
+
+	// seqNum
+	seqBytes, ok := read(offset, 8)
+	if !ok {
+		return "", 0, 0, "", "", errors.New("corrupted: cannot read seq")
+	}
+	seq = binary.BigEndian.Uint64(seqBytes)
 	offset += 8
 
-	// Read epoch
-	if offset+8 > len(data) {
-		return "", 0, 0, "", "", fmt.Errorf("invalid epoch")
+	// epoch
+	epochBytes, ok := read(offset, 8)
+	if !ok {
+		return "", 0, 0, "", "", errors.New("corrupted: cannot read epoch")
 	}
-	epoch = int64(binary.BigEndian.Uint64(data[offset:]))
+	epoch = int64(binary.BigEndian.Uint64(epochBytes))
 	offset += 8
 
-	// Read topic
-	if offset+2 > len(data) {
-		return "", 0, 0, "", "", fmt.Errorf("invalid topic length")
+	// topic length
+	lenBytes, ok = read(offset, 2)
+	if !ok {
+		return "", 0, 0, "", "", errors.New("corrupted: cannot read topic length")
 	}
-	topicLen := binary.BigEndian.Uint16(data[offset:])
+	topicLen := int(binary.BigEndian.Uint16(lenBytes))
 	offset += 2
-	if offset+int(topicLen) > len(data) {
-		return "", 0, 0, "", "", fmt.Errorf("invalid topic")
-	}
-	topic = string(data[offset : offset+int(topicLen)])
-	offset += int(topicLen)
 
-	// Read payload
-	if offset+2 > len(data) {
-		return "", 0, 0, "", "", fmt.Errorf("invalid payload length")
+	// topic
+	topicBytes, ok := read(offset, topicLen)
+	if !ok {
+		return "", 0, 0, "", "", errors.New("corrupted: topic truncated")
 	}
-	payloadLen := binary.BigEndian.Uint16(data[offset:])
+	topic = string(topicBytes)
+	offset += topicLen
+
+	// payload length
+	lenBytes, ok = read(offset, 2)
+	if !ok {
+		return "", 0, 0, "", "", errors.New("corrupted: cannot read payload length")
+	}
+	payloadLen := int(binary.BigEndian.Uint16(lenBytes))
 	offset += 2
-	if offset+int(payloadLen) > len(data) {
-		return "", 0, 0, "", "", fmt.Errorf("invalid payload")
-	}
-	payload = string(data[offset : offset+int(payloadLen)])
 
-	return producerID, seqNum, epoch, topic, payload, nil
+	// payload
+	payloadBytes, ok := read(offset, payloadLen)
+	if !ok {
+		return "", 0, 0, "", "", errors.New("corrupted: payload truncated")
+	}
+	payload = string(payloadBytes)
+
+	return producerID, seq, epoch, topic, payload, nil
 }
 
 // WriteWithLength writes data with a 4-byte length prefix.
