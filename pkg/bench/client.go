@@ -105,6 +105,17 @@ func (c *BenchClient) sendMessagesToPartition(producerID int, partitionID int, c
 			return fmt.Errorf("[P%d/Part%d] read resp failed: %v", producerID, partitionID, err)
 		}
 
+		respStr := strings.TrimSpace(string(resp))
+		if len(respStr) == 0 {
+			return fmt.Errorf("[P%d/Part%d] empty response — possible connection issue", producerID, partitionID)
+		}
+		if strings.HasPrefix(respStr, "ERROR:") {
+			return fmt.Errorf("[P%d/Part%d] broker error: %s", producerID, partitionID, respStr)
+		}
+		if respStr != "OK" {
+			return fmt.Errorf("[P%d/Part%d] unexpected response: %s", producerID, partitionID, respStr)
+		}
+
 		if len(resp) == 0 {
 			return fmt.Errorf("[P%d/Part%d] empty response — possible connection issue", producerID, partitionID)
 		}
@@ -192,6 +203,11 @@ func (c *BenchClient) consumeMessagesFromPartition(cid, partitionID, count int, 
 
 		if len(msgBytes) == 0 {
 			continue
+		}
+
+		payload := string(msgBytes)
+		if !strings.Contains(payload, fmt.Sprintf("Part%d", partitionID)) {
+			fmt.Printf("[C%d] Warning: unexpected message content: %s\n", cid, payload)
 		}
 
 		consumedCount++
