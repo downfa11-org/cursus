@@ -14,6 +14,7 @@ func TestPublisherConfigOptions(t *testing.T) {
 		WithNumMessages(5).
 		When().
 		StartBroker().
+		CreateTopic().
 		PublishMessages().
 		Then().
 		Expect(BrokerIsHealthy()).
@@ -30,6 +31,7 @@ func TestPublisherRetryLogic(t *testing.T) {
 		WithNumMessages(5).
 		When().
 		StartBroker().
+		CreateTopic().
 		StopBroker().
 		StartBroker().
 		PublishMessages().
@@ -47,6 +49,7 @@ func TestExactlyOnceSemantics(t *testing.T) {
 		WithNumMessages(10).
 		When().
 		StartBroker().
+		CreateTopic().
 		PublishMessages().
 		RetryPublishMessages().
 		ConsumeMessages().
@@ -64,10 +67,40 @@ func TestIdempotentProducer(t *testing.T) {
 		WithNumMessages(5).
 		When().
 		StartBroker().
+		CreateTopic().
 		PublishMessages().
 		SimulateNetworkFailure().
 		RetryPublishMessages().
 		ConsumeMessages().
 		Then().
 		Expect(MessagesConsumed(5))
+}
+
+// TestPublisherAcks verifies different ACK modes
+func TestPublisherAcks(t *testing.T) {
+	testCases := []struct {
+		name string
+		acks string
+	}{
+		{"acks=0", "0"},
+		{"acks=1", "1"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := Given(t)
+			defer ctx.Cleanup()
+
+			ctx.WithTopic("acks-test-" + tc.acks).
+				WithPartitions(1).
+				WithNumMessages(5).
+				WithAcks(tc.acks).
+				When().
+				StartBroker().
+				CreateTopic().
+				PublishMessages().
+				Then().
+				Expect(MessagesPublished(5))
+		})
+	}
 }
