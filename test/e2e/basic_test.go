@@ -4,6 +4,7 @@ import (
 	"testing"
 )
 
+// TestBasicPubSub verifies basic publish-subscribe functionality
 func TestBasicPubSub(t *testing.T) {
 	ctx := Given(t)
 	defer ctx.Cleanup()
@@ -13,6 +14,7 @@ func TestBasicPubSub(t *testing.T) {
 		WithNumMessages(10).
 		When().
 		StartBroker().
+		CreateTopic().
 		PublishMessages().
 		ConsumeMessages().
 		Then().
@@ -21,6 +23,7 @@ func TestBasicPubSub(t *testing.T) {
 		And(MessagesConsumed(10))
 }
 
+// TestConfigValidation verifies configuration validation
 func TestConfigValidation(t *testing.T) {
 	ctx := Given(t)
 	defer ctx.Cleanup()
@@ -30,7 +33,26 @@ func TestConfigValidation(t *testing.T) {
 		WithNumMessages(5).
 		When().
 		StartBroker().
+		CreateTopic().
 		PublishMessages().
 		Then().
 		Expect(MessagesPublishedSince(5, ctx.startTime))
+}
+
+// TestMultiPartition verifies multi-partition behavior
+func TestMultiPartition(t *testing.T) {
+	ctx := Given(t)
+	defer ctx.Cleanup()
+
+	ctx.WithTopic("multi-partition-test").
+		WithPartitions(4).
+		WithNumMessages(20).
+		When().
+		StartBroker().
+		CreateTopic().
+		PublishMessages().
+		ConsumeMessages().
+		Then().
+		Expect(MessagesPublished(20)).
+		And(MessagesConsumed(20))
 }
