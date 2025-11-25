@@ -134,6 +134,7 @@ func LoadConfig() (*Config, error) {
 	}
 
 	cfg.Normalize()
+	util.SetLevel(cfg.LogLevel)
 
 	return cfg, nil
 }
