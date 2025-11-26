@@ -16,7 +16,7 @@ func (a *Actions) StartBroker() *Actions {
 		a.ctx.t.Fatalf("Broker health check failed: %v", err)
 	}
 
-	_ = a.ctx.client.DeleteTopic(a.ctx.topic)
+	_ = a.ctx.getClient().DeleteTopic(a.ctx.topic)
 	time.Sleep(100 * time.Millisecond)
 
 	a.ctx.t.Log("Broker is ready")
@@ -32,7 +32,7 @@ func (a *Actions) StopBroker() *Actions {
 func (a *Actions) CreateTopic() *Actions {
 	a.ctx.t.Logf("Creating topic '%s' with %d partitions...", a.ctx.topic, a.ctx.partitions)
 
-	err := a.ctx.client.CreateTopic(a.ctx.topic, a.ctx.partitions)
+	err := a.ctx.getClient().CreateTopic(a.ctx.topic, a.ctx.partitions)
 	if err != nil {
 		a.ctx.t.Fatalf("Failed to create topic: %v", err)
 	}
@@ -50,7 +50,7 @@ func (a *Actions) PublishMessages() *Actions {
 		a.ctx.seqNum++
 		payload := fmt.Sprintf("test-message-%d", i)
 
-		err := a.ctx.client.PublishIdempotent(
+		err := a.ctx.getClient().PublishIdempotent(
 			a.ctx.topic,
 			a.ctx.producerID,
 			a.ctx.seqNum,
@@ -73,7 +73,6 @@ func (a *Actions) PublishMessages() *Actions {
 	}
 
 	a.ctx.t.Logf("Published %d messages successfully", a.ctx.publishedCount)
-	a.ctx.publishedCount = a.ctx.numMessages
 	return a
 }
 
@@ -84,7 +83,7 @@ func (a *Actions) RetryPublishMessages() *Actions {
 		payload := fmt.Sprintf("test-message-%d", i)
 		seqNum := a.ctx.publishedSeqNums[i]
 
-		err := a.ctx.client.PublishIdempotent(
+		err := a.ctx.getClient().PublishIdempotent(
 			a.ctx.topic,
 			a.ctx.producerID,
 			seqNum,
@@ -104,7 +103,7 @@ func (a *Actions) RetryPublishMessages() *Actions {
 func (a *Actions) ConsumeMessages() *Actions {
 	a.ctx.t.Logf("Consuming from topic '%s'...", a.ctx.topic)
 
-	client := NewBrokerClient(a.ctx.brokerAddr)
+	client := a.ctx.getClient()
 	if err := client.RegisterConsumerGroup(a.ctx.topic, a.ctx.consumerGroup, 1); err != nil {
 		a.ctx.t.Logf("Warning: Failed to register consumer group: %v", err)
 	}

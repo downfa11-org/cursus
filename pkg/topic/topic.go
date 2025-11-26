@@ -205,9 +205,6 @@ func (t *Topic) Publish(msg types.Message) {
 	var idx int
 	t.mu.Lock()
 
-	util.Debug("Starting publish. Topic: %s, Key: %s, Partition count: %d",
-		t.Name, msg.Key, len(t.Partitions))
-
 	if msg.Key != "" {
 		keyID := util.GenerateID(msg.Key)
 		idx = int(keyID % uint64(len(t.Partitions)))
@@ -220,9 +217,7 @@ func (t *Topic) Publish(msg types.Message) {
 	t.mu.Unlock()
 
 	p := t.Partitions[idx]
-	util.Debug("Calling Partition[%d].Enqueue", idx)
 	p.Enqueue(msg)
-	util.Debug("Enqueue completed")
 }
 
 func (t *Topic) PublishSync(msg types.Message) error {

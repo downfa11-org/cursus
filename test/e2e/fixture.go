@@ -49,8 +49,15 @@ func Given(t *testing.T) *TestContext {
 		producerID:     uuid.New().String(),
 		seqNum:         0,
 		acks:           "1",
-		client:         NewBrokerClient(defaultBrokerAddr),
+		client:         nil, // lazily initialized
 	}
+}
+
+func (ctx *TestContext) getClient() *BrokerClient {
+	if ctx.client == nil {
+		ctx.client = NewBrokerClient(ctx.brokerAddr)
+	}
+	return ctx.client
 }
 
 // Configuration methods (fluent interface)
@@ -103,5 +110,12 @@ func (ctx *TestContext) Then() *Consequences {
 // Cleanup stops broker and cleans up resources
 func (ctx *TestContext) Cleanup() {
 	ctx.t.Log("Cleaning up test resources...")
-	time.Sleep(2 * time.Second)
+	if ctx.topic != "" && ctx.client != nil {
+		if err := ctx.getClient().DeleteTopic(ctx.topic); err != nil {
+			ctx.t.Logf("Failed to delete topic %s: %v", ctx.topic, err)
+		} else {
+			ctx.t.Logf("Topic %s deleted", ctx.topic)
+		}
+	}
+	time.Sleep(1 * time.Second)
 }

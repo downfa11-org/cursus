@@ -24,7 +24,7 @@ func (c *Coordinator) rebalanceRange(groupName string) {
 	sort.Strings(members)
 
 	if len(members) == 0 {
-		util.Error("⚠️ No active members in group '%s', skipping rebalance", groupName)
+		util.Warn("⚠️ No active members in group '%s', skipping rebalance", groupName)
 		return
 	}
 

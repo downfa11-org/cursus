@@ -19,7 +19,6 @@ import (
 
 const DefaultMaxPollRecords = 8192
 const STREAM_DATA_SIGNAL = "STREAM_DATA"
-const AutoOffset = ^uint64(0)
 
 type CommandHandler struct {
 	TopicManager  *topic.TopicManager
@@ -231,7 +230,7 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
   JOIN_GROUP group=<name> consumer=<id>                    - join consumer group      
   LEAVE_GROUP group=<name> consumer=<id>                   - leave consumer group      
   HEARTBEAT group=<name> consumer=<id>                     - send heartbeat      
-  COMMIT_OFFSET topic=<name> partition=<N> offset=<N>     - commit offset      
+  COMMIT_OFFSET topic=<name> partition=<N> group=<N> offset=<N>     - commit offset      
   FETCH_OFFSET topic=<name> partition=<N> group=<name>    - fetch committed offset      
   REGISTER_GROUP topic=<name> group=<name>                - register consumer group      
   GROUP_STATUS group=<name>                                - get group status      
@@ -597,6 +596,12 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 			break
 		}
 
+		groupID, ok := args["group"]
+		if !ok || groupID == "" {
+			resp = "ERROR: COMMIT_OFFSET requires groupID parameter"
+			break
+		}
+
 		offsetStr, ok := args["offset"]
 		if !ok || offsetStr == "" {
 			resp = "ERROR: COMMIT_OFFSET requires offset parameter"
@@ -609,7 +614,7 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 		}
 
 		if ch.OffsetManager != nil {
-			err := ch.OffsetManager.CommitOffset(ctx.ConsumerGroup, topicName, partition, offset)
+			err := ch.OffsetManager.CommitOffset(groupID, topicName, partition, offset)
 			if err != nil {
 				resp = fmt.Sprintf("ERROR: %v", err)
 			} else {

@@ -65,6 +65,7 @@ func (pc *ProducerClient) Connect(addr string, useTLS bool, certPath, keyPath st
 
 		tlsConfig := &tls.Config{
 			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
 		}
 
 		conn, err = tls.Dial("tcp", addr, tlsConfig)
@@ -107,9 +108,13 @@ func (pc *ProducerClient) Reconnect(addr string, useTLS bool, certPath, keyPath 
 
 		tlsConfig := &tls.Config{
 			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
 		}
 
-		conn, _ = tls.Dial("tcp", addr, tlsConfig)
+		conn, err = tls.Dial("tcp", addr, tlsConfig)
+		if err != nil {
+			log.Printf("Failed to establish TLS connection to %s: %v", addr, err)
+		}
 	} else {
 		conn, err = net.Dial("tcp", addr)
 	}
@@ -517,6 +522,9 @@ func (p *Publisher) Flush() {
 
 func (p *Publisher) Close() {
 	close(p.done)
+	for i := 0; i < cap(p.inflightSem); i++ {
+		p.inflightSem <- struct{}{}
+	}
 	p.producer.Close()
 }
 
@@ -610,17 +618,12 @@ func main() {
 	if err := publisher.producer.Connect(cfg.BrokerAddr, cfg.UseTLS, cfg.TLSCertPath, cfg.TLSKeyPath); err != nil {
 		log.Fatalf("Failed to connect to broker: %v", err)
 	}
+	defer publisher.producer.Close()
 
 	if err := publisher.CreateTopic(); err != nil {
 		fmt.Printf("Failed to create topic: %v\n", err)
 		os.Exit(1)
 	}
-
-	if err := publisher.producer.Connect(cfg.BrokerAddr, cfg.UseTLS, cfg.TLSCertPath, cfg.TLSKeyPath); err != nil {
-		fmt.Printf("Failed to connect to broker: %v\n", err)
-		os.Exit(1)
-	}
-	defer publisher.producer.Close()
 
 	fmt.Printf("\nProducer ID: %s\n", publisher.producer.ID)
 	fmt.Printf("Epoch: %d\n\n", publisher.producer.epoch)

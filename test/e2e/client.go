@@ -57,7 +57,7 @@ func (bc *BrokerClient) CreateTopic(topic string, partitions int) error {
 	}
 	defer func() {
 		if err := conn.SetReadDeadline(time.Time{}); err != nil {
-			util.Warn("[WARN] Failed to clear read deadline: %v", err)
+			util.Warn("Failed to clear read deadline: %v", err)
 		}
 	}()
 
@@ -263,7 +263,7 @@ func (bc *BrokerClient) CommitOffset(topic string, partition int, groupID string
 	}
 	defer conn.Close()
 
-	commitCmd := fmt.Sprintf("COMMIT_OFFSET topic=%s partition=%d offset=%d", topic, partition, offset)
+	commitCmd := fmt.Sprintf("COMMIT_OFFSET topic=%s partition=%d group=%s offset=%d", topic, partition, groupID, offset)
 	cmdBytes := util.EncodeMessage(topic, commitCmd)
 
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
@@ -301,7 +301,7 @@ func (bc *BrokerClient) DeleteTopic(topic string) error {
 	defer conn.Close()
 
 	deleteCmd := fmt.Sprintf("DELETE topic=%s", topic)
-	cmdBytes := util.EncodeMessage(topic, deleteCmd)
+	cmdBytes := util.EncodeMessage("admin", deleteCmd)
 
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
 		return fmt.Errorf("send DELETE command failed: %w", err)

@@ -56,7 +56,7 @@ func (dm *DiskManager) CloseAllHandlers() {
 	defer dm.mu.Unlock()
 
 	for name, dh := range dm.handlers {
-		util.Debug("Closing DiskHandler for %s\n", name)
+		util.Debug("Closing DiskHandler for %s", name)
 		dh.Close()
 		delete(dm.handlers, name)
 	}

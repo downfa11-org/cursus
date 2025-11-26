@@ -249,10 +249,10 @@ func (b *BenchmarkRunner) RunConcurrentProducerPhase() error {
 	pWg.Wait()
 
 	if len(producerErrors) > 0 {
-		fmt.Printf("\n❌ Producer Phase Failed:\n")
-		fmt.Printf("   Total failures: %d/%d producers\n", len(producerErrors), b.NumProducers)
-		fmt.Printf("   First error:\n")
-		fmt.Printf("   %v\n\n", producerErrors[0])
+		util.Error("❌ Producer Phase Failed:")
+		util.Error("   Total failures: %d/%d producers", len(producerErrors), b.NumProducers)
+		util.Error("   First error:")
+		util.Error("   %v", producerErrors[0])
 		return fmt.Errorf("%d producer(s) failed", len(producerErrors))
 	}
 	return nil

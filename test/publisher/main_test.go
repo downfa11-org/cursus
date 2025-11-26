@@ -86,42 +86,25 @@ func TestPublisherConfigNormalization(t *testing.T) {
 		AckTimeoutMS:        -1000,
 	}
 
-	if cfg.MaxInflightRequests <= 0 {
-		cfg.MaxInflightRequests = 5
-	}
-	if cfg.BatchSize <= 0 {
-		cfg.BatchSize = 100
-	}
-	if cfg.BufferSize <= 0 {
-		cfg.BufferSize = 1024
-	}
-	if cfg.MaxRetries < 0 {
-		cfg.MaxRetries = 0
-	}
-	if cfg.RetryBackoffMS <= 0 {
-		cfg.RetryBackoffMS = 100
-	}
-	if cfg.AckTimeoutMS <= 0 {
-		cfg.AckTimeoutMS = 5000
-	}
+	publisher := NewPublisher(cfg)
 
-	if cfg.MaxInflightRequests != 5 {
-		t.Errorf("Expected MaxInflightRequests=5, got %d", cfg.MaxInflightRequests)
+	if publisher.config.MaxInflightRequests != 5 {
+		t.Errorf("Expected MaxInflightRequests=5, got %d", publisher.config.MaxInflightRequests)
 	}
-	if cfg.BatchSize != 100 {
-		t.Errorf("Expected BatchSize=100, got %d", cfg.BatchSize)
+	if publisher.config.BatchSize != 100 {
+		t.Errorf("Expected BatchSize=100, got %d", publisher.config.BatchSize)
 	}
-	if cfg.BufferSize != 1024 {
-		t.Errorf("Expected BufferSize=1024, got %d", cfg.BufferSize)
+	if publisher.config.BufferSize != 1024 {
+		t.Errorf("Expected BufferSize=1024, got %d", publisher.config.BufferSize)
 	}
-	if cfg.MaxRetries != 0 {
-		t.Errorf("Expected MaxRetries=0, got %d", cfg.MaxRetries)
+	if publisher.config.MaxRetries != 0 {
+		t.Errorf("Expected MaxRetries=0, got %d", publisher.config.MaxRetries)
 	}
-	if cfg.RetryBackoffMS != 100 {
-		t.Errorf("Expected RetryBackoffMS=100, got %d", cfg.RetryBackoffMS)
+	if publisher.config.RetryBackoffMS != 100 {
+		t.Errorf("Expected RetryBackoffMS=100, got %d", publisher.config.RetryBackoffMS)
 	}
-	if cfg.AckTimeoutMS != 5000 {
-		t.Errorf("Expected AckTimeoutMS=5000, got %d", cfg.AckTimeoutMS)
+	if publisher.config.AckTimeoutMS != 5000 {
+		t.Errorf("Expected AckTimeoutMS=5000, got %d", publisher.config.AckTimeoutMS)
 	}
 }
 
@@ -319,6 +302,8 @@ func TestPublisherBatching(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	publisher.PublishMessage("msg3")
+	if _, err := publisher.PublishMessage("msg3"); err != nil {
+		t.Fatalf("PublishMessage failed: %v", err)
+	}
 	publisher.Flush()
 }

@@ -91,14 +91,14 @@ func TestDecodeIdempotentMessageCorruptedData(t *testing.T) {
 
 func TestIdempotentMessageEmptyFields(t *testing.T) {
 	data := util.EncodeIdempotentMessage("", "", "", 0, 0)
-	_, seq, epoch, topic, payload, err := util.DecodeIdempotentMessage(data)
+	pid, seq, epoch, topic, payload, err := util.DecodeIdempotentMessage(data)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if seq != 0 || epoch != 0 || topic != "" || payload != "" {
-		t.Errorf("Unexpected values: seq=%d epoch=%d topic=%s payload=%s",
-			seq, epoch, topic, payload)
+	if pid != "" || seq != 0 || epoch != 0 || topic != "" || payload != "" {
+		t.Errorf("Unexpected values: pid=%s seq=%d epoch=%d topic=%s payload=%s",
+			pid, seq, epoch, topic, payload)
 	}
 }
 

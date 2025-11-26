@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"strings"
 
@@ -102,19 +103,6 @@ func LoadConfig() (*Config, error) {
 	}
 	flag.Parse()
 
-	switch strings.ToLower(*logLevelStr) {
-	case "debug":
-		cfg.LogLevel = util.LogLevelDebug
-	case "info":
-		cfg.LogLevel = util.LogLevelInfo
-	case "warn", "warning":
-		cfg.LogLevel = util.LogLevelWarn
-	case "error":
-		cfg.LogLevel = util.LogLevelError
-	default:
-		cfg.LogLevel = util.LogLevelInfo
-	}
-
 	// File load (YAML or JSON)
 	if *configPath != "" {
 		data, err := os.ReadFile(*configPath)
@@ -133,8 +121,36 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 
+	if logLevelStr != nil {
+		switch strings.ToLower(*logLevelStr) {
+		case "debug":
+			cfg.LogLevel = util.LogLevelDebug
+		case "info":
+			cfg.LogLevel = util.LogLevelInfo
+		case "warn", "warning":
+			cfg.LogLevel = util.LogLevelWarn
+		case "error":
+			cfg.LogLevel = util.LogLevelError
+		default:
+			cfg.LogLevel = util.LogLevelInfo
+		}
+	}
+
 	cfg.Normalize()
 	util.SetLevel(cfg.LogLevel)
+
+	if cfg.UseTLS {
+		if cfg.TLSCertPath == "" || cfg.TLSKeyPath == "" {
+			cfg.UseTLS = false
+			return nil, fmt.Errorf("TLS enabled but certificate or key path is empty")
+		}
+		cert, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
+		if err != nil {
+			cfg.UseTLS = false
+			return nil, fmt.Errorf("failed to load TLS certificate: %w", err)
+		}
+		cfg.TLSCert = cert
+	}
 
 	return cfg, nil
 }
@@ -185,6 +201,11 @@ func (cfg *Config) Normalize() {
 		cfg.ConsumerChannelBufSize = 1000
 	}
 
+	// log-level
+	if cfg.LogLevel == 0 {
+		cfg.LogLevel = util.LogLevelInfo
+	}
+
 	// static consumer groups
 	for i := range cfg.StaticConsumerGroups {
 		g := &cfg.StaticConsumerGroups[i]
@@ -214,17 +235,11 @@ func (cfg *Config) Normalize() {
 	if cfg.ConsumerHeartbeatCheckMS <= 0 {
 		cfg.ConsumerHeartbeatCheckMS = 5000
 	}
-
-	if cfg.UseTLS {
-		if cfg.TLSCertPath == "" || cfg.TLSKeyPath == "" {
-			cfg.UseTLS = false
-		} else {
-			cert, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
-			if err != nil {
-				cfg.UseTLS = false
-			} else {
-				cfg.TLSCert = cert
-			}
-		}
+	if cfg.ConsumerHeartbeatCheckMS >= cfg.ConsumerSessionTimeoutMS {
+		fmt.Fprintf(os.Stderr,
+			"warning: ConsumerHeartbeatCheckMS (%d ms) >= ConsumerSessionTimeoutMS (%d ms), adjusting heartbeat to half of session timeout\n",
+			cfg.ConsumerHeartbeatCheckMS, cfg.ConsumerSessionTimeoutMS,
+		)
+		cfg.ConsumerHeartbeatCheckMS = cfg.ConsumerSessionTimeoutMS / 2
 	}
 }

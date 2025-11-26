@@ -17,7 +17,11 @@ func CheckBrokerHealth() error {
 	for i := 0; i < healthCheckRetries; i++ {
 		resp, err := http.Get(healthCheckURL)
 		if err == nil && resp.StatusCode == http.StatusOK {
+			resp.Body.Close()
 			return nil
+		}
+		if resp != nil {
+			resp.Body.Close()
 		}
 		time.Sleep(healthCheckInterval)
 	}

@@ -253,6 +253,7 @@ func (c *Consumer) dial() (net.Conn, error) {
 
 		tlsConfig := &tls.Config{
 			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
 		}
 
 		return tls.Dial("tcp", c.config.BrokerAddr, tlsConfig)
@@ -516,7 +517,7 @@ func (c *Consumer) commitOffsets() {
 
 		offset := c.offsetManager.Get(partition)
 		commitCmd := EncodeMessage("admin",
-			fmt.Sprintf("COMMIT_OFFSET topic=%s partition=%d offset=%d", c.config.Topic, partition, offset))
+			fmt.Sprintf("COMMIT_OFFSET topic=%s partition=%d group=%s offset=%d", c.config.Topic, partition, c.config.GroupID, offset))
 
 		if err := c.WriteWithLength(conn, commitCmd); err != nil {
 			log.Printf("Failed to commit offset for partition %d: %v", partition, err)

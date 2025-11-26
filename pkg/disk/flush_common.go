@@ -3,7 +3,6 @@ package disk
 import (
 	"encoding/binary"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/downfa11-org/go-broker/util"
@@ -111,10 +110,9 @@ func (d *DiskHandler) writeBatch(batch []string) {
 	defer d.ioMu.Unlock()
 
 	if d.file == nil {
-		util.Debug("pening new segment file")
+		util.Debug("Opening new segment file")
 		if err := d.openSegment(); err != nil {
 			util.Fatal("failed to open segment: %v", err)
-			return
 		}
 	}
 
@@ -176,13 +174,12 @@ func (d *DiskHandler) WriteDirect(msg string) {
 	if d.file == nil {
 		if err := d.openSegment(); err != nil {
 			util.Fatal("failed to open segment: %v", err)
-			return
 		}
 	}
 
 	data := []byte(msg)
 	if len(data) > 0xFFFFFFFF {
-		log.Fatalf("ERROR: message too large to write: %d bytes", len(data))
+		util.Fatal("message too large to write: %d bytes", len(data))
 		return
 	}
 	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(data)))
@@ -191,7 +188,6 @@ func (d *DiskHandler) WriteDirect(msg string) {
 	if d.CurrentOffset+totalLen > d.SegmentSize {
 		if err := d.rotateSegment(); err != nil {
 			util.Fatal("rotateSegment failed: %v", err)
-			return
 		}
 	}
 

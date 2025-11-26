@@ -8,7 +8,6 @@ import (
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/controller"
 	"github.com/downfa11-org/go-broker/pkg/topic"
-	"github.com/downfa11-org/go-broker/pkg/types"
 )
 
 type fakeTopicManager struct {
@@ -47,32 +46,22 @@ func (ftm *fakeTopicManager) DeleteTopic(name string) bool {
 	return true
 }
 
-// GetTopic is used by some commands in original code; implement minimally.
-func (ftm *fakeTopicManager) GetTopic(name string) *topic.Topic {
-	return ftm.topics[name]
-}
-
-// Publish minimally appends a message — not used in this specific test but provided for completeness.
-func (ftm *fakeTopicManager) Publish(topicName string, msg types.Message) error {
-	return nil
+func parseKeyValueArgs(argsStr string) map[string]string {
+	result := make(map[string]string)
+	parts := strings.Fields(argsStr)
+	for _, part := range parts {
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) == 2 {
+			result[kv[0]] = kv[1]
+		}
+	}
+	return result
 }
 
 func TestHandleCommand_CreateListDelete(t *testing.T) {
 	cfg := &config.Config{}
 	_ = controller.NewCommandHandler(nil, nil, cfg, nil, nil)
 	ftm := newFakeTopicManager()
-
-	parseKeyValueArgs := func(argsStr string) map[string]string {
-		result := make(map[string]string)
-		parts := strings.Fields(argsStr)
-		for _, part := range parts {
-			kv := strings.SplitN(part, "=", 2)
-			if len(kv) == 2 {
-				result[kv[0]] = kv[1]
-			}
-		}
-		return result
-	}
 
 	handleCommandShim := func(rawCmd string) string {
 		cmd := strings.TrimSpace(rawCmd)
@@ -154,18 +143,6 @@ func TestHandleCommand_KeyValueFormat(t *testing.T) {
 	cfg := &config.Config{}
 	_ = controller.NewCommandHandler(nil, nil, cfg, nil, nil)
 	ftm := newFakeTopicManager()
-
-	parseKeyValueArgs := func(argsStr string) map[string]string {
-		result := make(map[string]string)
-		parts := strings.Fields(argsStr)
-		for _, part := range parts {
-			kv := strings.SplitN(part, "=", 2)
-			if len(kv) == 2 {
-				result[kv[0]] = kv[1]
-			}
-		}
-		return result
-	}
 
 	handleCommandShim := func(rawCmd string) string {
 		cmd := strings.TrimSpace(rawCmd)

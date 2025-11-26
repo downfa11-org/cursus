@@ -45,7 +45,10 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 	var ln net.Listener
 	var err error
 	if cfg.UseTLS {
-		tlsConfig := &tls.Config{Certificates: []tls.Certificate{cfg.TLSCert}}
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{cfg.TLSCert},
+			MinVersion:   tls.VersionTLS12,
+		}
 		ln, err = tls.Listen("tcp", addr, tlsConfig)
 	} else {
 		ln, err = net.Listen("tcp", addr)
@@ -143,27 +146,44 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 				topicName, payload[:min(50, len(payload))])
 
 			if strings.HasPrefix(payload, "PUBLISH:") {
-				// PUBLISH:<acks>:<topic>:<payload>
 				parts := strings.SplitN(payload[8:], ":", 3)
-				if len(parts) >= 3 {
-					acks = parts[0]
-					topicName = parts[1]
-					msg.Payload = parts[2]
-					msg.Key = parts[2]
+				if len(parts) < 3 {
+					util.Error("Malformed PUBLISH message: expected 3 parts, got %d", len(parts))
+					writeResponse(conn, "ERROR: malformed PUBLISH format")
+					continue
 				}
+
+				acks = parts[0]
+				topicName = parts[1]
+				msg.Payload = parts[2]
+				msg.Key = parts[2]
+
 			} else if strings.HasPrefix(payload, "IDEMPOTENT:") {
-				// IDEMPOTENT:<acks>:producerID:seqNum:epoch:payload
 				parts := strings.SplitN(payload[11:], ":", 5)
-				if len(parts) >= 5 {
-					acks = parts[0]
-					msg.ProducerID = parts[1]
-					seqNum, _ := strconv.ParseUint(parts[2], 10, 64)
-					msg.SeqNum = seqNum
-					epoch, _ := strconv.ParseInt(parts[3], 10, 64)
-					msg.Epoch = epoch
-					msg.Payload = parts[4]
-					msg.Key = parts[4]
+				if len(parts) < 5 {
+					util.Error("Malformed IDEMPOTENT message: expected 5 parts, got %d", len(parts))
+					writeResponse(conn, "ERROR: malformed IDEMPOTENT format")
+					continue
 				}
+				acks = parts[0]
+				msg.ProducerID = parts[1]
+				seqNum, err := strconv.ParseUint(parts[2], 10, 64)
+				if err != nil {
+					util.Error("Invalid seqNum in IDEMPOTENT message: %v", err)
+					writeResponse(conn, "ERROR: invalid seqNum format")
+					continue
+				}
+				msg.SeqNum = seqNum
+				epoch, err := strconv.ParseInt(parts[3], 10, 64)
+				if err != nil {
+					util.Error("Invalid epoch in IDEMPOTENT message: %v", err)
+					writeResponse(conn, "ERROR: invalid epoch format")
+					continue
+				}
+				msg.Epoch = epoch
+				msg.Payload = parts[4]
+				msg.Key = parts[4]
+
 			} else {
 				msg.Payload = payload
 				msg.Key = payload
@@ -280,7 +300,7 @@ func startHealthCheckServer(port int, brokerReady *atomic.Bool) {
 
 	go func() {
 		if err := http.ListenAndServe(addr, mux); err != nil {
-			util.Info("❌ Health check server failed: %v", err)
+			util.Error("❌ Health check server failed: %v", err)
 		}
 	}()
 	util.Info("🩺 Health check endpoint started on port %d", port)

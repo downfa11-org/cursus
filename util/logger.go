@@ -3,35 +3,36 @@ package util
 import (
 	"log"
 	"os"
+	"sync/atomic"
 )
 
-var currentLevel LogLevel = LogLevelInfo
+var currentLevel atomic.Int32
 
 func SetLevel(level LogLevel) {
-	currentLevel = level
+	currentLevel.Store(int32(level))
 }
 
 func Debug(format string, v ...interface{}) {
-	if currentLevel <= LogLevelDebug {
+	if currentLevel.Load() <= int32(LogLevelDebug) {
 		log.Printf("[DEBUG] "+format, v...)
 	}
 }
 
 func Info(format string, v ...interface{}) {
-	if currentLevel <= LogLevelInfo {
+	if currentLevel.Load() <= int32(LogLevelInfo) {
 		log.Printf("[INFO] "+format, v...)
 	}
 }
 
 func Warn(format string, v ...interface{}) {
-	if currentLevel <= LogLevelWarn {
+	if currentLevel.Load() <= int32(LogLevelWarn) {
 		log.Printf("[WARN] "+format, v...)
 	}
 }
 
 func Error(format string, v ...interface{}) {
-	if currentLevel <= LogLevelError {
-		log.Printf(" "+format, v...)
+	if currentLevel.Load() <= int32(LogLevelError) {
+		log.Printf("[ERROR] "+format, v...)
 	}
 }
 
