@@ -85,81 +85,57 @@ func (tm *TopicManager) GetTopic(name string) *Topic {
 	return tm.topics[name]
 }
 
+// Async (acks=0)
 func (tm *TopicManager) Publish(topicName string, msg types.Message) error {
-	idSource := fmt.Sprintf("%s-%d-%d", msg.Payload, time.Now().UnixNano(), rand.Int63())
-	msg.ID = util.GenerateID(idSource)
+	return tm.publishInternal(topicName, msg, false)
+}
+
+// Sync (acks=1)
+func (tm *TopicManager) PublishWithAck(topicName string, msg types.Message) error {
+	return tm.publishInternal(topicName, msg, true)
+}
+
+func (tm *TopicManager) publishInternal(topicName string, msg types.Message, requireAck bool) error {
+	// Idempotence (try to exactly-once)
+	if tm.cfg.EnableIdempotence && msg.ProducerID != "" && msg.SeqNum > 0 {
+		dedupKey := fmt.Sprintf("%s-%d", msg.ProducerID, msg.SeqNum)
+		msg.ID = util.GenerateID(dedupKey)
+	} else {
+		// at-least once
+		idSource := fmt.Sprintf("%s-%d-%d", msg.Payload, time.Now().UnixNano(), rand.Int63())
+		msg.ID = util.GenerateID(idSource)
+	}
+
 	now := time.Now()
 	if _, loaded := tm.dedupMap.LoadOrStore(msg.ID, now); loaded {
-		log.Printf("[DEBUG] Message %d already exists in dedupMap, skipping", msg.ID) // test
+		if tm.cfg.EnableIdempotence {
+			log.Printf("[DEDUP] Duplicate message detected: ProducerID=%s, SeqNum=%d", msg.ProducerID, msg.SeqNum)
+		}
 		return nil
 	}
 
 	t := tm.GetTopic(topicName)
 	if t == nil {
 		if tm.cfg.AutoCreateTopics {
-			t = tm.CreateTopic(topicName, 4) // auto-create topic (default: 4 partition)
+			t = tm.CreateTopic(topicName, 4)
 			if t == nil {
-				log.Printf("[DEBUG] Topic '%s' auto-created, but topic is nil", topicName) // test
 				return fmt.Errorf("failed to auto-create topic '%s'", topicName)
 			}
 		} else {
-			log.Printf("[DEBUG] Topic '%s' not found", topicName) // test
 			return fmt.Errorf("topic '%s' does not exist", topicName)
 		}
 	}
+
 	start := time.Now()
-	t.Publish(msg)
-	elapsed := time.Since(start).Seconds()
 
-	metrics.MessagesProcessed.Inc()
-	metrics.LatencyHist.Observe(elapsed)
-	return nil
-}
-
-func (tm *TopicManager) PublishWithAck(topicName string, msg types.Message) error {
-	msg.ID = util.GenerateID(msg.Payload)
-	now := time.Now()
-	if _, loaded := tm.dedupMap.LoadOrStore(msg.ID, now); loaded {
-		return fmt.Errorf("duplicate message: %v", msg.ID)
-	}
-
-	t := tm.GetTopic(topicName)
-	if t == nil {
-		return fmt.Errorf("topic not found: %s", topicName)
-	}
-
-	t.mu.Lock()
-	partitionCount := len(t.Partitions)
-	var idx int
-	if msg.Key != "" {
-		keyID := util.GenerateID(msg.Key)
-		idx = int(keyID % uint64(partitionCount))
+	if requireAck {
+		if err := t.PublishSync(msg); err != nil {
+			return fmt.Errorf("sync publish failed: %w", err)
+		}
 	} else {
-		idx = int(t.counter % uint64(partitionCount))
-		t.counter++
-	}
-	partition := t.Partitions[idx]
-	t.mu.Unlock()
-
-	if !partition.closed {
-		select {
-		case partition.ch <- msg:
-		default:
-			return fmt.Errorf("partition channel full")
-		}
+		t.Publish(msg)
 	}
 
-	if partition.dh != nil {
-		if appender, ok := partition.dh.(DiskAppender); ok {
-			if err := appender.AppendMessageSync(msg.Payload); err != nil {
-				return fmt.Errorf("disk write failed: %w", err)
-			}
-		} else {
-			return fmt.Errorf("disk handler does not implement DiskAppender")
-		}
-	}
-
-	start := time.Now()
 	elapsed := time.Since(start).Seconds()
 	metrics.MessagesProcessed.Inc()
 	metrics.LatencyHist.Observe(elapsed)
@@ -167,7 +143,7 @@ func (tm *TopicManager) PublishWithAck(topicName string, msg types.Message) erro
 	return nil
 }
 
-func (tm *TopicManager) RegisterConsumerGroup(topicName, groupName string, consumerCount int) *ConsumerGroup {
+func (tm *TopicManager) RegisterConsumerGroup(topicName, groupName string, consumerCount int) *types.ConsumerGroup {
 	t := tm.GetTopic(topicName)
 	if t == nil {
 		return nil

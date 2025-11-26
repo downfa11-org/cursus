@@ -44,3 +44,46 @@ func TestDecodeMessageInvalidData(t *testing.T) {
 		t.Errorf("Expected empty topic/payload for invalid length, got %s/%s", topic, payload)
 	}
 }
+
+func TestEncodeDecodeIdempotentMessage(t *testing.T) {
+	producerID := "producer-123"
+	seqNum := uint64(42)
+	epoch := int64(9)
+	topic := "event"
+	payload := "payload-data"
+
+	data := util.EncodeIdempotentMessage(topic, payload, producerID, seqNum, epoch)
+
+	decPID, decSeq, decEpoch, decTopic, decPayload, err :=
+		util.DecodeIdempotentMessage(data)
+
+	if err != nil {
+		t.Fatalf("DecodeIdempotentMessage returned error: %v", err)
+	}
+
+	if decPID != producerID {
+		t.Errorf("ProducerID mismatch: expected %s, got %s", producerID, decPID)
+	}
+	if decSeq != seqNum {
+		t.Errorf("SeqNum mismatch: expected %d, got %d", seqNum, decSeq)
+	}
+	if decEpoch != epoch {
+		t.Errorf("Epoch mismatch: expected %d, got %d", epoch, decEpoch)
+	}
+	if decTopic != topic {
+		t.Errorf("Topic mismatch: expected %s, got %s", topic, decTopic)
+	}
+	if decPayload != payload {
+		t.Errorf("Payload mismatch: expected %s, got %s", payload, decPayload)
+	}
+}
+
+func TestDecodeIdempotentMessageCorruptedData(t *testing.T) {
+	// Completely broken data
+	data := []byte{0x00}
+
+	_, _, _, _, _, err := util.DecodeIdempotentMessage(data)
+	if err == nil {
+		t.Errorf("Expected error for corrupted data, got nil")
+	}
+}

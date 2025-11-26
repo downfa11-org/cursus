@@ -1,4 +1,4 @@
-name: CI/ Lint (pull_request & push)  
+name: CI (pull_request & push)  
   
 on:  
   push:  

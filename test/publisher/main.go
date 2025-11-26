@@ -9,10 +9,62 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
+
+// ProducerClient manages producer ID and sequence numbers for exactly-once semantics
+type ProducerClient struct {
+	ID     string
+	seqNum atomic.Uint64
+	epoch  int64
+	mu     sync.Mutex
+	conn   net.Conn
+}
+
+func NewProducerClient() *ProducerClient {
+	return &ProducerClient{
+		ID:    uuid.New().String(),
+		epoch: time.Now().UnixNano(),
+	}
+}
+
+func (pc *ProducerClient) NextSeqNum() uint64 {
+	return pc.seqNum.Add(1)
+}
+
+func (pc *ProducerClient) Connect(addr string) error {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	if pc.conn != nil {
+		return nil // already connected
+	}
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+
+	pc.conn = conn
+	return nil
+}
+
+func (pc *ProducerClient) Close() error {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	if pc.conn != nil {
+		err := pc.conn.Close()
+		pc.conn = nil
+		return err
+	}
+	return nil
+}
 
 type PublisherConfig struct {
 	BrokerAddr     string `yaml:"broker_addr" json:"broker_addr"`
@@ -28,7 +80,6 @@ type PublisherConfig struct {
 func LoadPublisherConfig() (*PublisherConfig, error) {
 	cfg := &PublisherConfig{}
 
-	// default
 	flag.StringVar(&cfg.BrokerAddr, "broker", "localhost:9000", "Broker address")
 	flag.IntVar(&cfg.MaxRetries, "max-retries", 3, "Maximum retry attempts")
 	flag.IntVar(&cfg.RetryBackoffMS, "retry-backoff-ms", 100, "Initial backoff time in milliseconds")
@@ -84,11 +135,15 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 }
 
 type Publisher struct {
-	config *PublisherConfig
+	config   *PublisherConfig
+	producer *ProducerClient
 }
 
 func NewPublisher(cfg *PublisherConfig) *Publisher {
-	return &Publisher{config: cfg}
+	return &Publisher{
+		config:   cfg,
+		producer: NewProducerClient(),
+	}
 }
 
 func WriteWithLength(conn net.Conn, data []byte) error {
@@ -132,7 +187,15 @@ func EncodeMessage(topic, payload string) []byte {
 	return data
 }
 
-func (p *Publisher) SendWithRetry(data []byte) error {
+// EncodeIdempotentMessage encodes message with Producer ID and Sequence Number
+func EncodeIdempotentMessage(topic, payload, producerID string, seqNum uint64, epoch int64) []byte {
+	// PUBLISH_IDEMPOTENT <topic> <producerID> <seqNum> <epoch> <payload>
+	idempotentPayload := fmt.Sprintf("PUBLISH_IDEMPOTENT %s %s %d %d %s",
+		topic, producerID, seqNum, epoch, payload)
+	return EncodeMessage(topic, idempotentPayload)
+}
+
+func (p *Publisher) SendWithRetry(data []byte, seqNum uint64) error {
 	ackTimeout := time.Duration(p.config.AckTimeoutMS) * time.Millisecond
 
 	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
@@ -146,8 +209,8 @@ func (p *Publisher) SendWithRetry(data []byte) error {
 		}
 
 		backoff := time.Duration(1<<attempt) * time.Duration(p.config.RetryBackoffMS) * time.Millisecond
-		fmt.Printf("Attempt %d/%d failed (%v), retrying in %v\n",
-			attempt+1, p.config.MaxRetries+1, err, backoff)
+		fmt.Printf("Attempt %d/%d failed for seqNum=%d (%v), retrying in %v\n",
+			attempt+1, p.config.MaxRetries+1, seqNum, err, backoff)
 
 		time.Sleep(backoff)
 	}
@@ -156,22 +219,26 @@ func (p *Publisher) SendWithRetry(data []byte) error {
 }
 
 func (p *Publisher) tryOnce(data []byte, ackTimeout time.Duration) error {
-	conn, err := net.Dial("tcp", p.config.BrokerAddr)
-	if err != nil {
-		return fmt.Errorf("dial: %w", err)
+	p.producer.mu.Lock()
+	conn := p.producer.conn
+	p.producer.mu.Unlock()
+
+	if conn == nil {
+		return fmt.Errorf("connection not established")
 	}
-	defer conn.Close()
 
 	if err := WriteWithLength(conn, data); err != nil {
-		return fmt.Errorf("write: %w", err)
+		p.producer.Close()
+		if err := p.producer.Connect(p.config.BrokerAddr); err != nil {
+			return fmt.Errorf("reconnect failed: %w", err)
+		}
+		return fmt.Errorf("write failed, reconnected: %w", err)
 	}
 
-	// ACK deadline
 	if err := conn.SetReadDeadline(time.Now().Add(ackTimeout)); err != nil {
 		return fmt.Errorf("set read deadline: %w", err)
 	}
 
-	// READ ACK
 	resp, err := ReadWithLength(conn)
 	if err != nil {
 		return fmt.Errorf("read ack: %w", err)
@@ -195,12 +262,23 @@ func (p *Publisher) CreateTopic() error {
 
 	createCmd := EncodeMessage(p.config.Topic, fmt.Sprintf("CREATE %s %d", p.config.Topic, p.config.Partitions))
 
-	if err := p.SendWithRetry(createCmd); err != nil {
-		if strings.Contains(err.Error(), "topic exists") || strings.Contains(err.Error(), "already exists") {
-			fmt.Printf("Topic '%s' already exists\n", p.config.Topic)
-			return nil
-		}
-		return fmt.Errorf("topic creation failed: %w", err)
+	if err := WriteWithLength(conn, createCmd); err != nil {
+		return fmt.Errorf("send create command: %w", err)
+	}
+
+	resp, err := ReadWithLength(conn)
+	if err != nil {
+		return fmt.Errorf("read create response: %w", err)
+	}
+
+	respMsg := strings.TrimSpace(string(resp))
+	if strings.Contains(respMsg, "topic exists") || strings.Contains(respMsg, "already exists") {
+		fmt.Printf("Topic '%s' already exists\n", p.config.Topic)
+		return nil
+	}
+
+	if strings.HasPrefix(respMsg, "ERROR:") {
+		return fmt.Errorf("topic creation failed: %s", respMsg)
 	}
 
 	fmt.Printf("Topic '%s' created with %d partitions\n", p.config.Topic, p.config.Partitions)
@@ -208,14 +286,17 @@ func (p *Publisher) CreateTopic() error {
 }
 
 func (p *Publisher) PublishMessage(message string) error {
-	conn, err := net.Dial("tcp", p.config.BrokerAddr)
-	if err != nil {
-		return fmt.Errorf("connect to broker: %w", err)
-	}
-	defer conn.Close()
+	seqNum := p.producer.NextSeqNum()
 
-	msgBytes := EncodeMessage(p.config.Topic, message)
-	return p.SendWithRetry(msgBytes)
+	msgBytes := EncodeIdempotentMessage(
+		p.config.Topic,
+		message,
+		p.producer.ID,
+		seqNum,
+		p.producer.epoch,
+	)
+
+	return p.SendWithRetry(msgBytes, seqNum)
 }
 
 func main() {
@@ -239,7 +320,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("\nPublishing messages...")
+	if err := publisher.producer.Connect(cfg.BrokerAddr); err != nil {
+		fmt.Printf("Failed to connect to broker: %v\n", err)
+		os.Exit(1)
+	}
+	defer publisher.producer.Close()
+
+	fmt.Printf("\n🚀 Producer ID: %s\n", publisher.producer.ID)
+	fmt.Printf("📅 Epoch: %d\n\n", publisher.producer.epoch)
+
+	fmt.Println("Publishing messages...")
 	for i := 0; i < cfg.NumMessages; i++ {
 		message := fmt.Sprintf("Hello from Go client! Message #%d", i)
 
@@ -248,9 +338,9 @@ func main() {
 			continue
 		}
 
-		fmt.Printf("Message %d published successfully\n", i)
+		fmt.Printf("Message %d published successfully (seqNum=%d)\n", i, publisher.producer.seqNum.Load())
 		time.Sleep(time.Duration(cfg.PublishDelayMS) * time.Millisecond)
 	}
 
-	fmt.Println("\n All messages published successfully!")
+	fmt.Println("\n✅ All messages published successfully!")
 }

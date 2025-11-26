@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -141,6 +142,28 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 		if isCommand(payload) {
 			resp = cmdHandler.HandleCommand(payload, ctx)
 		} else {
+			var msg types.Message
+
+			if cfg.EnableIdempotence && strings.HasPrefix(payload, "IDEMPOTENT:") {
+				// IDEMPOTENT:producerID:seqNum:epoch:actualPayload
+				parts := strings.SplitN(payload[11:], ":", 4)
+				if len(parts) == 4 {
+					msg.ProducerID = parts[0]
+					seqNum, _ := strconv.ParseUint(parts[1], 10, 64)
+					msg.SeqNum = seqNum
+					epoch, _ := strconv.ParseInt(parts[2], 10, 64)
+					msg.Epoch = epoch
+					msg.Payload = parts[3]
+					msg.Key = parts[3]
+				} else {
+					msg.Payload = payload
+					msg.Key = payload
+				}
+			} else {
+				msg.Payload = payload
+				msg.Key = payload
+			}
+
 			switch cfg.Acks {
 			case "0":
 				err := tm.Publish(topicName, types.Message{

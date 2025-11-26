@@ -327,6 +327,48 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 		}
 		resp = fmt.Sprintf("📤 Published to '%s'", topicName)
 
+	case strings.HasPrefix(strings.ToUpper(cmd), "PUBLISH_IDEMPOTENT "):
+		// PUBLISH_IDEMPOTENT <topic> <producerID> <seqNum> <epoch> <payload>
+		parts := strings.Fields(cmd)
+		if len(parts) < 6 {
+			resp = "ERROR: invalid PUBLISH_IDEMPOTENT syntax"
+			break
+		}
+
+		topicName := parts[1]
+		producerID := parts[2]
+		seqNum, err := strconv.ParseUint(parts[3], 10, 64)
+		if err != nil {
+			resp = fmt.Sprintf("ERROR: invalid seqNum: %v", err)
+			break
+		}
+		epoch, err := strconv.ParseInt(parts[4], 10, 64)
+		if err != nil {
+			resp = fmt.Sprintf("ERROR: invalid epoch: %v", err)
+			break
+		}
+		payload := strings.Join(parts[5:], " ")
+
+		t := tm.GetTopic(topicName)
+		if t == nil {
+			resp = fmt.Sprintf("ERROR: topic '%s' does not exist", topicName)
+			break
+		}
+
+		msg := types.Message{
+			ProducerID: producerID,
+			SeqNum:     seqNum,
+			Epoch:      epoch,
+			Payload:    payload,
+			Key:        payload,
+		}
+
+		if err := tm.Publish(topicName, msg); err != nil {
+			resp = fmt.Sprintf("ERROR: %v", err)
+		} else {
+			resp = fmt.Sprintf("📤 Published to '%s' (idempotent)", topicName)
+		}
+
 	case strings.HasPrefix(strings.ToUpper(cmd), "SETGROUP "):
 		groupName := strings.TrimSpace(cmd[9:])
 		if groupName == "" {

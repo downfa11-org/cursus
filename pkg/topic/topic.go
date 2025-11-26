@@ -16,7 +16,7 @@ type Topic struct {
 	Name           string
 	Partitions     []*Partition
 	counter        uint64
-	consumerGroups map[string]*ConsumerGroup
+	consumerGroups map[string]*types.ConsumerGroup
 	coordinator    Coordinator
 	mu             sync.RWMutex
 }
@@ -30,31 +30,6 @@ type Partition struct {
 	mu     sync.RWMutex
 	dh     interface{}
 	closed bool
-}
-
-type ConsumerState int
-
-const (
-	ConsumerStateActive ConsumerState = iota
-	ConsumerStateDead
-	ConsumerStateRebalancing
-)
-
-// Consumer represents a single consumer instance in a group.
-type Consumer struct {
-	ID                 int
-	MsgCh              chan types.Message
-	LastHeartbeat      time.Time
-	AssignedPartitions []int
-	State              ConsumerState
-	stopCh             chan struct{}
-}
-
-// ConsumerGroup contains consumers subscribed to the same topic.
-type ConsumerGroup struct {
-	Name             string
-	Consumers        []*Consumer
-	CommittedOffsets map[int]int64
 }
 
 type Coordinator interface {
@@ -82,7 +57,7 @@ func NewTopic(name string, partitionCount int, hp HandlerProvider, coordinator C
 	return &Topic{
 		Name:           name,
 		Partitions:     partitions,
-		consumerGroups: make(map[string]*ConsumerGroup),
+		consumerGroups: make(map[string]*types.ConsumerGroup),
 		coordinator:    coordinator,
 	}, nil
 }
@@ -134,16 +109,16 @@ func (t *Topic) AddPartitions(extra int, hp HandlerProvider) {
 }
 
 // RegisterConsumerGroup registers a consumer group to the topic.
-func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *ConsumerGroup {
+func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *types.ConsumerGroup {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if g, ok := t.consumerGroups[groupName]; ok {
 		newConsumerID := len(g.Consumers)
-		newConsumer := &Consumer{
+		newConsumer := &types.Consumer{
 			ID:     newConsumerID,
 			MsgCh:  make(chan types.Message, 1000),
-			stopCh: make(chan struct{}),
+			StopCh: make(chan struct{}),
 		}
 		g.Consumers = append(g.Consumers, newConsumer)
 
@@ -160,17 +135,17 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *Cons
 		return g
 	}
 
-	group := &ConsumerGroup{
+	group := &types.ConsumerGroup{
 		Name:             groupName,
-		Consumers:        make([]*Consumer, consumerCount),
+		Consumers:        make([]*types.Consumer, consumerCount),
 		CommittedOffsets: make(map[int]int64),
 	}
 
 	for i := 0; i < consumerCount; i++ {
-		group.Consumers[i] = &Consumer{
+		group.Consumers[i] = &types.Consumer{
 			ID:     i,
 			MsgCh:  make(chan types.Message, 1000),
-			stopCh: make(chan struct{}),
+			StopCh: make(chan struct{}),
 		}
 	}
 
@@ -196,7 +171,7 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *Cons
 				continue
 			}
 			target := pid % consumerCount
-			go func(ch <-chan types.Message, consumer *Consumer) {
+			go func(ch <-chan types.Message, consumer *types.Consumer) {
 				for msg := range ch {
 					consumer.MsgCh <- msg
 				}
@@ -227,6 +202,22 @@ func (t *Topic) Publish(msg types.Message) {
 	p.Enqueue(msg)
 }
 
+func (t *Topic) PublishSync(msg types.Message) error {
+	var idx int
+	t.mu.Lock()
+	if msg.Key != "" {
+		keyID := util.GenerateID(msg.Key)
+		idx = int(keyID % uint64(len(t.Partitions)))
+	} else {
+		idx = int(t.counter % uint64(len(t.Partitions)))
+		t.counter++
+	}
+	t.mu.Unlock()
+
+	p := t.Partitions[idx]
+	return p.EnqueueSync(msg)
+}
+
 // Consume retrieves a consumer's channel.
 func (t *Topic) Consume(groupName string, consumerIdx int) <-chan types.Message {
 	t.mu.RLock()
@@ -254,6 +245,32 @@ func (p *Partition) Enqueue(msg types.Message) {
 	}
 }
 
+func (p *Partition) EnqueueSync(msg types.Message) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return fmt.Errorf("partition %d is closed", p.id)
+	}
+
+	// send to In-memory
+	select {
+	case p.ch <- msg:
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("partition %d channel full", p.id)
+	}
+
+	// write sync to disk
+	if appender, ok := p.dh.(interface{ AppendMessageSync(string) error }); ok {
+		if err := appender.AppendMessageSync(msg.Payload); err != nil {
+			return fmt.Errorf("disk write failed: %w", err)
+		}
+	} else {
+		return fmt.Errorf("disk handler does not support sync write")
+	}
+
+	return nil
+}
+
 // RegisterGroup registers a consumer group to a partition.
 func (p *Partition) RegisterGroup(groupName string) chan types.Message {
 	p.mu.Lock()
@@ -278,12 +295,12 @@ func (t *Topic) applyAssignments(groupName string, assignments map[string][]int)
 
 	for _, consumer := range group.Consumers {
 		select {
-		case <-consumer.stopCh:
+		case <-consumer.StopCh:
 			// already closed
 		default:
-			close(consumer.stopCh)
+			close(consumer.StopCh)
 		}
-		consumer.stopCh = make(chan struct{})
+		consumer.StopCh = make(chan struct{})
 	}
 
 	for consumerIDStr, partitionIDs := range assignments {
@@ -303,8 +320,8 @@ func (t *Topic) applyAssignments(groupName string, assignments map[string][]int)
 				continue
 			}
 
-			stopCh := consumer.stopCh
-			go func(ch <-chan types.Message, c *Consumer, stop <-chan struct{}) {
+			stopCh := consumer.StopCh
+			go func(ch <-chan types.Message, c *types.Consumer, stop <-chan struct{}) {
 				for {
 					select {
 					case <-stop:

@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"flag"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -45,6 +46,9 @@ type Config struct {
 	BufferSize                 int      `yaml:"buffer_size" json:"buffer.size"`
 	BatchSize                  int      `yaml:"batch_size" json:"batch.size"`
 	MaxInflightRequestsPerConn int      `yaml:"max_inflight_requests_per_conn" json:"max.inflight.requests.per.connection"`
+
+	// Publisher-specific
+	EnableIdempotence bool `yaml:"enable_idempotence" json:"enable.idempotence"`
 
 	// Consumer-specific
 	AutoOffsetReset      string                `yaml:"auto_offset_reset" json:"auto.offset.reset"` // "earliest" or "latest"
@@ -91,6 +95,9 @@ func LoadConfig() (*Config, error) {
 	// broker-specific
 	flag.StringVar(&cfg.Acks, "acks", "0", "ACK level: 0 (no ack), 1 (leader ack), all (all replicas)")
 	flag.IntVar(&cfg.AckTimeoutMS, "ack-timeout-ms", 5000, "ACK timeout in milliseconds")
+
+	// publisher-specific
+	flag.BoolVar(&cfg.EnableIdempotence, "idempotence", false, "Enable exactly-once semantics")
 
 	// consumer-specific
 	flag.StringVar(&cfg.AutoOffsetReset, "auto-offset-reset", "latest", "What to do when there is no initial offset (earliest|latest)")
@@ -184,6 +191,8 @@ func (cfg *Config) Normalize() {
 	}
 	// Ensure session timeout is greater than heartbeat interval
 	if cfg.SessionTimeoutMS <= cfg.HeartbeatIntervalMS {
+		log.Printf("[INFO] SessionTimeoutMS (%d) must exceed HeartbeatIntervalMS (%d), adjusting to %d",
+			cfg.SessionTimeoutMS, cfg.HeartbeatIntervalMS, cfg.HeartbeatIntervalMS*10)
 		cfg.SessionTimeoutMS = cfg.HeartbeatIntervalMS * 10
 	}
 	if cfg.RebalanceTimeoutMS <= 0 {

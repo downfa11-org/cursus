@@ -36,3 +36,38 @@ func TestPublisherRetryLogic(t *testing.T) {
 		Then().
 		Expect(PublisherRetriedSuccessfully())
 }
+
+// TestExactlyOnceSemantics verifies exactly-once delivery with retries
+func TestExactlyOnceSemantics(t *testing.T) {
+	ctx := Given(t)
+	defer ctx.Cleanup()
+
+	ctx.WithTopic("exactly-once-test").
+		WithPartitions(1).
+		WithNumMessages(10).
+		When().
+		StartBroker().
+		PublishMessages().
+		RetryPublishMessages().
+		ConsumeMessages().
+		Then().
+		Expect(MessagesConsumed(10))
+}
+
+// TestIdempotentProducer verifies idempotent producer behavior
+func TestIdempotentProducer(t *testing.T) {
+	ctx := Given(t)
+	defer ctx.Cleanup()
+
+	ctx.WithTopic("idempotent-test").
+		WithPartitions(1).
+		WithNumMessages(5).
+		When().
+		StartBroker().
+		PublishMessages().
+		SimulateNetworkFailure().
+		RetryPublishMessages().
+		ConsumeMessages().
+		Then().
+		Expect(MessagesConsumed(5))
+}
