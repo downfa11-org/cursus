@@ -130,7 +130,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 			return
 		}
 
-		util.Info("[%s] Received request. Topic: '%s', Payload: '%s'", clientAddr, topicName, payload)
+		util.Debug("[%s] Received request. Topic: '%s', Payload: '%s'", clientAddr, topicName, payload)
 
 		var resp string
 		cmdStr := payload
