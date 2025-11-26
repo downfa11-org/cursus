@@ -201,11 +201,6 @@ func (cfg *Config) Normalize() {
 		cfg.ConsumerChannelBufSize = 1000
 	}
 
-	// log-level
-	if cfg.LogLevel == 0 {
-		cfg.LogLevel = util.LogLevelInfo
-	}
-
 	// static consumer groups
 	for i := range cfg.StaticConsumerGroups {
 		g := &cfg.StaticConsumerGroups[i]
