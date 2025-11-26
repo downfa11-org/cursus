@@ -31,9 +31,9 @@ func TestPublisherRetryLogic(t *testing.T) {
 		WithNumMessages(5).
 		When().
 		StartBroker().
-		CreateTopic().
 		StopBroker().
 		StartBroker().
+		CreateTopic().
 		PublishMessages().
 		Then().
 		Expect(PublisherRetriedSuccessfully())

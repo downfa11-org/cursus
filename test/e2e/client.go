@@ -45,7 +45,7 @@ func (bc *BrokerClient) CreateTopic(topic string, partitions int) error {
 	}
 	defer conn.Close()
 
-	createCmd := fmt.Sprintf("CREATE %s %d", topic, partitions)
+	createCmd := fmt.Sprintf("CREATE topic=%s partitions=%d", topic, partitions)
 	cmdBytes := util.EncodeMessage("admin", createCmd)
 
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
@@ -85,15 +85,13 @@ func (bc *BrokerClient) PublishIdempotent(topic, producerID string, seqNum uint6
 	}
 	defer conn.Close()
 
-	// New wire protocol: IDEMPOTENT:<acks>:producerID:seqNum:epoch:payload
-	message := fmt.Sprintf("IDEMPOTENT:%s:%s:%d:%d:%s", acks, producerID, seqNum, epoch, payload)
-	msgBytes := util.EncodeMessage(topic, message)
+	publishCmd := fmt.Sprintf("PUBLISH topic=%s acks=%s producerId=%s seqNum=%d epoch=%d message=%s", topic, acks, producerID, seqNum, epoch, payload)
+	cmdBytes := util.EncodeMessage("admin", publishCmd)
 
-	if err := util.WriteWithLength(conn, msgBytes); err != nil {
+	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
 		return fmt.Errorf("send message: %w", err)
 	}
 
-	// Only wait for ACK if acks != "0"
 	if acks == "0" {
 		return nil
 	}
@@ -113,8 +111,8 @@ func (bc *BrokerClient) PublishIdempotent(topic, producerID string, seqNum uint6
 	}
 
 	resp := strings.TrimSpace(string(respBuf))
-	if resp != "OK" && !strings.Contains(resp, "OK") {
-		return fmt.Errorf("unexpected response: %s", resp)
+	if strings.HasPrefix(resp, "ERROR:") {
+		return fmt.Errorf("broker error: %s", resp)
 	}
 
 	return nil
@@ -128,15 +126,13 @@ func (bc *BrokerClient) PublishSimple(topic, payload, acks string) error {
 	}
 	defer conn.Close()
 
-	// New wire protocol: PUBLISH:<acks>:<topic>:<payload>
-	message := fmt.Sprintf("PUBLISH:%s:%s:%s", acks, topic, payload)
-	msgBytes := util.EncodeMessage(topic, message)
+	publishCmd := fmt.Sprintf("PUBLISH topic=%s acks=%s message=%s", topic, acks, payload)
+	cmdBytes := util.EncodeMessage("admin", publishCmd)
 
-	if err := util.WriteWithLength(conn, msgBytes); err != nil {
+	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
 		return fmt.Errorf("send message: %w", err)
 	}
 
-	// Only wait for ACK if acks != "0"
 	if acks == "0" {
 		return nil
 	}
@@ -156,7 +152,11 @@ func (bc *BrokerClient) PublishSimple(topic, payload, acks string) error {
 	}
 
 	resp := strings.TrimSpace(string(respBuf))
-	if resp != "OK" && !strings.Contains(resp, "OK") {
+	if strings.HasPrefix(resp, "ERROR:") {
+		return fmt.Errorf("broker error: %s", resp)
+	}
+
+	if acks == "1" && !strings.Contains(resp, "acks=1") {
 		return fmt.Errorf("unexpected response: %s", resp)
 	}
 
@@ -171,11 +171,11 @@ func (bc *BrokerClient) ConsumeMessages(topic string, partition int, consumerGro
 	}
 	defer conn.Close()
 
-	// Send CONSUME command
 	startOffset := 0
 	autoOffsetReset := "earliest"
 
-	consumeCmd := fmt.Sprintf("CONSUME %s %d %d %s %s", topic, partition, startOffset, consumerGroup, autoOffsetReset)
+	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d group=%s autoOffsetReset=%s",
+		topic, partition, startOffset, consumerGroup, autoOffsetReset)
 	cmdBytes := util.EncodeMessage(topic, consumeCmd)
 
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
@@ -222,7 +222,7 @@ func (bc *BrokerClient) GetConsumerGroupStatus(groupID string) (*ConsumerGroupSt
 	}
 	defer conn.Close()
 
-	statusCmd := fmt.Sprintf("GROUP_STATUS %s", groupID)
+	statusCmd := fmt.Sprintf("GROUP_STATUS group=%s", groupID)
 	cmdBytes := util.EncodeMessage("admin", statusCmd)
 
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
@@ -263,7 +263,7 @@ func (bc *BrokerClient) CommitOffset(topic string, partition int, groupID string
 	}
 	defer conn.Close()
 
-	commitCmd := fmt.Sprintf("COMMIT_OFFSET %s %d %d", topic, partition, offset)
+	commitCmd := fmt.Sprintf("COMMIT_OFFSET topic=%s partition=%d offset=%d", topic, partition, offset)
 	cmdBytes := util.EncodeMessage(topic, commitCmd)
 
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
@@ -300,7 +300,7 @@ func (bc *BrokerClient) DeleteTopic(topic string) error {
 	}
 	defer conn.Close()
 
-	deleteCmd := fmt.Sprintf("DELETE %s", topic)
+	deleteCmd := fmt.Sprintf("DELETE topic=%s", topic)
 	cmdBytes := util.EncodeMessage(topic, deleteCmd)
 
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
@@ -310,7 +310,11 @@ func (bc *BrokerClient) DeleteTopic(topic string) error {
 	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return fmt.Errorf("set read deadline failed: %w", err)
 	}
-	defer conn.SetReadDeadline(time.Time{})
+	defer func() {
+		if err := conn.SetReadDeadline(time.Time{}); err != nil {
+			util.Warn("Failed to clear read deadline: %v", err)
+		}
+	}()
 
 	respBuf, err := util.ReadWithLength(conn)
 	if err != nil {
@@ -333,8 +337,7 @@ func (bc *BrokerClient) RegisterConsumerGroup(topic, groupName string, consumerC
 	}
 	defer conn.Close()
 
-	// Use SUBSCRIBE command to register consumer group
-	subscribeCmd := fmt.Sprintf("SUBSCRIBE %s %s", topic, groupName)
+	subscribeCmd := fmt.Sprintf("SUBSCRIBE topic=%s group=%s", topic, groupName)
 	cmdBytes := util.EncodeMessage("admin", subscribeCmd)
 
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
@@ -371,7 +374,7 @@ func (bc *BrokerClient) FetchCommittedOffset(topic string, partition int, groupI
 	}
 	defer conn.Close()
 
-	cmd := fmt.Sprintf("FETCH_OFFSET %s %d %s", topic, partition, groupID)
+	cmd := fmt.Sprintf("FETCH_OFFSET topic=%s partition=%d group=%s", topic, partition, groupID)
 	cmdBytes := util.EncodeMessage("admin", cmd)
 
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
