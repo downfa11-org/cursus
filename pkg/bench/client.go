@@ -21,6 +21,12 @@ type BenchClient struct {
 	NumMessages int
 	Topic       string
 	Partitions  int
+
+	MessageSize int
+	BatchSize   int
+	LingerMS    int
+	MaxInflight int
+	UseAsync    bool
 }
 
 func (c *BenchClient) RunTopicCreationPhase() error {
@@ -220,42 +226,6 @@ func (c *BenchClient) consumeMessagesFromPartition(cid, partitionID, count int, 
 	}
 
 	util.Debug("Consumer%d finished reading %d/%d messages.", cid, consumedCount, count)
-}
-
-func (b *BenchmarkRunner) RunConcurrentProducerPhase() error {
-	var pWg sync.WaitGroup
-	var producerErrors []error
-	var mu sync.Mutex
-
-	for i := 0; i < b.NumProducers; i++ {
-		pWg.Add(1)
-		go func(pid int) {
-			defer pWg.Done()
-			client := &BenchClient{
-				Addr:        b.Addr,
-				EnableGzip:  b.EnableGzip,
-				NumMessages: b.MessagesPerProducer,
-				Topic:       b.Topic,
-				Partitions:  b.Partitions,
-			}
-
-			if err := client.RunMessageProductionPhase(pid); err != nil {
-				mu.Lock()
-				producerErrors = append(producerErrors, fmt.Errorf("producer %d error: %w", pid, err))
-				mu.Unlock()
-			}
-		}(i)
-	}
-	pWg.Wait()
-
-	if len(producerErrors) > 0 {
-		util.Error("❌ Producer Phase Failed:")
-		util.Error("   Total failures: %d/%d producers", len(producerErrors), b.NumProducers)
-		util.Error("   First error:")
-		util.Error("   %v", producerErrors[0])
-		return fmt.Errorf("%d producer(s) failed", len(producerErrors))
-	}
-	return nil
 }
 
 // RunConsumerPhase executes the consumption benchmark workflow.
