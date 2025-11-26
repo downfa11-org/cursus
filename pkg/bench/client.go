@@ -30,7 +30,7 @@ func (c *BenchClient) RunTopicCreationPhase() error {
 	}
 	defer conn.Close()
 
-	createPayload := fmt.Sprintf("CREATE %s %d", c.Topic, c.Partitions)
+	createPayload := fmt.Sprintf("CREATE topic=%s partitions=%d", c.Topic, c.Partitions)
 	createPayload = strings.TrimSpace(createPayload)
 
 	if err := c.sendCommand(conn, c.Topic, createPayload); err != nil {
@@ -72,6 +72,10 @@ func (c *BenchClient) sendCommand(conn net.Conn, topic, payload string) error {
 		return fmt.Errorf("broker error: %s", resp)
 	}
 
+	if !strings.Contains(resp, "now has") && !strings.Contains(resp, "already exists") {
+		return fmt.Errorf("unexpected response: %s", resp)
+	}
+
 	return nil
 }
 
@@ -102,7 +106,8 @@ func (c *BenchClient) sendMessagesToPartition(producerID int, partitionID int, c
 
 		resp, err := util.ReadWithLength(conn)
 		if err != nil {
-			return fmt.Errorf("[P%d/Part%d] read resp failed: %v", producerID, partitionID, err)
+			return fmt.Errorf("[Producer %d | Partition %d | Message %d] Read response failed:\n  %v",
+				producerID, partitionID, i, err)
 		}
 
 		respStr := strings.TrimSpace(string(resp))
@@ -151,7 +156,7 @@ func (c *BenchClient) RunMessageProductionPhase(producerID int) error {
 	wg.Wait()
 
 	if len(errs) > 0 {
-		return fmt.Errorf("%d partition(s) failed, first error: %w", len(errs), errs[0])
+		return fmt.Errorf("%d partition(s) failed, error: %w", len(errs), errs[0])
 	}
 	return nil
 }
@@ -169,17 +174,17 @@ func (c *BenchClient) consumeMessagesFromPartition(cid, partitionID, count int, 
 
 	startOffset := 0
 
-	consumeCmd := fmt.Sprintf("CONSUME %s %d %d %s earliest", c.Topic, partitionID, startOffset, "bench-group")
+	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d group=- autoOffsetReset=earliest", c.Topic, partitionID, startOffset)
 	consumeCmd = strings.TrimSpace(consumeCmd)
 	cmdBytes := util.EncodeMessage(c.Topic, consumeCmd)
 
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
-		util.Error("[C%d] send command failed: %v\n", cid, err)
+		util.Error("send command failed in Consumer-%d: %v\n", cid, err)
 		return
 	}
 
 	if err := conn.SetReadDeadline(time.Now().Add(AckTimeout * 2)); err != nil {
-		util.Error("[C%d] set read deadline failed: %v. Continuing...\n", cid, err)
+		util.Error("set read deadline failed in Consumer-%d: %v. Continuing...\n", cid, err)
 	}
 
 	consumedCount := 0
@@ -189,12 +194,12 @@ func (c *BenchClient) consumeMessagesFromPartition(cid, partitionID, count int, 
 			if errors.Is(err, io.EOF) {
 				break
 			}
-			util.Error("[C%d] Read message %d failed: %v\n", cid, i, err)
+			util.Error("Read message %d failed in Consumer-%d: %v\n", i, cid, err)
 			return
 		}
 
 		if err := conn.SetReadDeadline(time.Now().Add(AckTimeout * 2)); err != nil {
-			util.Error("[C%d] Warning: Failed to reset read deadline: %v\n", cid, err)
+			util.Error("Warning: Failed to reset read deadline in Consumer-%d: %v\n", cid, err)
 		}
 
 		if len(msgBytes) == 0 {
@@ -202,8 +207,10 @@ func (c *BenchClient) consumeMessagesFromPartition(cid, partitionID, count int, 
 		}
 
 		payload := string(msgBytes)
-		if !strings.Contains(payload, fmt.Sprintf("Part%d", partitionID)) {
-			util.Error("[C%d] Warning: unexpected message content: %s\n", cid, payload)
+		if !strings.HasPrefix(payload, "bench-msg-P") ||
+			!strings.Contains(payload, "-Part") ||
+			!strings.Contains(payload, "-Msg") {
+			util.Warn("Invalid message format in Consumer-%d: %s\n", cid, payload)
 		}
 
 		consumedCount++
@@ -242,7 +249,11 @@ func (b *BenchmarkRunner) RunConcurrentProducerPhase() error {
 	pWg.Wait()
 
 	if len(producerErrors) > 0 {
-		return fmt.Errorf("%d producer(s) failed, first error: %w", len(producerErrors), producerErrors[0])
+		fmt.Printf("\n❌ Producer Phase Failed:\n")
+		fmt.Printf("   Total failures: %d/%d producers\n", len(producerErrors), b.NumProducers)
+		fmt.Printf("   First error:\n")
+		fmt.Printf("   %v\n\n", producerErrors[0])
+		return fmt.Errorf("%d producer(s) failed", len(producerErrors))
 	}
 	return nil
 }
