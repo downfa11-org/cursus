@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/binary"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -199,50 +198,59 @@ func (d *DiskHandler) AppendMessage(msg string) {
 
 // ReadMessages reads a batch of messages from the disk log, starting from the given offset.
 func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, error) {
+	var allMessages []types.Message
+
 	dh.mu.Lock()
-	segment := dh.CurrentSegment
+	currentSegment := dh.CurrentSegment
 	dh.mu.Unlock()
 
-	filePath := fmt.Sprintf("%s_segment_%d.log", dh.BaseName, segment)
-	util.Debug("Opening segment: %s (offset=%d, max=%d)", filePath, offset, max)
+	for segmentID := 0; segmentID <= currentSegment; segmentID++ {
+		filePath := fmt.Sprintf("%s_segment_%d.log", dh.BaseName, segmentID)
 
-	reader, err := mmap.Open(filePath)
-	if err != nil {
-		return nil, fmt.Errorf("mmap open failed: %w", err)
+		reader, err := mmap.Open(filePath)
+		if err != nil {
+			continue
+		}
+		defer reader.Close()
+
+		messages := dh.readMessagesFromSegment(reader, offset, max-len(allMessages))
+		allMessages = append(allMessages, messages...)
+
+		if len(allMessages) >= max {
+			break
+		}
+
+		offset = 0
 	}
-	defer reader.Close()
 
-	util.Debug("File size: %d bytes", reader.Len())
+	return allMessages, nil
+}
 
+func (dh *DiskHandler) readMessagesFromSegment(reader *mmap.ReaderAt, offset uint64, max int) []types.Message {
 	messages := []types.Message{}
 	pos := 0
 	currentMsgIndex := uint64(0)
 
 	for len(messages) < max {
 		if pos+4 > reader.Len() {
-			util.Debug("Reached EOF at pos=%d (need 4 bytes for length)", pos)
 			break
 		}
 
 		lenBytes := make([]byte, 4)
 		_, err := reader.ReadAt(lenBytes, int64(pos))
 		if err != nil {
-			log.Println("read length error:", err)
 			break
 		}
 		msgLen := binary.BigEndian.Uint32(lenBytes)
 		pos += 4
 
 		if pos+int(msgLen) > reader.Len() {
-			util.Debug("Incomplete message at pos=%d (need %d bytes, have %d)",
-				pos, msgLen, reader.Len()-pos)
 			break
 		}
 
 		data := make([]byte, msgLen)
 		_, err = reader.ReadAt(data, int64(pos))
 		if err != nil {
-			log.Println("read data error:", err)
 			break
 		}
 		pos += int(msgLen)
@@ -254,9 +262,7 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 		}
 		currentMsgIndex++
 	}
-	util.Debug("✅ Read %d messages from %d bytes",
-		len(messages), pos)
-	return messages, nil
+	return messages
 }
 
 func (dh *DiskHandler) GetLatestOffset() (uint64, error) {

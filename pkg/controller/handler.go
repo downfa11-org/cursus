@@ -162,6 +162,11 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	streamedCount := 0
 	lastOffset := actualOffset
 	for _, msg := range messages {
+		if _, err := conn.Write([]byte{}); err != nil {
+			util.Debug("Connection closed by client, stopping stream")
+			return streamedCount, nil
+		}
+
 		msgBytes := []byte(msg.Payload)
 		if err := util.WriteWithLength(conn, msgBytes); err != nil {
 			return streamedCount, fmt.Errorf("failed to stream message: %w", err)
@@ -174,7 +179,7 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		if err := t.CommitOffset(ctx.ConsumerGroup, partition, lastOffset); err != nil {
 			util.Warn("Failed to commit offset to topic for group '%s': %v", ctx.ConsumerGroup, err)
 		} else {
-			util.Debug("[OFFSET] Successfully committed offset %d to topic for group '%s', topic '%s', partition %d",
+			util.Debug("Successfully committed offset %d to topic for group '%s', topic '%s', partition %d",
 				lastOffset, ctx.ConsumerGroup, topicName, partition)
 		}
 
@@ -182,14 +187,14 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 			if err := ch.OffsetManager.CommitOffset(ctx.ConsumerGroup, topicName, partition, lastOffset); err != nil {
 				util.Warn("Failed to commit offset to OffsetManager for group '%s': %v", ctx.ConsumerGroup, err)
 			} else {
-				util.Debug("[OFFSET] Successfully committed offset %d to OffsetManager for group '%s', topic '%s', partition %d",
+				util.Debug("Successfully committed offset %d to OffsetManager for group '%s', topic '%s', partition %d",
 					lastOffset, ctx.ConsumerGroup, topicName, partition)
 			}
 		}
 	}
 
 	duration := time.Since(startTime)
-	util.Debug("[METRICS] Streamed %d messages from topic '%s' partition %d in %v",
+	util.Debug("Streamed %d messages from topic '%s' partition %d in %v",
 		streamedCount, topicName, partition, duration)
 
 	return streamedCount, nil
