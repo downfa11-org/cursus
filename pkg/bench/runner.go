@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/downfa11-org/go-broker/util"
 )
 
 type BenchmarkRunner struct {
@@ -61,27 +63,27 @@ func (b *BenchmarkRunner) Run() {
 		UseAsync:    b.UseAsync,
 	}
 
-	fmt.Printf("\nInitializing Topic '%s' with %d partitions...\n", b.Topic, b.Partitions)
+	util.Info("Initializing Topic '%s' with %d partitions...", b.Topic, b.Partitions)
 	if err := initClient.RunTopicCreationPhase(); err != nil {
-		fmt.Printf("Topic Initialization error: %v\n", err)
+		util.Info("Topic Initialization error: %v", err)
 		return
 	}
 
-	fmt.Printf("\nStarting Producer Phase (%d Producers, %d Total Messages)\n", b.NumProducers, totalMessagesProduced)
+	util.Info("Starting Producer Phase (%d Producers, %d Total Messages)", b.NumProducers, totalMessagesProduced)
 	producerStart := time.Now()
 
 	if err := b.RunConcurrentProducerPhase(); err != nil {
-		fmt.Printf("Concurrent Producer Phase error: %v\n", err)
+		util.Info("Concurrent Producer Phase error: %v", err)
 		return
 	}
 
 	producerDuration := time.Since(producerStart)
-	fmt.Printf("Producer Phase Finished in %v\n", producerDuration)
+	util.Info("Producer Phase Finished in %v", producerDuration)
 
 	var consumerDuration time.Duration
 
 	if b.NumConsumers > 0 {
-		fmt.Printf("\nStarting Consumer Phase (%d Consumers)\n", b.NumConsumers)
+		util.Info("Starting Consumer Phase (%d Consumers)", b.NumConsumers)
 		consumerStart := time.Now()
 
 		consumerClient := &BenchClient{
@@ -98,11 +100,11 @@ func (b *BenchmarkRunner) Run() {
 		}
 
 		if err := consumerClient.RunConsumerPhase(b.NumConsumers); err != nil {
-			fmt.Printf("Consumer Phase error: %v\n", err)
+			util.Info("Consumer Phase error: %v", err)
 		}
 
 		consumerDuration = time.Since(consumerStart)
-		fmt.Printf("Consumer Phase Finished in %v\n", consumerDuration)
+		util.Info("Consumer Phase Finished in %v", consumerDuration)
 	}
 
 	if b.NumConsumers > 0 {
@@ -122,100 +124,100 @@ func (b *BenchmarkRunner) printBenchmarkResults(totalMessagesProduced int, produ
 		consumerThroughput = float64(totalMessagesProduced) / consumerDuration.Seconds()
 	}
 
-	fmt.Printf("\n🧪 BENCHMARK RESULT [disk] 🧪\n")
-	fmt.Printf("=====================================\n")
+	util.Info("🧪 BENCHMARK RESULT [disk] 🧪")
+	util.Info("=====================================")
 
-	fmt.Printf("📊 CONFIGURATION\n")
-	fmt.Printf(" Topic                 : %s\n", b.Topic)
-	fmt.Printf(" Partitions            : %d\n", b.Partitions)
-	fmt.Printf(" Producers             : %d\n", b.NumProducers)
-	fmt.Printf(" Consumers             : %d\n", b.NumConsumers)
-	fmt.Printf(" Total Messages        : %d\n", totalMessagesProduced)
-	fmt.Printf(" Message Size          : %d bytes\n", b.MessageSize)
+	util.Info("📊 CONFIGURATION")
+	util.Info(" Topic                 : %s", b.Topic)
+	util.Info(" Partitions            : %d", b.Partitions)
+	util.Info(" Producers             : %d", b.NumProducers)
+	util.Info(" Consumers             : %d", b.NumConsumers)
+	util.Info(" Total Messages        : %d", totalMessagesProduced)
+	util.Info(" Message Size          : %d bytes", b.MessageSize)
 
-	fmt.Printf("\n🚀 TRANSMISSION MODE\n")
+	util.Info("🚀 TRANSMISSION MODE")
 	if b.UseAsync && b.BatchSize > 1 {
-		fmt.Printf(" Mode                  : Async+Batch (Size: %d, Max Inflight: %d)\n", b.BatchSize, b.MaxInflight)
+		util.Info(" Mode                  : Async+Batch (Size: %d, Max Inflight: %d)", b.BatchSize, b.MaxInflight)
 	} else if b.UseAsync {
-		fmt.Printf(" Mode                  : Async (Max Inflight: %d)\n", b.MaxInflight)
+		util.Info(" Mode                  : Async (Max Inflight: %d)", b.MaxInflight)
 	} else if b.BatchSize > 1 {
-		fmt.Printf(" Mode                  : Batch (Size: %d, Linger: %dms)\n", b.BatchSize, b.LingerMS)
+		util.Info(" Mode                  : Batch (Size: %d, Linger: %dms)", b.BatchSize, b.LingerMS)
 	} else {
-		fmt.Printf(" Mode                  : Synchronous\n")
+		util.Info(" Mode                  : Synchronous")
 	}
-	fmt.Printf(" Compression           : %v\n", b.EnableGzip)
+	util.Info(" Compression           : %v", b.EnableGzip)
 
-	fmt.Printf("\n⏱️  PERFORMANCE METRICS\n")
-	fmt.Printf(" Producer Duration     : %v\n", producerDuration)
-	fmt.Printf(" Consumer Duration     : %v\n", consumerDuration)
-	fmt.Printf(" Total Duration (P+C)  : %v\n", totalDuration)
+	util.Info("⏱️  PERFORMANCE METRICS")
+	util.Info(" Producer Duration     : %v", producerDuration)
+	util.Info(" Consumer Duration     : %v", consumerDuration)
+	util.Info(" Total Duration (P+C)  : %v", totalDuration)
 
-	fmt.Printf("\n📈 THROUGHPUT\n")
-	fmt.Printf(" Producer Throughput   : %.2f msg/sec\n", producerThroughput)
+	util.Info("📈 THROUGHPUT")
+	util.Info(" Producer Throughput   : %.2f msg/sec", producerThroughput)
 	if consumerThroughput > 0 {
-		fmt.Printf(" Consumer Throughput   : %.2f msg/sec\n", consumerThroughput)
+		util.Info(" Consumer Throughput   : %.2f msg/sec", consumerThroughput)
 	}
-	fmt.Printf(" Combined Throughput   : %.2f msg/sec\n", combinedThroughput)
+	util.Info(" Combined Throughput   : %.2f msg/sec", combinedThroughput)
 
-	fmt.Printf("\n📋 ANALYSIS\n")
+	util.Info("📋 ANALYSIS")
 	avgMsgPerProducer := float64(b.MessagesPerProducer)
-	fmt.Printf(" Messages per Producer : %.0f\n", avgMsgPerProducer)
+	util.Info(" Messages per Producer : %.0f", avgMsgPerProducer)
 
 	if producerDuration.Seconds() > 0 {
 		avgProducerLatency := producerDuration.Seconds() / avgMsgPerProducer * 1000
-		fmt.Printf(" Avg Producer Latency  : %.2f ms/msg\n", avgProducerLatency)
+		util.Info(" Avg Producer Latency  : %.2f ms/msg", avgProducerLatency)
 	}
 
 	if b.NumProducers > 0 {
 		throughputPerProducer := producerThroughput / float64(b.NumProducers)
-		fmt.Printf(" Throughput per Producer: %.2f msg/sec\n", throughputPerProducer)
+		util.Info(" Throughput per Producer: %.2f msg/sec", throughputPerProducer)
 	}
 
-	fmt.Printf("=====================================\n")
+	util.Info("=====================================")
 }
 
 func (b *BenchmarkRunner) printProduceOnlyResults(totalMessagesProduced int, producerDuration time.Duration) {
 	producerThroughput := float64(totalMessagesProduced) / producerDuration.Seconds()
 
-	fmt.Printf("\n🧪 BENCHMARK RESULT [disk] (PRODUCE ONLY) 🧪\n")
-	fmt.Printf("=====================================\n")
+	util.Info("🧪 BENCHMARK RESULT [disk] (PRODUCE ONLY) 🧪")
+	util.Info("=====================================")
 
-	fmt.Printf("📊 CONFIGURATION\n")
-	fmt.Printf(" Topic                 : %s\n", b.Topic)
-	fmt.Printf(" Partitions            : %d\n", b.Partitions)
-	fmt.Printf(" Producers             : %d\n", b.NumProducers)
-	fmt.Printf(" Total Messages        : %d\n", totalMessagesProduced)
-	fmt.Printf(" Message Size          : %d bytes\n", b.MessageSize)
+	util.Info("📊 CONFIGURATION")
+	util.Info(" Topic                 : %s", b.Topic)
+	util.Info(" Partitions            : %d", b.Partitions)
+	util.Info(" Producers             : %d", b.NumProducers)
+	util.Info(" Total Messages        : %d", totalMessagesProduced)
+	util.Info(" Message Size          : %d bytes", b.MessageSize)
 
-	fmt.Printf("\n🚀 TRANSMISSION MODE\n")
+	util.Info("🚀 TRANSMISSION MODE")
 	if b.UseAsync {
-		fmt.Printf(" Mode                  : Async (Max Inflight: %d)\n", b.MaxInflight)
+		util.Info(" Mode                  : Async (Max Inflight: %d)", b.MaxInflight)
 	} else if b.BatchSize > 1 {
-		fmt.Printf(" Mode                  : Batch (Size: %d, Linger: %dms)\n", b.BatchSize, b.LingerMS)
+		util.Info(" Mode                  : Batch (Size: %d, Linger: %dms)", b.BatchSize, b.LingerMS)
 	} else {
-		fmt.Printf(" Mode                  : Synchronous\n")
+		util.Info(" Mode                  : Synchronous")
 	}
-	fmt.Printf(" Compression           : %v\n", b.EnableGzip)
+	util.Info(" Compression           : %v", b.EnableGzip)
 
-	fmt.Printf("\n⏱️  PERFORMANCE METRICS\n")
-	fmt.Printf(" Duration              : %v\n", producerDuration)
-	fmt.Printf(" Producer Throughput   : %.2f msg/sec\n", producerThroughput)
+	util.Info("⏱️  PERFORMANCE METRICS")
+	util.Info(" Duration              : %v", producerDuration)
+	util.Info(" Producer Throughput   : %.2f msg/sec", producerThroughput)
 
-	fmt.Printf("\n📋 ANALYSIS\n")
+	util.Info("📋 ANALYSIS")
 	avgMsgPerProducer := float64(b.MessagesPerProducer)
-	fmt.Printf(" Messages per Producer : %.0f\n", avgMsgPerProducer)
+	util.Info(" Messages per Producer : %.0f", avgMsgPerProducer)
 
 	if producerDuration.Seconds() > 0 {
 		avgProducerLatency := producerDuration.Seconds() / avgMsgPerProducer * 1000
-		fmt.Printf(" Avg Producer Latency  : %.2f ms/msg\n", avgProducerLatency)
+		util.Info(" Avg Producer Latency  : %.2f ms/msg", avgProducerLatency)
 	}
 
 	if b.NumProducers > 0 {
 		throughputPerProducer := producerThroughput / float64(b.NumProducers)
-		fmt.Printf(" Throughput per Producer: %.2f msg/sec\n", throughputPerProducer)
+		util.Info(" Throughput per Producer: %.2f msg/sec", throughputPerProducer)
 	}
 
-	fmt.Printf("=====================================\n")
+	util.Info("=====================================")
 }
 
 func (b *BenchmarkRunner) RunConcurrentProducerPhase() error {
