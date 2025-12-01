@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -17,7 +16,7 @@ import (
 	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/disk"
 	"github.com/downfa11-org/go-broker/pkg/metrics"
-	"github.com/downfa11-org/go-broker/pkg/offset"
+	"github.com/downfa11-org/go-broker/pkg/stream"
 	"github.com/downfa11-org/go-broker/pkg/topic"
 	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
@@ -32,7 +31,7 @@ const (
 var brokerReady = &atomic.Bool{}
 
 // RunServer starts the broker with optional TLS and gzip
-func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager, om *offset.OffsetManager, cd *coordinator.Coordinator) error {
+func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager, cd *coordinator.Coordinator, sm *stream.StreamManager) error {
 	if cfg.EnableExporter {
 		metrics.StartMetricsServer(cfg.ExporterPort)
 		util.Info("📈 Prometheus exporter started on port %d", cfg.ExporterPort)
@@ -74,7 +73,7 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 	for i := 0; i < maxWorkers; i++ {
 		go func() {
 			for conn := range workerCh {
-				HandleConnection(conn, tm, dm, cfg, om, cd)
+				HandleConnection(conn, tm, dm, cfg, cd, sm)
 			}
 		}()
 	}
@@ -90,11 +89,13 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 }
 
 // HandleConnection processes a single client connection
-func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, om *offset.OffsetManager, cd *coordinator.Coordinator) {
+func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, cd *coordinator.Coordinator, sm *stream.StreamManager) {
 	defer conn.Close()
 
-	cmdHandler := controller.NewCommandHandler(tm, dm, cfg, om, cd)
+	cmdHandler := controller.NewCommandHandler(tm, dm, cfg, cd, sm)
 	ctx := controller.NewClientContext("default-group", 0)
+
+	writeTimeout := 10 * time.Second
 
 	for {
 		if err := conn.SetReadDeadline(time.Now().Add(readDeadline)); err != nil {
@@ -105,7 +106,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 		lenBuf := make([]byte, 4)
 		if _, err := io.ReadFull(conn, lenBuf); err != nil {
 			if err != io.EOF {
-				util.Error("⚠️ Read length error: %v", err)
+				util.Error("⚠️ Read length error: %v (%s)", err, lenBuf)
 			}
 			return
 		}
@@ -113,7 +114,9 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 		msgLen := binary.BigEndian.Uint32(lenBuf)
 		msgBuf := make([]byte, msgLen)
 		if _, err := io.ReadFull(conn, msgBuf); err != nil {
-			util.Error("⚠️ Read message error: %v", err)
+			if err != io.EOF {
+				util.Error("⚠️ Read message error: %v (%s)", err, msgBuf)
+			}
 			return
 		}
 
@@ -124,131 +127,144 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 		}
 
 		topicName, payload := util.DecodeMessage(data)
-		clientAddr := conn.RemoteAddr().String()
 
-		if topicName == "" || payload == "" {
-			rawInput := strings.TrimSpace(string(data))
-			util.Debug("[INPUT_WARN] [%s] Received unrecognized input (not cmd/msg format): %s", clientAddr, rawInput)
-			return
+		if strings.HasPrefix(strings.ToUpper(payload), "HEARTBEAT") {
+			if err := conn.SetReadDeadline(time.Now().Add(readDeadline)); err != nil {
+				util.Error("⚠️ SetReadDeadline on heartbeat error: %v", err)
+				return
+			}
+			writeResponseWithTimeout(conn, "OK", writeTimeout)
+			continue
 		}
 
-		util.Debug("[%s] Received request. Topic: '%s', Payload: '%s'", clientAddr, topicName, payload)
-
 		var resp string
-		cmdStr := payload
-
-		if !isCommand(payload) {
-			var msg types.Message
-			var acks string = "0"
-
-			util.Debug("Processing non-command message. Topic: %s, Payload prefix: %s",
-				topicName, payload[:min(50, len(payload))])
-
-			if strings.HasPrefix(payload, "PUBLISH:") {
-				parts := strings.SplitN(payload[8:], ":", 3)
-				if len(parts) < 3 {
-					util.Error("Malformed PUBLISH message: expected 3 parts, got %d", len(parts))
-					writeResponse(conn, "ERROR: malformed PUBLISH format")
-					continue
+		if isCommand(payload) {
+			resp = cmdHandler.HandleCommand(payload, ctx)
+			if resp == controller.STREAM_DATA_SIGNAL {
+				if strings.HasPrefix(strings.ToUpper(payload), "STREAM ") {
+					if err := cmdHandler.HandleStreamCommand(conn, payload, ctx); err != nil {
+						writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
+					}
+				} else {
+					if _, err := cmdHandler.HandleConsumeCommand(conn, payload, ctx); err != nil {
+						writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
+					}
 				}
-
-				acks = parts[0]
-				topicName = parts[1]
-				msg.Payload = parts[2]
-				msg.Key = parts[2]
-
-			} else if strings.HasPrefix(payload, "IDEMPOTENT:") {
-				parts := strings.SplitN(payload[11:], ":", 5)
-				if len(parts) < 5 {
-					util.Error("Malformed IDEMPOTENT message: expected 5 parts, got %d", len(parts))
-					writeResponse(conn, "ERROR: malformed IDEMPOTENT format")
-					continue
-				}
-				acks = parts[0]
-				msg.ProducerID = parts[1]
-				seqNum, err := strconv.ParseUint(parts[2], 10, 64)
-				if err != nil {
-					util.Error("Invalid seqNum in IDEMPOTENT message: %v", err)
-					writeResponse(conn, "ERROR: invalid seqNum format")
-					continue
-				}
-				msg.SeqNum = seqNum
-				epoch, err := strconv.ParseInt(parts[3], 10, 64)
-				if err != nil {
-					util.Error("Invalid epoch in IDEMPOTENT message: %v", err)
-					writeResponse(conn, "ERROR: invalid epoch format")
-					continue
-				}
-				msg.Epoch = epoch
-				msg.Payload = parts[4]
-				msg.Key = parts[4]
-
-			} else {
-				msg.Payload = payload
-				msg.Key = payload
+				return
 			}
+			if resp != "" {
+				writeResponse(conn, resp)
+			}
+		} else if isBatchMessage(data) {
+			batch, err := util.DecodeBatchMessages(data)
+			if err != nil {
+				util.Error("Batch message decoding failed: %v", err)
+				writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
+				continue
+			}
+
+			successCount := 0
+			for _, m := range batch.Messages {
+				msg := types.Message{
+					ID:      util.GenerateID(m.Payload),
+					Payload: m.Payload,
+					Key:     m.Payload,
+				}
+
+				util.Info("Publishing message to: ID=%s, Key=%s, Payload=%s", msg.ID, msg.Key, strings.ReplaceAll(msg.Payload, "\n", " "))
+
+				if err := tm.Publish(batch.Topic, msg); err != nil {
+					util.Error("Failed to publish message seq=%d: %v", m.SeqNum, err)
+					continue
+				}
+				successCount++
+			}
+			failedCount := len(batch.Messages) - successCount
+			writeResponse(conn, fmt.Sprintf("OK:processed=%d,failed=%d", successCount, failedCount))
+			continue
+		} else {
+			if topicName == "" || payload == "" {
+				rawInput := strings.TrimSpace(string(data))
+				util.Debug("[%s] Received unrecognized input: %s", conn.RemoteAddr().String(), rawInput)
+				return
+			}
+
+			acks, message := extractAcksAndMessage(payload)
+			msg := types.Message{Payload: message, Key: message}
+			util.Info("Publishing message to: ID=%s, Key=%s, Payload=%s", msg.ID, msg.Key, strings.ReplaceAll(msg.Payload, "\n", " "))
 
 			switch acks {
 			case "0":
-				//acks=0
-				util.Debug("Calling tm.Publish for topic '%s' with acks=0", topicName)
-				err := tm.Publish(topicName, msg)
-				if err != nil {
-					util.Error("tm.Publish failed: %v", err)
+				if err := tm.Publish(topicName, msg); err != nil {
 					writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
 					continue
 				}
-				util.Debug("tm.Publish completed successfully")
 				writeResponse(conn, "OK")
 			case "1":
-				// acks=1
-				util.Debug("Calling tm.PublishWithAck for topic '%s' with acks=1", topicName)
-				err := tm.PublishWithAck(topicName, msg)
-				if err != nil {
+				if err := tm.PublishWithAck(topicName, msg); err != nil {
 					writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
 					continue
 				}
-				util.Debug("tm.Publish completed successfully")
 				writeResponse(conn, "OK")
 			case "all":
-				// TODO: acks=all case with MinInsyncReplicas Option
-				util.Error("acks=all not yet implemented")
-				writeResponse(conn, "ERROR: acks=all not yet implemented")
+				writeResponse(conn, "ERROR: acks=all not implemented")
 			default:
-				util.Error("invalid acks: %s", acks)
 				writeResponse(conn, fmt.Sprintf("ERROR: invalid acks: %s", acks))
 			}
-
-			resp = ""
-		} else {
-			resp = cmdHandler.HandleCommand(payload, ctx)
-		}
-
-		if resp == controller.STREAM_DATA_SIGNAL {
-			streamed, err := cmdHandler.HandleConsumeCommand(conn, cmdStr, ctx)
-			if err != nil {
-				errMsg := fmt.Sprintf("ERROR: %v", err)
-				util.Error("[CONSUME_ERR] Error streaming data for command [%s]: %v", cmdStr, err)
-				writeResponse(conn, errMsg)
-				return
-			}
-			util.Debug("Completed streaming %d messages for command [%s]", streamed, cmdStr)
-			return
-		}
-
-		if resp != "" {
-			writeResponse(conn, resp)
 		}
 	}
 }
 
-func isCommand(s string) bool {
-	if strings.HasPrefix(s, "PUBLISH:") || strings.HasPrefix(s, "IDEMPOTENT:") {
-		return false
+// writeResponseWithTimeout adds write timeout
+func writeResponseWithTimeout(conn net.Conn, msg string, timeout time.Duration) {
+	resp := []byte(msg)
+	respLen := make([]byte, 4)
+	binary.BigEndian.PutUint32(respLen, uint32(len(resp)))
+
+	if err := conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		util.Error("⚠️ SetWriteDeadline error: %v", err)
+		return
 	}
 
-	keywords := []string{"CREATE", "DELETE", "LIST", "SUBSCRIBE", "PUBLISH", "CONSUME", "HELP",
-		"SETGROUP", "HEARTBEAT", "JOIN_GROUP", "LEAVE_GROUP", "COMMIT_OFFSET", "REGISTER_GROUP",
+	if _, err := conn.Write(respLen); err != nil {
+		util.Error("⚠️ Write length error: %v", err)
+		return
+	}
+	if _, err := conn.Write(resp); err != nil {
+		util.Error("⚠️ Write response error: %v", err)
+		return
+	}
+}
+
+// isBatchMessage checks if the data is in binary batch format
+func isBatchMessage(data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+	topicLen := binary.BigEndian.Uint16(data[0:2])
+	if topicLen == 0 || int(topicLen)+2 > len(data) {
+		return false
+	}
+	return true
+}
+
+// extractAcksAndMessage parses acks level and message from payload
+func extractAcksAndMessage(payload string) (acks, message string) {
+	parts := strings.SplitN(payload, ";", 2)
+	if len(parts) == 2 && strings.HasPrefix(parts[0], "acks=") {
+		acks = strings.TrimPrefix(parts[0], "acks=")
+		message = strings.TrimPrefix(parts[1], "message=")
+		return
+	}
+	// Default for backward compatibility
+	acks = "0"
+	message = payload
+	return
+}
+
+func isCommand(s string) bool {
+	keywords := []string{"CREATE", "DELETE", "LIST", "PUBLISH", "CONSUME", "STREAM", "HELP",
+		"HEARTBEAT", "JOIN_GROUP", "LEAVE_GROUP", "COMMIT_OFFSET", "REGISTER_GROUP",
 		"GROUP_STATUS", "FETCH_OFFSET", "LIST_GROUPS"}
 	for _, k := range keywords {
 		if strings.HasPrefix(strings.ToUpper(s), k) {
