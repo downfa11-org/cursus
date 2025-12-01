@@ -1,4 +1,4 @@
-module publisher
+module github.com/downfa11-org/go-broker/publisher
 
 go 1.25.0
 

@@ -21,131 +21,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ProducerClient manages producer ID and sequence numbers for exactly-once semantics
-type ProducerClient struct {
-	ID     string
-	seqNum atomic.Uint64
-	epoch  int64
-	mu     sync.Mutex
-	conn   net.Conn
-}
-
-func NewProducerClient() *ProducerClient {
-	return &ProducerClient{
-		ID:    uuid.New().String(),
-		epoch: time.Now().UnixNano(),
-	}
-}
-
-func (pc *ProducerClient) NextSeqNum() uint64 {
-	return pc.seqNum.Add(1)
-}
-
-func (pc *ProducerClient) Connect(addr string, useTLS bool, certPath, keyPath string) error {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-
-	if pc.conn != nil {
-		return nil
-	}
-
-	var conn net.Conn
-	var err error
-
-	if useTLS {
-		if certPath == "" || keyPath == "" {
-			return fmt.Errorf("TLS enabled but cert/key paths not provided")
-		}
-
-		var cert tls.Certificate
-		cert, err = tls.LoadX509KeyPair(certPath, keyPath)
-		if err != nil {
-			return fmt.Errorf("load TLS cert: %w", err)
-		}
-
-		tlsConfig := &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
-		}
-
-		conn, err = tls.Dial("tcp", addr, tlsConfig)
-	} else {
-		conn, err = net.Dial("tcp", addr)
-	}
-
-	if err != nil {
-		return fmt.Errorf("dial: %w", err)
-	}
-
-	pc.conn = conn
-	return nil
-}
-
-// Reconnect closes the current connection and establishes a new one
-func (pc *ProducerClient) Reconnect(addr string, useTLS bool, certPath, keyPath string) error {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-
-	// Close existing connection
-	if pc.conn != nil {
-		_ = pc.conn.Close()
-		pc.conn = nil
-	}
-
-	// Establish new connection
-	var conn net.Conn
-	var err error
-
-	if useTLS {
-		if certPath == "" || keyPath == "" {
-			return fmt.Errorf("TLS enabled but cert/key paths not provided")
-		}
-
-		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
-		if err != nil {
-			return fmt.Errorf("load TLS cert: %w", err)
-		}
-
-		tlsConfig := &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
-		}
-
-		conn, err = tls.Dial("tcp", addr, tlsConfig)
-		if err != nil {
-			log.Printf("Failed to establish TLS connection to %s: %v", addr, err)
-		}
-	} else {
-		conn, err = net.Dial("tcp", addr)
-	}
-
-	if err != nil {
-		return fmt.Errorf("dial: %w", err)
-	}
-
-	pc.conn = conn
-	return nil
-}
-
-// GetConn returns the current connection (thread-safe)
-func (pc *ProducerClient) GetConn() net.Conn {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-	return pc.conn
-}
-
-func (pc *ProducerClient) Close() error {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-
-	if pc.conn != nil {
-		err := pc.conn.Close()
-		pc.conn = nil
-		return err
-	}
-	return nil
-}
-
 type PublisherConfig struct {
 	BrokerAddr     string `yaml:"broker_addr" json:"broker_addr"`
 	MaxRetries     int    `yaml:"max_retries" json:"max_retries"`
@@ -153,24 +28,30 @@ type PublisherConfig struct {
 	AckTimeoutMS   int    `yaml:"ack_timeout_ms" json:"ack_timeout_ms"`
 	Topic          string `yaml:"topic" json:"topic"`
 	Partitions     int    `yaml:"partitions" json:"partitions"`
-	NumMessages    int    `yaml:"num_messages" json:"num_messages"`
 
 	PublishDelayMS      int `yaml:"publish_delay_ms" json:"publish_delay_ms"`
 	MaxInflightRequests int `yaml:"max_inflight_requests" json:"max_inflight_requests"`
+	MaxBackoffMS        int `yaml:"max_backoff_ms" json:"max_backoff_ms"`
+	WriteTimeoutMS      int `yaml:"write_timeout_ms" json:"write_timeout_ms"`
 
-	Acks              string `yaml:"acks" json:"acks"` // "0", "1", "all"
+	Acks              string `yaml:"acks" json:"acks"`
 	EnableIdempotence bool   `yaml:"enable_idempotence" json:"enable_idempotence"`
 	BatchSize         int    `yaml:"batch_size" json:"batch_size"`
 	BufferSize        int    `yaml:"buffer_size" json:"buffer_size"`
 	LingerMS          int    `yaml:"linger_ms" json:"linger_ms"`
 
-	// TLS
 	UseTLS      bool   `yaml:"use_tls" json:"use_tls"`
 	TLSCertPath string `yaml:"tls_cert_path" json:"tls_cert_path"`
 	TLSKeyPath  string `yaml:"tls_key_path" json:"tls_key_path"`
 
-	// compression
 	EnableGzip bool `yaml:"enable_gzip" json:"enable_gzip"`
+
+	EnableBenchmark bool   `yaml:"enable_benchmark" json:"enable_benchmark"`
+	BenchTopicName  string `yaml:"bench_topic_name" json:"bench_topic_name"`
+	MessageSize     int    `yaml:"benchmark_message_size" json:"benchmark_message_size"`
+	NumMessages     int    `yaml:"num_messages" json:"num_messages"`
+
+	FlushWaitMS int `yaml:"flush_wait_ms" json:"flush_wait_ms"`
 }
 
 func LoadPublisherConfig() (*PublisherConfig, error) {
@@ -189,12 +70,19 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 	flag.IntVar(&cfg.BatchSize, "batch-size", 100, "Batch size")
 	flag.IntVar(&cfg.BufferSize, "buffer-size", 1024, "Buffer size")
 	flag.IntVar(&cfg.LingerMS, "linger-ms", 50, "Linger time in milliseconds")
+	flag.IntVar(&cfg.MaxBackoffMS, "max-backoff-ms", 2000, "Maximum backoff time in ms")
+	flag.IntVar(&cfg.WriteTimeoutMS, "write-timeout-ms", 5000, "Write timeout in ms")
+	flag.IntVar(&cfg.FlushWaitMS, "flush-wait-ms", 500, "Wait after flush in ms")
 
 	flag.BoolVar(&cfg.UseTLS, "use-tls", false, "Enable TLS")
 	flag.StringVar(&cfg.TLSCertPath, "tls-cert", "", "TLS cert path")
 	flag.StringVar(&cfg.TLSKeyPath, "tls-key", "", "TLS key path")
 
 	flag.BoolVar(&cfg.EnableGzip, "enable-gzip", false, "Enable gzip")
+
+	benchmarkFlag := flag.Bool("benchmark", false, "Enable benchmark mode with detailed metrics")
+	flag.StringVar(&cfg.BenchTopicName, "bench-topic-name", "bench-topic", "Topic used in benchmark mode")
+	flag.IntVar(&cfg.MessageSize, "benchmark_message_size", 100, "Message size in bytes (benchmark mode only)")
 
 	configPath := flag.String("config", "/config.yaml", "Path to YAML/JSON config file")
 	flag.Parse()
@@ -261,7 +149,104 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 		return nil, fmt.Errorf("TLS enabled but cert/key paths not provided")
 	}
 
+	if *benchmarkFlag {
+		cfg.EnableBenchmark = true
+	}
+
+	if cfg.EnableBenchmark {
+		if cfg.Topic == "my-topic" {
+			cfg.Topic = cfg.BenchTopicName
+		}
+		if cfg.MessageSize <= 0 {
+			cfg.MessageSize = 1024
+		}
+	}
+
 	return cfg, nil
+}
+
+type ProducerClient struct {
+	ID     string
+	seqNum atomic.Uint64
+	epoch  int64
+	mu     sync.Mutex
+	conns  []net.Conn
+}
+
+func NewProducerClient() *ProducerClient {
+	return &ProducerClient{
+		ID:    uuid.New().String(),
+		epoch: time.Now().UnixNano(),
+	}
+}
+
+func (pc *ProducerClient) NextSeqNum() uint64 {
+	return pc.seqNum.Add(1)
+}
+
+func (pc *ProducerClient) ConnectPartition(idx int, addr string, useTLS bool, certPath, keyPath string) error {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	var conn net.Conn
+	var err error
+
+	if useTLS {
+		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		if err != nil {
+			return fmt.Errorf("load TLS cert: %w", err)
+		}
+		conn, err = tls.Dial("tcp", addr, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+		if err != nil {
+			return fmt.Errorf("TLS dial to %s failed: %w", addr, err)
+		}
+	} else {
+		conn, err = net.Dial("tcp", addr)
+		if err != nil {
+			return fmt.Errorf("TCP dial to %s failed: %w", addr, err)
+		}
+	}
+
+	if len(pc.conns) <= idx {
+		tmp := make([]net.Conn, idx+1)
+		copy(tmp, pc.conns)
+		pc.conns = tmp
+	}
+	pc.conns[idx] = conn
+	return nil
+}
+
+func (pc *ProducerClient) ReconnectPartition(idx int, addr string, useTLS bool, certPath, keyPath string) error {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	if idx < len(pc.conns) && pc.conns[idx] != nil {
+		_ = pc.conns[idx].Close()
+		pc.conns[idx] = nil
+	}
+
+	return pc.ConnectPartition(idx, addr, useTLS, certPath, keyPath)
+}
+
+func (pc *ProducerClient) GetConn(part int) net.Conn {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if part < len(pc.conns) {
+		return pc.conns[part]
+	}
+	return nil
+}
+
+func (pc *ProducerClient) Close() error {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	for i, c := range pc.conns {
+		if c != nil {
+			_ = c.Close()
+			pc.conns[i] = nil
+		}
+	}
+	return nil
 }
 
 type BatchMessage struct {
@@ -269,122 +254,259 @@ type BatchMessage struct {
 	Payload string
 }
 
-type Publisher struct {
-	config      *PublisherConfig
-	producer    *ProducerClient
-	inflightSem chan struct{}
+type partitionBuffer struct {
+	mu     sync.Mutex
+	msgs   []BatchMessage
+	cond   *sync.Cond
+	closed bool
+}
 
-	batchMu sync.Mutex
-	batch   []BatchMessage
-	batchCh chan BatchMessage
-	done    chan struct{}
+func newPartitionBuffer() *partitionBuffer {
+	p := &partitionBuffer{
+		msgs: make([]BatchMessage, 0),
+	}
+	p.cond = sync.NewCond(&p.mu)
+	return p
+}
+
+type Publisher struct {
+	config   *PublisherConfig
+	producer *ProducerClient
+
+	partitions int
+	buffers    []*partitionBuffer
+
+	sendersWG sync.WaitGroup
+
+	rr uint32
 
 	sentMu   sync.Mutex
-	sentSeqs map[uint64]time.Time
+	sentSeqs map[uint64]struct{}
+
+	done    chan struct{}
+	closed  int32
+	closeMu sync.Mutex
+
+	bmMu         sync.Mutex
+	bmTotalTime  map[int]time.Duration
+	bmTotalCount map[int]int
 }
 
 func NewPublisher(cfg *PublisherConfig) *Publisher {
 	p := &Publisher{
-		config:   cfg,
-		producer: NewProducerClient(),
-
-		inflightSem: make(chan struct{}, cfg.MaxInflightRequests),
-		batch:       make([]BatchMessage, 0, cfg.BatchSize),
-		batchCh:     make(chan BatchMessage, cfg.BufferSize),
-		done:        make(chan struct{}),
-		sentSeqs:    make(map[uint64]time.Time),
+		config:       cfg,
+		producer:     NewProducerClient(),
+		partitions:   cfg.Partitions,
+		buffers:      make([]*partitionBuffer, cfg.Partitions),
+		sentSeqs:     make(map[uint64]struct{}),
+		done:         make(chan struct{}),
+		bmTotalTime:  make(map[int]time.Duration),
+		bmTotalCount: make(map[int]int),
 	}
 
-	go p.batchLoop()
+	for i := 0; i < cfg.Partitions; i++ {
+		p.buffers[i] = newPartitionBuffer()
+		if err := p.producer.ConnectPartition(i, cfg.BrokerAddr, cfg.UseTLS, cfg.TLSCertPath, cfg.TLSKeyPath); err != nil {
+			log.Fatalf("Failed to connect partition %d: %v", i, err)
+		}
+		p.sendersWG.Add(1)
+		go p.partitionSender(i)
+	}
+
 	return p
 }
 
-func (p *Publisher) batchLoop() {
-	lingerDuration := time.Duration(p.config.LingerMS) * time.Millisecond
-	ticker := time.NewTicker(lingerDuration)
-	defer ticker.Stop()
+func (p *Publisher) nextPartition() int {
+	idx := int((atomic.AddUint32(&p.rr, 1) - 1) % uint32(p.partitions))
+	return idx
+}
+
+func (p *Publisher) PublishMessage(message string) (uint64, error) {
+	if atomic.LoadInt32(&p.closed) == 1 {
+		return 0, fmt.Errorf("publisher closed")
+	}
+
+	seqNum := p.producer.NextSeqNum()
+	part := p.nextPartition()
+	buf := p.buffers[part]
+
+	buf.mu.Lock()
+	defer buf.mu.Unlock()
+
+	if len(buf.msgs) >= p.config.BufferSize {
+		return 0, fmt.Errorf("partition %d buffer full", part)
+	}
+	bm := BatchMessage{
+		SeqNum:  seqNum,
+		Payload: message,
+	}
+
+	buf.msgs = append(buf.msgs, bm)
+	buf.cond.Signal()
+
+	return seqNum, nil
+}
+
+func (p *Publisher) partitionSender(part int) {
+	defer p.sendersWG.Done()
+	buf := p.buffers[part]
+	linger := time.Duration(p.config.LingerMS) * time.Millisecond
 
 	for {
-		select {
-		case msg := <-p.batchCh:
-			p.batchMu.Lock()
-			p.batch = append(p.batch, msg)
-
-			// immediately send when BatchSize is reached
-			if len(p.batch) >= p.config.BatchSize {
-				p.flushBatch()
-			}
-			p.batchMu.Unlock()
-
-		case <-ticker.C:
-			// send batches periodically
-			p.batchMu.Lock()
-			if len(p.batch) > 0 {
-				p.flushBatch()
-			}
-			p.batchMu.Unlock()
-
-		case <-p.done:
-			// send remaining batches on shutdown
-			p.batchMu.Lock()
-			if len(p.batch) > 0 {
-				p.flushBatch()
-			}
-			p.batchMu.Unlock()
+		buf.mu.Lock()
+		for len(buf.msgs) == 0 && !buf.closed && atomic.LoadInt32(&p.closed) == 0 {
+			buf.cond.Wait()
+		}
+		if buf.closed && len(buf.msgs) == 0 {
+			buf.mu.Unlock()
 			return
 		}
-	}
-}
 
-func (p *Publisher) flushBatch() {
-	if len(p.batch) == 0 {
-		return
-	}
+		var batch []BatchMessage
+		if len(buf.msgs) >= p.config.BatchSize {
+			batch = buf.msgs[:p.config.BatchSize]
+			buf.msgs = buf.msgs[p.config.BatchSize:]
+			buf.mu.Unlock()
+		} else {
+			batch = append([]BatchMessage(nil), buf.msgs...)
+			buf.mu.Unlock()
 
-	batchCopy := make([]BatchMessage, len(p.batch))
-	copy(batchCopy, p.batch)
-	p.batch = p.batch[:0]
-
-	for _, batchMsg := range batchCopy {
-		p.inflightSem <- struct{}{}
-
-		go func(msg BatchMessage) {
-			defer func() { <-p.inflightSem }()
-
-			msgBytes := EncodeMessage(p.config.Topic, msg.Payload)
-			if err := p.SendWithRetry(msgBytes, msg.SeqNum); err != nil {
-				log.Printf("[ERROR] Failed to send seqNum=%d: %v", msg.SeqNum, err)
-			} else {
-				p.sentMu.Lock()
-				p.sentSeqs[msg.SeqNum] = time.Now()
-				p.sentMu.Unlock()
-				log.Printf("[SUCCESS] Sent seqNum=%d", msg.SeqNum)
+			timer := time.NewTimer(linger)
+			select {
+			case <-timer.C:
+				buf.mu.Lock()
+				if len(buf.msgs) > 0 {
+					batch = append(batch, buf.msgs...)
+					buf.msgs = buf.msgs[:0]
+				}
+				buf.mu.Unlock()
+			case <-p.done:
+				timer.Stop()
+				return
 			}
-		}(batchMsg)
+			timer.Stop()
+		}
+
+		if len(batch) == 0 {
+			continue
+		}
+
+		start := time.Now()
+
+		buf.mu.Lock()
+		log.Printf("[DEBUG] Partition %d sending batch of %d messages. Current buffer size: %d", part, len(batch), len(buf.msgs))
+		for _, m := range batch {
+			log.Printf("[DEBUG] Partition %d message SeqNum=%d Payload=%s", part, m.SeqNum, m.Payload)
+		}
+		buf.mu.Unlock()
+
+		data := EncodeBatchMessages(p.config.Topic, part, batch)
+		payload, err := CompressMessage(data, p.config.EnableGzip)
+		if err != nil {
+			log.Printf("[ERROR] compress batch failed: %v", err)
+			p.handleSendFailure(part, batch)
+			continue
+		}
+
+		lenBuf := make([]byte, 4)
+		binary.BigEndian.PutUint32(lenBuf, uint32(len(payload)))
+		payload = append(lenBuf, payload...)
+
+		if err := p.sendWithRetry(payload, batch, part); err != nil {
+			log.Printf("[ERROR] partition %d send failed: %v", part, err)
+			p.handleSendFailure(part, batch)
+		} else {
+			p.sentMu.Lock()
+			for _, m := range batch {
+				p.sentSeqs[m.SeqNum] = struct{}{}
+			}
+			p.sentMu.Unlock()
+		}
+
+		elapsed := time.Since(start)
+		p.bmMu.Lock()
+		p.bmTotalCount[part] += 1
+		p.bmTotalTime[part] += elapsed
+		p.bmMu.Unlock()
 	}
 }
 
-func (p *Publisher) WriteWithLength(conn net.Conn, data []byte) error {
-	compressed, err := CompressMessage(data, p.config.EnableGzip)
-	if err != nil {
-		return fmt.Errorf("compress: %w", err)
-	}
-
-	lenBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(lenBuf, uint32(len(compressed)))
-
-	if _, err := conn.Write(lenBuf); err != nil {
-		return fmt.Errorf("write length: %w", err)
-	}
-
-	if _, err := conn.Write(compressed); err != nil {
-		return fmt.Errorf("write data: %w", err)
-	}
-
-	return nil
+func (p *Publisher) handleSendFailure(part int, batch []BatchMessage) {
+	buf := p.buffers[part]
+	buf.mu.Lock()
+	buf.msgs = append(buf.msgs, batch...)
+	buf.mu.Unlock()
+	buf.cond.Signal()
 }
 
-func (p *Publisher) ReadWithLength(conn net.Conn) ([]byte, error) {
+func (p *Publisher) sendWithRetry(payload []byte, _ []BatchMessage, part int) error {
+	maxAttempts := p.config.MaxRetries + 1
+	backoff := p.config.RetryBackoffMS
+	const maxBackoff = 2000
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		conn := p.producer.GetConn(part)
+		if conn == nil {
+			if err := p.producer.ReconnectPartition(part, p.config.BrokerAddr, p.config.UseTLS, p.config.TLSCertPath, p.config.TLSKeyPath); err != nil {
+				lastErr = fmt.Errorf("reconnect failed: %w", err)
+				time.Sleep(time.Duration(backoff) * time.Millisecond)
+				backoff = min(backoff*2, maxBackoff)
+				continue
+			}
+			conn = p.producer.GetConn(part)
+			if conn == nil {
+				lastErr = fmt.Errorf("no connection after reconnect")
+				time.Sleep(time.Duration(backoff) * time.Millisecond)
+				backoff = min(backoff*2, maxBackoff)
+				continue
+			}
+		}
+
+		_ = conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.WriteTimeoutMS) * time.Millisecond))
+		backoff = min(backoff*2, p.config.MaxBackoffMS)
+		if _, err := conn.Write(payload); err != nil {
+			lastErr = fmt.Errorf("write failed: %w", err)
+			_ = p.producer.ReconnectPartition(part, p.config.BrokerAddr, p.config.UseTLS, p.config.TLSCertPath, p.config.TLSKeyPath)
+			time.Sleep(time.Duration(backoff) * time.Millisecond)
+			backoff = min(backoff*2, maxBackoff)
+			continue
+		}
+
+		if p.config.Acks == "0" {
+			return nil
+		}
+
+		_ = conn.SetReadDeadline(time.Now().Add(time.Duration(p.config.AckTimeoutMS) * time.Millisecond))
+		resp, err := p.readWithLength(conn)
+		_ = conn.SetReadDeadline(time.Time{})
+		if err != nil {
+			lastErr = fmt.Errorf("read ack failed: %w", err)
+			time.Sleep(time.Duration(backoff) * time.Millisecond)
+			backoff = min(backoff*2, maxBackoff)
+			continue
+		}
+
+		if p.config.EnableGzip {
+			resp, err = p.decompressMessage(resp)
+			if err != nil {
+				lastErr = fmt.Errorf("decompress ack failed: %w", err)
+				continue
+			}
+		}
+
+		respStr := strings.TrimSpace(string(resp))
+		if strings.HasPrefix(respStr, "ERROR:") {
+			lastErr = fmt.Errorf("broker error: %s", respStr)
+			return lastErr
+		}
+
+		return nil
+	}
+	return lastErr
+}
+
+func (p *Publisher) readWithLength(conn net.Conn) ([]byte, error) {
 	lenBuf := make([]byte, 4)
 	if _, err := io.ReadFull(conn, lenBuf); err != nil {
 		return nil, fmt.Errorf("read length: %w", err)
@@ -396,18 +518,47 @@ func (p *Publisher) ReadWithLength(conn net.Conn) ([]byte, error) {
 	if _, err := io.ReadFull(conn, msgBuf); err != nil {
 		return nil, fmt.Errorf("read message: %w", err)
 	}
-
-	return DecompressMessage(msgBuf, p.config.EnableGzip)
+	// EOF, unexpected header -> ACK is not gzipped
+	return msgBuf, nil
 }
 
-func EncodeMessage(topic, payload string) []byte {
+func (p *Publisher) decompressMessage(data []byte) ([]byte, error) {
+	if !p.config.EnableGzip {
+		return data, nil
+	}
+	gr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	defer gr.Close()
+	return io.ReadAll(gr)
+}
+
+func EncodeBatchMessages(topic string, partition int, msgs []BatchMessage) []byte {
+	var buf bytes.Buffer
 	topicBytes := []byte(topic)
-	payloadBytes := []byte(payload)
-	data := make([]byte, 2+len(topicBytes)+len(payloadBytes))
-	binary.BigEndian.PutUint16(data[:2], uint16(len(topicBytes)))
-	copy(data[2:2+len(topicBytes)], topicBytes)
-	copy(data[2+len(topicBytes):], payloadBytes)
-	return data
+	binary.Write(&buf, binary.BigEndian, uint16(len(topicBytes)))
+	buf.Write(topicBytes)
+	binary.Write(&buf, binary.BigEndian, int32(partition))
+
+	var batchStart uint64 = 0
+	var batchEnd uint64 = 0
+	if len(msgs) > 0 {
+		batchStart = msgs[0].SeqNum
+		batchEnd = msgs[len(msgs)-1].SeqNum
+	}
+	binary.Write(&buf, binary.BigEndian, batchStart)
+	binary.Write(&buf, binary.BigEndian, batchEnd)
+	binary.Write(&buf, binary.BigEndian, int32(len(msgs)))
+
+	for _, m := range msgs {
+		binary.Write(&buf, binary.BigEndian, m.SeqNum)
+		payloadBytes := []byte(m.Payload)
+		binary.Write(&buf, binary.BigEndian, uint32(len(payloadBytes)))
+		buf.Write(payloadBytes)
+	}
+
+	return buf.Bytes()
 }
 
 func CompressMessage(data []byte, enableGzip bool) ([]byte, error) {
@@ -426,75 +577,6 @@ func CompressMessage(data []byte, enableGzip bool) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func DecompressMessage(data []byte, enableGzip bool) ([]byte, error) {
-	if !enableGzip {
-		return data, nil
-	}
-
-	gr, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	defer gr.Close()
-
-	return io.ReadAll(gr)
-}
-
-func (p *Publisher) SendWithRetry(data []byte, seqNum uint64) error {
-	ackTimeout := time.Duration(p.config.AckTimeoutMS) * time.Millisecond
-
-	for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
-		err := p.tryOnce(data, ackTimeout)
-		if err == nil {
-			return nil
-		}
-
-		if attempt == p.config.MaxRetries {
-			return fmt.Errorf("max retries exceeded: %w", err)
-		}
-
-		backoff := time.Duration(1<<attempt) * time.Duration(p.config.RetryBackoffMS) * time.Millisecond
-		fmt.Printf("Attempt %d/%d failed for seqNum=%d (%v), retrying in %v\n",
-			attempt+1, p.config.MaxRetries+1, seqNum, err, backoff)
-
-		time.Sleep(backoff)
-	}
-
-	return fmt.Errorf("unexpected retry loop exit")
-}
-
-func (p *Publisher) PublishMessage(message string) (uint64, error) {
-	seqNum := p.producer.NextSeqNum()
-
-	var payload string
-	if p.config.EnableIdempotence {
-		payload = fmt.Sprintf("PUBLISH topic=%s acks=%s producerId=%s seqNum=%d epoch=%d message=%s",
-			p.config.Topic,
-			p.config.Acks,
-			p.producer.ID,
-			seqNum,
-			p.producer.epoch,
-			message)
-	} else {
-		payload = fmt.Sprintf("PUBLISH topic=%s acks=%s message=%s",
-			p.config.Topic,
-			p.config.Acks,
-			message)
-	}
-
-	batchMsg := BatchMessage{
-		SeqNum:  seqNum,
-		Payload: payload,
-	}
-
-	select {
-	case p.batchCh <- batchMsg:
-		return seqNum, nil
-	case <-time.After(5 * time.Second):
-		return 0, fmt.Errorf("batch channel full, timeout")
-	}
-}
-
 func (p *Publisher) VerifySentSequences(expectedCount int) error {
 	p.sentMu.Lock()
 	defer p.sentMu.Unlock()
@@ -509,94 +591,103 @@ func (p *Publisher) VerifySentSequences(expectedCount int) error {
 		}
 	}
 
-	log.Printf("[VERIFY] All %d sequences sent successfully", expectedCount)
+	log.Printf("All %d sequences sent successfully", expectedCount)
 	return nil
 }
 
 func (p *Publisher) Flush() {
-	p.batchMu.Lock()
-	defer p.batchMu.Unlock()
-	p.flushBatch()
+	for _, buf := range p.buffers {
+		buf.mu.Lock()
+		buf.cond.Broadcast()
+		buf.mu.Unlock()
+	}
+
+	timeout := time.After(time.Duration(p.config.LingerMS*2) * time.Millisecond)
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		allEmpty := true
+		for _, buf := range p.buffers {
+			buf.mu.Lock()
+			if len(buf.msgs) > 0 {
+				allEmpty = false
+			}
+			buf.mu.Unlock()
+		}
+
+		if allEmpty {
+			break
+		}
+
+		select {
+		case <-timeout:
+			log.Println("[WARN] flush timeout, some messages may be unsent")
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func (p *Publisher) Close() {
-	close(p.done)
-	for i := 0; i < cap(p.inflightSem); i++ {
-		p.inflightSem <- struct{}{}
+	p.closeMu.Lock()
+	if atomic.LoadInt32(&p.closed) == 1 {
+		p.closeMu.Unlock()
+		return
 	}
+	atomic.StoreInt32(&p.closed, 1)
+	close(p.done)
+
+	for _, buf := range p.buffers {
+		buf.mu.Lock()
+		buf.closed = true
+		buf.cond.Broadcast()
+		buf.mu.Unlock()
+	}
+	p.closeMu.Unlock()
+
+	p.sendersWG.Wait()
 	p.producer.Close()
 }
 
-func (p *Publisher) CreateTopic() error {
-	conn := p.producer.GetConn()
-	if conn == nil {
-		return fmt.Errorf("connection not established")
-	}
-
-	createCmd := EncodeMessage(p.config.Topic, fmt.Sprintf("CREATE topic=%s partitions=%d", p.config.Topic, p.config.Partitions))
-
-	if err := p.WriteWithLength(conn, createCmd); err != nil {
-		return fmt.Errorf("send create command: %w", err)
-	}
-
-	resp, err := p.ReadWithLength(conn)
-	if err != nil {
-		return fmt.Errorf("read create response: %w", err)
-	}
-
-	respMsg := strings.TrimSpace(string(resp))
-	if strings.Contains(respMsg, "topic exists") || strings.Contains(respMsg, "already exists") {
-		fmt.Printf("Topic '%s' already exists\n", p.config.Topic)
-		return nil
-	}
-
-	if strings.HasPrefix(respMsg, "ERROR:") {
-		return fmt.Errorf("topic creation failed: %s", respMsg)
-	}
-
-	fmt.Printf("Topic '%s' created with %d partitions\n", p.config.Topic, p.config.Partitions)
-	return nil
+type PartitionStat struct {
+	PartitionID int
+	BatchCount  int
+	AvgDuration time.Duration
 }
 
-func (p *Publisher) tryOnce(data []byte, ackTimeout time.Duration) error {
-	conn := p.producer.GetConn()
-	if conn == nil {
-		return fmt.Errorf("connection not established")
+func printBenchmarkSummaryFixed(
+	partitionStats []PartitionStat,
+	sentMessages int,
+	totalDuration time.Duration,
+) {
+	totalBatches := 0
+	for _, ps := range partitionStats {
+		totalBatches += ps.BatchCount
 	}
 
-	log.Printf("Sending %d bytes to broker", len(data))
+	batchesPerSec := float64(totalBatches) / totalDuration.Seconds()
+	messagesPerSec := float64(sentMessages) / totalDuration.Seconds()
 
-	if err := p.WriteWithLength(conn, data); err != nil {
-		log.Printf("[WARN] Write failed: %v, attempting reconnect", err)
+	fmt.Println("=== BENCHMARK SUMMARY ===")
+	fmt.Printf("Partitions            : %d\n", len(partitionStats))
+	fmt.Printf("Total Batches         : %d\n", totalBatches)
+	fmt.Printf("Total Messages        : %d\n", sentMessages)
+	fmt.Printf("Total Time            : %.3fs\n", totalDuration.Seconds())
+	fmt.Printf("Batch Throughput      : %.2f batches/s\n", batchesPerSec)
+	fmt.Printf("Message Throughput    : %.2f msg/s\n", messagesPerSec)
+	fmt.Println()
 
-		if reconnectErr := p.producer.Reconnect(p.config.BrokerAddr, p.config.UseTLS, p.config.TLSCertPath, p.config.TLSKeyPath); reconnectErr != nil {
-			return fmt.Errorf("reconnect failed: %w", reconnectErr)
-		}
-
-		log.Printf("[INFO] Reconnected successfully")
-		return fmt.Errorf("write failed, reconnected: %w", err)
+	fmt.Println("Partition Breakdown:")
+	for _, ps := range partitionStats {
+		fmt.Printf(
+			"  #%d  batches=%d  avg_batch=%.3fms\n",
+			ps.PartitionID,
+			ps.BatchCount,
+			float64(ps.AvgDuration.Microseconds())/1000.0,
+		)
 	}
-
-	if p.config.Acks == "0" {
-		return nil
-	}
-
-	if err := conn.SetReadDeadline(time.Now().Add(ackTimeout)); err != nil {
-		return fmt.Errorf("set read deadline: %w", err)
-	}
-
-	resp, err := p.ReadWithLength(conn)
-	if err != nil {
-		return fmt.Errorf("read ack: %w", err)
-	}
-
-	_ = conn.SetReadDeadline(time.Time{})
-	msg := strings.TrimSpace(string(resp))
-	if strings.HasPrefix(msg, "ERROR:") {
-		return fmt.Errorf("broker error: %s", msg)
-	}
-
-	return nil
+	fmt.Println("========================================")
 }
 
 func main() {
@@ -606,48 +697,94 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("📋 Configuration:\n")
-	fmt.Printf("  Broker: %s\n", cfg.BrokerAddr)
-	fmt.Printf("  Topic: %s (partitions: %d)\n", cfg.Topic, cfg.Partitions)
-	fmt.Printf("  Max Retries: %d\n", cfg.MaxRetries)
-	fmt.Printf("  Retry Backoff: %dms\n", cfg.RetryBackoffMS)
-	fmt.Printf("  ACK Timeout: %dms\n\n", cfg.AckTimeoutMS)
-
-	publisher := NewPublisher(cfg)
-	if err := publisher.producer.Connect(cfg.BrokerAddr, cfg.UseTLS, cfg.TLSCertPath, cfg.TLSKeyPath); err != nil {
-		log.Fatalf("Failed to connect to broker: %v", err)
-	}
-	defer publisher.Close()
-
-	if err := publisher.CreateTopic(); err != nil {
-		fmt.Printf("Failed to create topic: %v\n", err)
-		os.Exit(1)
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		log.Printf("Failed to marshal config: %v", err)
+	} else {
+		log.Printf("Configuration:\n%s", string(data))
 	}
 
-	fmt.Printf("\nProducer ID: %s\n", publisher.producer.ID)
-	fmt.Printf("Epoch: %d\n\n", publisher.producer.epoch)
+	pub := NewPublisher(cfg)
+	defer pub.Close()
 
-	fmt.Println("Publishing messages...")
-	for i := 0; i < cfg.NumMessages; i++ {
-		message := fmt.Sprintf("Hello from Go client! Message #%d", i)
+	total := cfg.NumMessages
+	msgs := make([]string, 0, total)
+	for i := 0; i < total; i++ {
+		var msg string
+		if cfg.EnableBenchmark {
+			msg = generateMessage(cfg.MessageSize, i)
+		} else {
+			msg = fmt.Sprintf("hello-%d", i)
+		}
+		msgs = append(msgs, msg)
+	}
 
-		seqNum, err := publisher.PublishMessage(message)
-		if err != nil {
-			fmt.Printf("Failed to publish message %d: %v\n", i, err)
-			continue
+	start := time.Now()
+
+	batchSize := cfg.BatchSize
+	for i := 0; i < len(msgs); i += batchSize {
+		end := i + batchSize
+		if end > len(msgs) {
+			end = len(msgs)
+		}
+		batch := msgs[i:end]
+
+		for _, m := range batch {
+			if _, err := pub.PublishMessage(m); err != nil {
+				log.Printf("[ERROR] publish failed: %v", err)
+			}
 		}
 
-		fmt.Printf("Message %d published successfully (seqNum=%d)\n", i, seqNum)
-		time.Sleep(time.Duration(cfg.PublishDelayMS) * time.Millisecond)
+		if cfg.PublishDelayMS > 0 {
+			time.Sleep(time.Duration(cfg.PublishDelayMS) * time.Millisecond)
+		}
 	}
 
-	publisher.Flush()
-	time.Sleep(2 * time.Second)
+	log.Println("All messages queued, flushing...")
+	pub.Flush()
 
-	if err := publisher.VerifySentSequences(cfg.NumMessages); err != nil {
-		fmt.Printf("Sequence verification failed: %v\n", err)
-		os.Exit(1)
+	time.Sleep(time.Duration(cfg.FlushWaitMS) * time.Millisecond)
+
+	duration := time.Since(start)
+
+	partitionStats := make([]PartitionStat, 0, pub.partitions)
+	totalBatches := 0
+	pub.bmMu.Lock()
+	for part := 0; part < pub.partitions; part++ {
+		count := pub.bmTotalCount[part]
+		total := pub.bmTotalTime[part]
+		var avg time.Duration
+		if count > 0 {
+			avg = total / time.Duration(count)
+		}
+		partitionStats = append(partitionStats, PartitionStat{
+			PartitionID: part,
+			BatchCount:  count,
+			AvgDuration: avg,
+		})
+		totalBatches += count
+	}
+	pub.bmMu.Unlock()
+
+	if err := pub.VerifySentSequences(total); err != nil {
+		log.Printf("verify: %v", err)
 	}
 
-	fmt.Println("\nAll messages published successfully!")
+	sentMessages := len(pub.sentSeqs)
+	printBenchmarkSummaryFixed(partitionStats, sentMessages, duration)
+}
+
+func generateMessage(size int, seqNum int) string {
+	if size <= 0 {
+		return fmt.Sprintf("%s #%d", "Hello World!", seqNum)
+	}
+
+	header := fmt.Sprintf("msg-%d-", seqNum)
+	paddingSize := size - len(header)
+	if paddingSize < 0 {
+		paddingSize = 0
+	}
+
+	padding := strings.Repeat("x", paddingSize)
+	return header + padding[:paddingSize]
 }
