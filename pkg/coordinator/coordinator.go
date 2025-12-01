@@ -73,6 +73,10 @@ type OffsetCommitMessage struct {
 
 // NewCoordinator creates a new Coordinator instance.
 func NewCoordinator(cfg *config.Config, publisher OffsetPublisher) *Coordinator {
+	if publisher == nil {
+		util.Fatal("Coordinator requires a non-nil OffsetPublisher")
+	}
+
 	c := &Coordinator{
 		groups:                    make(map[string]*GroupMetadata),
 		cfg:                       cfg,
@@ -101,9 +105,7 @@ func (c *Coordinator) Stop() {
 // RegisterGroup creates a new consumer group for a topic.
 func (c *Coordinator) RegisterGroup(topicName, groupName string, partitionCount int) error {
 	c.mu.Lock()
-	defer func() {
-		c.mu.Unlock()
-	}()
+	defer c.mu.Unlock()
 
 	if _, exists := c.groups[groupName]; exists {
 		return nil
@@ -294,7 +296,6 @@ func (c *Coordinator) storeOffsetInMemory(group, topic string, partition int, of
 func (c *Coordinator) CommitOffset(group, topic string, partition int, offset uint64) error {
 	util.Debug("Committing offset: group='%s', topic='%s', partition=%d, offset=%d",
 		group, topic, partition, offset)
-	c.storeOffsetInMemory(group, topic, partition, offset)
 
 	offsetMsg := OffsetCommitMessage{
 		Group:     group,
@@ -304,11 +305,20 @@ func (c *Coordinator) CommitOffset(group, topic string, partition int, offset ui
 		Timestamp: time.Now(),
 	}
 
-	payload, _ := json.Marshal(offsetMsg)
-	return c.offsetPublisher.Publish(c.offsetTopic, types.Message{
+	payload, err := json.Marshal(offsetMsg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal offset commit: %w", err)
+	}
+
+	if err := c.offsetPublisher.Publish(c.offsetTopic, types.Message{
 		Payload: string(payload),
 		Key:     fmt.Sprintf("%s-%s-%d", group, topic, partition),
-	})
+	}); err != nil {
+		return err
+	}
+
+	c.storeOffsetInMemory(group, topic, partition, offset)
+	return nil
 }
 
 func (c *Coordinator) GetOffset(group, topic string, partition int) (uint64, error) {

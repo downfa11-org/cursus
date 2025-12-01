@@ -73,28 +73,25 @@ e2e-coverage: e2e-build
 	$(GO) test -v -timeout 10m -coverprofile=e2e-coverage.out ./test/e2e/...  
 	@echo "E2E coverage report saved to e2e-coverage.out"  
   
-.PHONY: bench  
-bench:  
-	@echo "[MAKE] Running benchmark with real clients..."    
-	$(MAKE) build-api  
-
-	cd test/publisher && go build -o ../../bin/publisher .  
-	cd test/consumer && go build -o ../../bin/consumer .  
-  
-	bin/go-broker -benchmark=true &  
-	BROKER_PID=$$!; \  
-	for i in {1..30}; do \  
-		if curl -f http://localhost:9080/health 2>/dev/null; then \  
-			echo "Broker server ready."; \  
-			break; \  
-		fi; \  
-		sleep 1; \  
-	done; \  
-	./bin/publisher -create-topic -topic bench-topic -partitions 12; \  
-	./bin/publisher -produce -topic bench-topic -messages 1000 -producers 12 & \  
-	./bin/consumer -consume -topic bench-topic -consumers 12 & \  
-	wait; \  
-	kill $$BROKER_PID || true
+.PHONY: bench
+bench:
+	@echo "[MAKE] Running benchmark..."
+	$(MAKE) build-api
+	cd test/publisher && go build -o ../../bin/publisher .
+	cd test/consumer && go build -o ../../bin/consumer .
+	@bash -c '\
+		bin/go-broker -benchmark=true & \
+		BROKER_PID=$$!; \
+		for i in {1..30}; do \
+			if curl -f http://localhost:9080/health 2>/dev/null; then break; fi; \
+			sleep 1; \
+		done; \
+		./bin/publisher -create-topic -topic bench-topic -partitions 12; \
+		./bin/publisher -produce -topic bench-topic -messages 1000 -producers 12 & \
+		./bin/consumer -consume -topic bench-topic -consumers 12 & \
+		wait; \
+		kill $$BROKER_PID || true; \
+	'
 
 .PHONY: build  
 build: build-api build-cli 

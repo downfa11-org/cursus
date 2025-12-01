@@ -106,7 +106,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 		lenBuf := make([]byte, 4)
 		if _, err := io.ReadFull(conn, lenBuf); err != nil {
 			if err != io.EOF {
-				util.Error("⚠️ Read length error: %v (%s)", err, lenBuf)
+				util.Error("⚠️ Read length error: %v", err)
 			}
 			return
 		}
@@ -115,7 +115,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 		msgBuf := make([]byte, msgLen)
 		if _, err := io.ReadFull(conn, msgBuf); err != nil {
 			if err != io.EOF {
-				util.Error("⚠️ Read message error: %v (%s)", err, msgBuf)
+				util.Error("⚠️ Read message error: %v (len=%d)", err, len(msgBuf))
 			}
 			return
 		}
@@ -171,7 +171,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 					Key:     m.Payload,
 				}
 
-				util.Info("Publishing message to: ID=%s, Key=%s, Payload=%s", msg.ID, msg.Key, strings.ReplaceAll(msg.Payload, "\n", " "))
+				util.Info("Publishing message to: ID=%d, Key=%s, Payload=%s", msg.ID, msg.Key, strings.ReplaceAll(msg.Payload, "\n", " "))
 
 				if err := tm.Publish(batch.Topic, msg); err != nil {
 					util.Error("Failed to publish message seq=%d: %v", m.SeqNum, err)
@@ -191,7 +191,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 
 			acks, message := extractAcksAndMessage(payload)
 			msg := types.Message{Payload: message, Key: message}
-			util.Info("Publishing message to: ID=%s, Key=%s, Payload=%s", msg.ID, msg.Key, strings.ReplaceAll(msg.Payload, "\n", " "))
+			util.Info("Publishing message to: ID=%d, Key=%s, Payload=%s", msg.ID, msg.Key, strings.ReplaceAll(msg.Payload, "\n", " "))
 
 			switch acks {
 			case "0":

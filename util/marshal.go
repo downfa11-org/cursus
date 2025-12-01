@@ -11,7 +11,7 @@ import (
 type LogLevel int
 
 const (
-	LogLevelDebug LogLevel = iota
+	LogLevelDebug LogLevel = 0
 	LogLevelInfo  LogLevel = 1
 	LogLevelWarn  LogLevel = 2
 	LogLevelError LogLevel = 3

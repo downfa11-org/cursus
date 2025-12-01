@@ -188,11 +188,16 @@ func (pc *ProducerClient) ConnectPartition(idx int, addr string, useTLS bool, ce
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 
+	return pc.connectPartitionLocked(idx, addr, useTLS, certPath, keyPath)
+}
+
+func (pc *ProducerClient) connectPartitionLocked(idx int, addr string, useTLS bool, certPath, keyPath string) error {
 	var conn net.Conn
 	var err error
 
 	if useTLS {
-		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		var cert tls.Certificate
+		cert, err = tls.LoadX509KeyPair(certPath, keyPath)
 		if err != nil {
 			return fmt.Errorf("load TLS cert: %w", err)
 		}
@@ -225,7 +230,7 @@ func (pc *ProducerClient) ReconnectPartition(idx int, addr string, useTLS bool, 
 		pc.conns[idx] = nil
 	}
 
-	return pc.ConnectPartition(idx, addr, useTLS, certPath, keyPath)
+	return pc.connectPartitionLocked(idx, addr, useTLS, certPath, keyPath)
 }
 
 func (pc *ProducerClient) GetConn(part int) net.Conn {
@@ -369,6 +374,7 @@ func (p *Publisher) partitionSender(part int) {
 			buf.mu.Unlock()
 		} else {
 			batch = append([]BatchMessage(nil), buf.msgs...)
+			buf.msgs = buf.msgs[:0]
 			buf.mu.Unlock()
 
 			timer := time.NewTimer(linger)
@@ -442,7 +448,6 @@ func (p *Publisher) handleSendFailure(part int, batch []BatchMessage) {
 func (p *Publisher) sendWithRetry(payload []byte, _ []BatchMessage, part int) error {
 	maxAttempts := p.config.MaxRetries + 1
 	backoff := p.config.RetryBackoffMS
-	const maxBackoff = 2000
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -451,14 +456,14 @@ func (p *Publisher) sendWithRetry(payload []byte, _ []BatchMessage, part int) er
 			if err := p.producer.ReconnectPartition(part, p.config.BrokerAddr, p.config.UseTLS, p.config.TLSCertPath, p.config.TLSKeyPath); err != nil {
 				lastErr = fmt.Errorf("reconnect failed: %w", err)
 				time.Sleep(time.Duration(backoff) * time.Millisecond)
-				backoff = min(backoff*2, maxBackoff)
+				backoff = min(backoff*2, p.config.MaxBackoffMS)
 				continue
 			}
 			conn = p.producer.GetConn(part)
 			if conn == nil {
 				lastErr = fmt.Errorf("no connection after reconnect")
 				time.Sleep(time.Duration(backoff) * time.Millisecond)
-				backoff = min(backoff*2, maxBackoff)
+				backoff = min(backoff*2, p.config.MaxBackoffMS)
 				continue
 			}
 		}
@@ -469,7 +474,7 @@ func (p *Publisher) sendWithRetry(payload []byte, _ []BatchMessage, part int) er
 			lastErr = fmt.Errorf("write failed: %w", err)
 			_ = p.producer.ReconnectPartition(part, p.config.BrokerAddr, p.config.UseTLS, p.config.TLSCertPath, p.config.TLSKeyPath)
 			time.Sleep(time.Duration(backoff) * time.Millisecond)
-			backoff = min(backoff*2, maxBackoff)
+			backoff = min(backoff*2, p.config.MaxBackoffMS)
 			continue
 		}
 
@@ -483,7 +488,7 @@ func (p *Publisher) sendWithRetry(payload []byte, _ []BatchMessage, part int) er
 		if err != nil {
 			lastErr = fmt.Errorf("read ack failed: %w", err)
 			time.Sleep(time.Duration(backoff) * time.Millisecond)
-			backoff = min(backoff*2, maxBackoff)
+			backoff = min(backoff*2, p.config.MaxBackoffMS)
 			continue
 		}
 
@@ -752,10 +757,10 @@ func main() {
 	pub.bmMu.Lock()
 	for part := 0; part < pub.partitions; part++ {
 		count := pub.bmTotalCount[part]
-		total := pub.bmTotalTime[part]
+		totalTime := pub.bmTotalTime[part]
 		var avg time.Duration
 		if count > 0 {
-			avg = total / time.Duration(count)
+			avg = totalTime / time.Duration(count)
 		}
 		partitionStats = append(partitionStats, PartitionStat{
 			PartitionID: part,
@@ -786,5 +791,5 @@ func generateMessage(size int, seqNum int) string {
 	}
 
 	padding := strings.Repeat("x", paddingSize)
-	return header + padding[:paddingSize]
+	return header + padding
 }

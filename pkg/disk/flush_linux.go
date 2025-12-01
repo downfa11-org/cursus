@@ -31,8 +31,8 @@ func (d *DiskHandler) openSegment() error {
 func (d *DiskHandler) SendCurrentSegmentToConn(conn net.Conn) (int, error) {
 	d.mu.Lock()
 	d.ioMu.Lock()
-	defer d.ioMu.Unlock()
 	defer d.mu.Unlock()
+	defer d.ioMu.Unlock()
 
 	if d.file == nil {
 		if err := d.openSegment(); err != nil {

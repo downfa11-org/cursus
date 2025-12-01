@@ -106,15 +106,12 @@ func (d *DiskHandler) syncLoop() {
 		select {
 		case <-ticker.C:
 			d.ioMu.Lock()
-			file := d.file
-			d.ioMu.Unlock()
-
-			if file != nil {
-				if err := file.Sync(); err != nil {
+			if d.file != nil {
+				if err := d.file.Sync(); err != nil {
 					util.Error("failed to sync file: %v", err)
 				}
 			}
-
+			d.ioMu.Unlock()
 		case <-d.done:
 			return
 		}

@@ -32,7 +32,11 @@ type HandlerProvider interface {
 	GetHandler(topic string, partitionID int) (*disk.DiskHandler, error)
 }
 
-func NewTopicManager(cfg *config.Config, hp HandlerProvider, cd *coordinator.Coordinator, sm *stream.StreamManager) *TopicManager {
+func (tm *TopicManager) SetCoordinator(cd *coordinator.Coordinator) {
+	tm.coordinator = cd
+}
+
+func NewTopicManager(cfg *config.Config, hp HandlerProvider, sm *stream.StreamManager) *TopicManager {
 	cleanupSec := cfg.CleanupInterval
 	if cleanupSec <= 0 {
 		cleanupSec = 60
@@ -45,7 +49,6 @@ func NewTopicManager(cfg *config.Config, hp HandlerProvider, cd *coordinator.Coo
 		hp:            hp,
 		cfg:           cfg,
 		StreamManager: sm,
-		coordinator:   cd,
 	}
 	go tm.cleanupLoop()
 	return tm

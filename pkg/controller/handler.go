@@ -205,14 +205,14 @@ func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx 
 	}
 
 	streamKey := fmt.Sprintf("%s:%d:%s", topicName, partition, groupName)
-	stream := stream.NewStreamConnection(conn, topicName, partition, groupName, actualOffset)
+	streamConn := stream.NewStreamConnection(conn, topicName, partition, groupName, actualOffset)
 
-	if err := ch.StreamManager.AddStream(streamKey, stream); err != nil {
+	if err := ch.StreamManager.AddStream(streamKey, streamConn); err != nil {
 		return fmt.Errorf("failed to add stream: %w", err)
 	}
 	defer ch.StreamManager.RemoveStream(streamKey)
 
-	return ch.streamLoop(stream)
+	return ch.streamLoop(streamConn)
 }
 
 func (ch *CommandHandler) streamLoop(stream *stream.StreamConnection) error {
@@ -222,13 +222,22 @@ func (ch *CommandHandler) streamLoop(stream *stream.StreamConnection) error {
 		return err
 	}
 
+	tickCount := 0
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
-	tickCount := 0
+	lastCommitTime := time.Now()
+	const commitInterval = 5 * time.Second
+
 	for {
 		select {
 		case <-stream.StopCh():
+			if ch.Coordinator != nil {
+
+				if err := ch.Coordinator.CommitOffset(stream.Group(), stream.Topic(), stream.Partition(), uint64(stream.Offset())); err != nil {
+					util.Warn("Failed to commit offset to OffsetManager for group '%s': %v", stream.Group(), err)
+				}
+			}
 			util.Debug("Stream loop stopped for topic '%s' partition %d group '%s'",
 				stream.Topic(), stream.Partition(), stream.Group())
 			return nil
@@ -253,6 +262,13 @@ func (ch *CommandHandler) streamLoop(stream *stream.StreamConnection) error {
 				}
 				stream.SetOffset(stream.Offset() + 1)
 				stream.SetLastActive(time.Now())
+			}
+
+			if time.Since(lastCommitTime) > commitInterval && ch.Coordinator != nil {
+				if err := ch.Coordinator.CommitOffset(stream.Group(), stream.Topic(), stream.Partition(), uint64(stream.Offset())); err != nil {
+					util.Warn("Failed to commit offset to OffsetManager for group '%s': %v", stream.Group(), err)
+				}
+				lastCommitTime = time.Now()
 			}
 		}
 	}
@@ -766,7 +782,10 @@ func (ch *CommandHandler) resolveOffset(
 		}
 
 		if strings.ToLower(autoOffsetReset) == "latest" {
-			latest, _ := dh.GetLatestOffset()
+			latest, err := dh.GetLatestOffset()
+			if err != nil {
+				util.Warn("Failed to get latest offset, defaulting to 0: %v", err)
+			}
 			actualOffset = latest
 			util.Debug("Using latest offset %d for group '%s'", actualOffset, groupName)
 		} else {

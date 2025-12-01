@@ -207,31 +207,40 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 	currentSegment := dh.CurrentSegment
 	dh.mu.Unlock()
 
+	remainingToSkip := offset
 	for segmentID := 0; segmentID <= currentSegment; segmentID++ {
 		filePath := fmt.Sprintf("%s_segment_%d.log", dh.BaseName, segmentID)
-
 		reader, err := mmap.Open(filePath)
 		if err != nil {
 			continue
 		}
-		defer reader.Close()
 
-		messages := dh.readMessagesFromSegment(reader, offset, max-len(allMessages))
-		util.Debug("Read %d messages from segment %d (file: %s)", len(messages), segmentID, filePath)
+		segmentMsgCount, err := dh.countMessagesInSegmentID(segmentID)
+		if err != nil {
+			reader.Close()
+			return nil, fmt.Errorf("failed to count messages in segment %d: %w", segmentID, err)
+		}
 
+		if remainingToSkip >= uint64(segmentMsgCount) {
+			remainingToSkip -= uint64(segmentMsgCount)
+			reader.Close()
+			continue
+		}
+
+		messages := dh.readMessagesFromSegment(reader, remainingToSkip, max-len(allMessages))
+		remainingToSkip = 0
 		allMessages = append(allMessages, messages...)
+		reader.Close()
+
 		if len(allMessages) >= max {
 			break
 		}
-
-		offset = 0
 	}
 
-	util.Debug("Total messages read: %d (requested max: %d)", len(allMessages), max)
 	return allMessages, nil
 }
 
-func (dh *DiskHandler) readMessagesFromSegment(reader *mmap.ReaderAt, offset uint64, max int) []types.Message {
+func (dh *DiskHandler) readMessagesFromSegment(reader *mmap.ReaderAt, startOffset uint64, max int) []types.Message {
 	messages := []types.Message{}
 	pos := 0
 	currentMsgIndex := uint64(0)
@@ -240,37 +249,26 @@ func (dh *DiskHandler) readMessagesFromSegment(reader *mmap.ReaderAt, offset uin
 		if pos+4 > reader.Len() {
 			break
 		}
-
 		lenBytes := make([]byte, 4)
 		_, err := reader.ReadAt(lenBytes, int64(pos))
 		if err != nil {
-			util.Debug("Failed to read length at pos %d: %v", pos, err)
 			break
 		}
 		msgLen := binary.BigEndian.Uint32(lenBytes)
 		pos += 4
 
 		if pos+int(msgLen) > reader.Len() {
-			util.Debug("Incomplete message at pos %d (len=%d, file ends at %d)", pos, msgLen, reader.Len())
 			break
 		}
-
 		data := make([]byte, msgLen)
 		_, err = reader.ReadAt(data, int64(pos))
 		if err != nil {
-			util.Debug("Failed to read data at pos %d: %v", pos, err)
 			break
 		}
 		pos += int(msgLen)
 
-		if currentMsgIndex >= offset {
-			messages = append(messages, types.Message{
-				Payload: string(data),
-			})
-			if len(messages) <= 5 || len(messages) == max {
-				util.Debug("Message #%d: payload=%.50s...",
-					currentMsgIndex, string(data))
-			}
+		if currentMsgIndex >= startOffset {
+			messages = append(messages, types.Message{Payload: string(data)})
 		}
 		currentMsgIndex++
 	}
@@ -307,6 +305,32 @@ func (d *DiskHandler) countMessagesInSegment() (int, error) {
 	return count, nil
 }
 
+func (d *DiskHandler) countMessagesInSegmentID(segmentID int) (int, error) {
+	filePath := fmt.Sprintf("%s_segment_%d.log", d.BaseName, segmentID)
+	reader, err := mmap.Open(filePath)
+	if err != nil {
+		return 0, fmt.Errorf("mmap open failed: %w", err)
+	}
+	defer reader.Close()
+
+	count := 0
+	pos := 0
+	for pos < reader.Len() {
+		if pos+4 > reader.Len() {
+			break
+		}
+		lenBytes := make([]byte, 4)
+		_, err := reader.ReadAt(lenBytes, int64(pos))
+		if err != nil {
+			break
+		}
+		msgLen := binary.BigEndian.Uint32(lenBytes)
+		pos += 4 + int(msgLen)
+		count++
+	}
+	return count, nil
+}
+
 func (dh *DiskHandler) GetLatestOffset() (uint64, error) {
 	dh.mu.Lock()
 	defer dh.mu.Unlock()
@@ -320,10 +344,14 @@ func (d *DiskHandler) Close() {
 		close(d.done)
 		d.shutdown.Wait()
 		if d.writer != nil {
-			d.writer.Flush()
+			if err := d.writer.Flush(); err != nil {
+				util.Error("flush error on close: %v", err)
+			}
 		}
 		if d.file != nil {
-			d.file.Close()
+			if err := d.file.Close(); err != nil {
+				util.Error("file close error: %v", err)
+			}
 		}
 	})
 }

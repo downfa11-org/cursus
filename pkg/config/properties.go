@@ -98,9 +98,9 @@ func LoadConfig() (*Config, error) {
 
 	autoCreateTopicsStr := flag.String("auto-create-topics", "true", "Auto-create topics on publish")
 
-	flag.IntVar(&cfg.MaxStreamConnections, "max-stream-connections", 1000, "Maximum stream connections")
-	flag.DurationVar(&cfg.StreamTimeout, "stream-timeout", 30*time.Minute, "Stream connection timeout")
-	flag.DurationVar(&cfg.StreamHeartbeatInterval, "stream-heartbeat-interval", 30*time.Second, "Stream heartbeat interval")
+	maxStreamConn := flag.Int("max-stream-connections", 1000, "Maximum stream connections")
+	streamTimeout := flag.Duration("stream-timeout", 30*time.Minute, "Stream connection timeout")
+	streamHeartbeat := flag.Duration("stream-heartbeat-interval", 30*time.Second, "Stream heartbeat interval")
 
 	if envPath := os.Getenv("CONFIG_PATH"); envPath != "" && *configPath == "" {
 		*configPath = envPath
@@ -135,7 +135,7 @@ func LoadConfig() (*Config, error) {
 		logLevelStr, cleanupIntervalStr, tlsStr, tlsCertStr, tlsKeyStr,
 		gzipStr, diskFlushBatchStr, lingerStr, channelBufferStr, diskWriteTimeoutStr,
 		segmentSizeStr, segmentRollTimeStr, partitionChBufferStr, consumerChBufferStr,
-		consumerSessionTimeoutStr, consumerHeartbeatCheckStr, autoCreateTopicsStr)
+		consumerSessionTimeoutStr, consumerHeartbeatCheckStr, autoCreateTopicsStr, maxStreamConn, streamTimeout, streamHeartbeat)
 
 	cfg.Normalize()
 	util.SetLevel(cfg.LogLevel)
@@ -239,11 +239,13 @@ func applyDefaults(cfg *Config, portStr, healthPortStr, logDirStr, exporterStr, 
 	}
 }
 
-func applyExplicitFlags(cfg *Config, portStr, healthPortStr, logDirStr, exporterStr, exporterPortStr,
+func applyExplicitFlags(cfg *Config,
+	portStr, healthPortStr, logDirStr, exporterStr, exporterPortStr,
 	logLevelStr, cleanupIntervalStr, tlsStr, tlsCertStr, tlsKeyStr,
 	gzipStr, diskFlushBatchStr, lingerStr, channelBufferStr, diskWriteTimeoutStr,
 	segmentSizeStr, segmentRollTimeStr, partitionChBufferStr, consumerChBufferStr,
-	consumerSessionTimeoutStr, consumerHeartbeatCheckStr, autoCreateTopicsStr *string) {
+	consumerSessionTimeoutStr, consumerHeartbeatCheckStr, autoCreateTopicsStr *string,
+	maxStreamConn *int, streamTimeout, streamHeartbeat *time.Duration) {
 
 	if *portStr != "9000" {
 		if port, err := strconv.Atoi(*portStr); err == nil {
@@ -357,6 +359,16 @@ func applyExplicitFlags(cfg *Config, portStr, healthPortStr, logDirStr, exporter
 		if autoCreateTopics, err := strconv.ParseBool(*autoCreateTopicsStr); err == nil {
 			cfg.AutoCreateTopics = autoCreateTopics
 		}
+	}
+
+	if *maxStreamConn != 1000 {
+		cfg.MaxStreamConnections = *maxStreamConn
+	}
+	if *streamTimeout != 30*time.Minute {
+		cfg.StreamTimeout = *streamTimeout
+	}
+	if *streamHeartbeat != 30*time.Second {
+		cfg.StreamHeartbeatInterval = *streamHeartbeat
 	}
 }
 

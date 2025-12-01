@@ -16,13 +16,17 @@ type StreamManager struct {
 }
 
 type StreamConnection struct {
-	conn       net.Conn
-	topic      string
-	partition  int
-	group      string
+	conn      net.Conn
+	topic     string
+	partition int
+	group     string
+
+	mu         sync.RWMutex
 	offset     uint64
 	lastActive time.Time
-	stopCh     chan struct{}
+
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 func NewStreamManager(maxConn int, timeout, heartbeat time.Duration) *StreamManager {
@@ -36,15 +40,17 @@ func NewStreamManager(maxConn int, timeout, heartbeat time.Duration) *StreamMana
 
 // NewStreamConnection creates a new stream connection
 func NewStreamConnection(conn net.Conn, topic string, partition int, group string, offset uint64) *StreamConnection {
-	return &StreamConnection{
+	sc := &StreamConnection{
 		conn:       conn,
 		topic:      topic,
 		partition:  partition,
 		group:      group,
 		offset:     offset,
-		stopCh:     make(chan struct{}),
 		lastActive: time.Now(),
+		stopCh:     make(chan struct{}),
 	}
+	sc.SetLastActive(time.Now())
+	return sc
 }
 
 func (sm *StreamManager) AddStream(key string, stream *StreamConnection) error {
@@ -65,8 +71,8 @@ func (sm *StreamManager) RemoveStream(key string) {
 	defer sm.mu.Unlock()
 
 	if stream, ok := sm.streams[key]; ok {
-		close(stream.stopCh)
 		delete(sm.streams, key)
+		stream.Stop()
 	}
 }
 
@@ -77,15 +83,36 @@ func (sm *StreamManager) monitorConnection(key string, stream *StreamConnection)
 	for {
 		select {
 		case <-stream.stopCh:
-			continue
+			stream.closeConn()
+			return
 		case <-ticker.C:
-			if time.Since(stream.lastActive) > sm.timeout {
-				stream.stopCh <- struct{}{}
+			if time.Since(stream.LastActive()) > sm.timeout {
 				sm.RemoveStream(key)
 				return
 			}
 		}
 	}
+}
+
+func (sc *StreamConnection) closeConn() {
+	sc.stopOnce.Do(func() {
+		close(sc.stopCh)
+		if sc.conn != nil {
+			_ = sc.conn.Close()
+			sc.conn = nil
+		}
+	})
+}
+
+func (sm *StreamManager) StopStream(key string) {
+	sm.mu.RLock()
+	stream, ok := sm.streams[key]
+	sm.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	close(stream.stopCh)
 }
 
 func (sm *StreamManager) GetStreamsForPartition(topic string, partitionID int) []*StreamConnection {
@@ -101,12 +128,45 @@ func (sm *StreamManager) GetStreamsForPartition(topic string, partitionID int) [
 	return streams
 }
 
-func (sc *StreamConnection) Topic() string             { return sc.topic }
-func (sc *StreamConnection) Partition() int            { return sc.partition }
-func (sc *StreamConnection) Group() string             { return sc.group }
-func (sc *StreamConnection) Offset() uint64            { return sc.offset }
-func (sc *StreamConnection) Conn() net.Conn            { return sc.conn }
-func (sc *StreamConnection) SetOffset(o uint64)        { sc.offset = o }
-func (sc *StreamConnection) StopCh() <-chan struct{}   { return sc.stopCh }
-func (sc *StreamConnection) SetLastActive(t time.Time) { sc.lastActive = t }
-func (sc *StreamConnection) IncrementOffset()          { sc.offset++ }
+func (sc *StreamConnection) Topic() string  { return sc.topic }
+func (sc *StreamConnection) Partition() int { return sc.partition }
+func (sc *StreamConnection) Group() string  { return sc.group }
+func (sc *StreamConnection) Conn() net.Conn { return sc.conn }
+
+func (sc *StreamConnection) Offset() uint64 {
+	sc.mu.RLock()
+	defer sc.mu.RUnlock()
+	return sc.offset
+}
+
+func (sc *StreamConnection) SetOffset(o uint64) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.offset = o
+}
+
+func (sc *StreamConnection) IncrementOffset() {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.offset++
+}
+
+func (sc *StreamConnection) SetLastActive(t time.Time) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.lastActive = t
+}
+
+func (sc *StreamConnection) LastActive() time.Time {
+	sc.mu.RLock()
+	defer sc.mu.RUnlock()
+	return sc.lastActive
+}
+
+func (sc *StreamConnection) StopCh() <-chan struct{} { return sc.stopCh }
+
+func (sc *StreamConnection) Stop() {
+	sc.stopOnce.Do(func() {
+		close(sc.stopCh)
+	})
+}

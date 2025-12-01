@@ -294,18 +294,27 @@ func (bc *BrokerClient) RegisterConsumerGroup(topic, groupName string, consumerC
 }
 
 func (bc *BrokerClient) SendHeartbeat() error {
+	bc.mu.Lock()
 	if !bc.registered {
+		bc.mu.Unlock()
 		return fmt.Errorf("consumer not registered")
+	}
+
+	conn := bc.conn
+	bc.mu.Unlock()
+
+	if conn == nil {
+		return fmt.Errorf("connection closed")
 	}
 
 	heartbeatCmd := fmt.Sprintf("HEARTBEAT topic=%s group=%s consumer=%s", bc.topic, bc.consumerGroup, bc.consumerID)
 	cmdBytes := util.EncodeMessage("", heartbeatCmd)
 
-	if err := util.WriteWithLength(bc.conn, cmdBytes); err != nil {
+	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
 		return fmt.Errorf("send heartbeat: %w", err)
 	}
 
-	resp, err := util.ReadWithLength(bc.conn)
+	resp, err := util.ReadWithLength(conn)
 	if err != nil {
 		return fmt.Errorf("read heartbeat response: %w", err)
 	}

@@ -32,8 +32,10 @@ func main() {
 	// Initialization
 	dm := disk.NewDiskManager(cfg)
 	sm := stream.NewStreamManager(cfg.MaxStreamConnections, cfg.StreamTimeout, cfg.StreamHeartbeatInterval)
-	tm := topic.NewTopicManager(cfg, dm, nil, sm)
+
+	tm := topic.NewTopicManager(cfg, dm, sm)
 	cd := coordinator.NewCoordinator(cfg, tm)
+	tm.SetCoordinator(cd)
 
 	// Static consumer groups
 	for _, gcfg := range cfg.StaticConsumerGroups {
@@ -49,8 +51,6 @@ func main() {
 			}
 		}
 	}
-
-	go cd.Start()
 
 	if err := server.RunServer(cfg, tm, dm, cd, sm); err != nil {
 		util.Fatal("❌ Broker failed: %v", err)

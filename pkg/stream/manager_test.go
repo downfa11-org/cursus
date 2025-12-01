@@ -33,12 +33,14 @@ func TestMaxConnections(t *testing.T) {
 	sm := NewStreamManager(1, time.Second, 100*time.Millisecond)
 
 	conn1, _ := net.Pipe()
+	defer conn1.Close()
 	stream1 := NewStreamConnection(conn1, "topic", 0, "group1", 0)
 	if err := sm.AddStream("key1", stream1); err != nil {
 		t.Fatalf("failed to add stream: %v", err)
 	}
 
 	conn2, _ := net.Pipe()
+	defer conn2.Close()
 	stream2 := NewStreamConnection(conn2, "topic", 0, "group2", 0)
 	if err := sm.AddStream("key2", stream2); err == nil {
 		t.Fatalf("expected error when adding stream beyond maxConn")
@@ -85,6 +87,7 @@ func TestStreamConnectionOffsetAndActive(t *testing.T) {
 
 	now := time.Now()
 	sc.SetLastActive(now)
+
 	if !sc.lastActive.Equal(now) {
 		t.Fatalf("expected lastActive to be updated")
 	}

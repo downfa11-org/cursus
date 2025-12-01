@@ -23,8 +23,10 @@ func main() {
 
 	dm := disk.NewDiskManager(cfg)
 	sm := stream.NewStreamManager(cfg.MaxStreamConnections, cfg.StreamTimeout, cfg.StreamHeartbeatInterval)
-	tm := topic.NewTopicManager(cfg, dm, nil, sm)
+	tm := topic.NewTopicManager(cfg, dm, sm)
 	cd := coordinator.NewCoordinator(cfg, tm)
+	tm.SetCoordinator(cd)
+
 	ctx := controller.NewClientContext("default-group", 0)
 	ch := controller.NewCommandHandler(tm, dm, cfg, cd, sm)
 
