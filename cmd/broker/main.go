@@ -6,8 +6,8 @@ import (
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/disk"
-	"github.com/downfa11-org/go-broker/pkg/offset"
 	"github.com/downfa11-org/go-broker/pkg/server"
+	"github.com/downfa11-org/go-broker/pkg/stream"
 	"github.com/downfa11-org/go-broker/pkg/topic"
 	"github.com/downfa11-org/go-broker/util"
 )
@@ -27,20 +27,20 @@ func main() {
 	}
 
 	util.Info("🚀 Starting broker on port %d\n", cfg.BrokerPort)
-	util.Info("🧠 Benchmark: %v | 📊 Exporter: %v\n", cfg.EnableBenchmark, cfg.EnableExporter)
+	util.Info("📊 Exporter: %v\n", cfg.EnableExporter)
 
 	// Initialization
 	dm := disk.NewDiskManager(cfg)
-	cd := coordinator.NewCoordinator(cfg)
-	tm := topic.NewTopicManager(cfg, dm, cd)
-	om := offset.NewOffsetManager()
+	sm := stream.NewStreamManager(cfg.MaxStreamConnections, cfg.StreamTimeout, cfg.StreamHeartbeatInterval)
+	tm := topic.NewTopicManager(cfg, dm, nil, sm)
+	cd := coordinator.NewCoordinator(cfg, tm)
 
 	// Static consumer groups
 	for _, gcfg := range cfg.StaticConsumerGroups {
 		for _, topicName := range gcfg.Topics {
 			t := tm.GetTopic(topicName)
 			if t == nil && cfg.AutoCreateTopics {
-				t = tm.CreateTopic(topicName, 4)
+				tm.CreateTopic(topicName, 4)
 			}
 			if t != nil {
 				if err := tm.RegisterConsumerGroup(topicName, gcfg.Name, gcfg.ConsumerCount); err != nil {
@@ -52,7 +52,7 @@ func main() {
 
 	go cd.Start()
 
-	if err := server.RunServer(cfg, tm, dm, om, cd); err != nil {
+	if err := server.RunServer(cfg, tm, dm, cd, sm); err != nil {
 		util.Fatal("❌ Broker failed: %v", err)
 	}
 }

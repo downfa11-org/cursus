@@ -5,11 +5,19 @@ import (
 	"testing"
 
 	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/go-broker/pkg/types"
 )
+
+type DummyPublisher struct{}
+
+func (d *DummyPublisher) Publish(topic string, msg types.Message) error {
+	return nil
+}
+func (d *DummyPublisher) CreateTopic(topic string, partitionCount int) {}
 
 func TestRebalanceRange_AssignsPartitionsEvenly(t *testing.T) {
 	cfg := &config.Config{}
-	c := NewCoordinator(cfg)
+	c := NewCoordinator(cfg, &DummyPublisher{})
 
 	groupName := "group1"
 	partitionCount := 5
@@ -46,7 +54,7 @@ func TestRebalanceRange_AssignsPartitionsEvenly(t *testing.T) {
 
 func TestRebalanceRange_NoMembers(t *testing.T) {
 	cfg := &config.Config{}
-	c := NewCoordinator(cfg)
+	c := NewCoordinator(cfg, &DummyPublisher{})
 
 	groupName := "groupEmpty"
 	if err := c.RegisterGroup("topicX", groupName, 3); err != nil {
@@ -58,7 +66,7 @@ func TestRebalanceRange_NoMembers(t *testing.T) {
 
 func TestRebalanceRange_MoreMembersThanPartitions(t *testing.T) {
 	cfg := &config.Config{}
-	c := NewCoordinator(cfg)
+	c := NewCoordinator(cfg, &DummyPublisher{})
 
 	groupName := "group2"
 	if err := c.RegisterGroup("topicY", groupName, 2); err != nil {

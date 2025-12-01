@@ -10,7 +10,7 @@ import (
 	"github.com/downfa11-org/go-broker/pkg/controller"
 	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/disk"
-	"github.com/downfa11-org/go-broker/pkg/offset"
+	"github.com/downfa11-org/go-broker/pkg/stream"
 	"github.com/downfa11-org/go-broker/pkg/topic"
 )
 
@@ -22,11 +22,11 @@ func main() {
 	}
 
 	dm := disk.NewDiskManager(cfg)
-	cd := coordinator.NewCoordinator(cfg)
-	tm := topic.NewTopicManager(cfg, dm, cd)
+	sm := stream.NewStreamManager(cfg.MaxStreamConnections, cfg.StreamTimeout, cfg.StreamHeartbeatInterval)
+	tm := topic.NewTopicManager(cfg, dm, nil, sm)
+	cd := coordinator.NewCoordinator(cfg, tm)
 	ctx := controller.NewClientContext("default-group", 0)
-	om := offset.NewOffsetManager()
-	ch := controller.NewCommandHandler(tm, dm, cfg, om, cd)
+	ch := controller.NewCommandHandler(tm, dm, cfg, cd, sm)
 
 	fmt.Println("🔹 Broker ready. Type HELP for commands.")
 	fmt.Println("")

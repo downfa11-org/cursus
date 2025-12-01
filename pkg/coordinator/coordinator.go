@@ -1,11 +1,13 @@
 package coordinator
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
 )
 
@@ -15,6 +17,17 @@ type Coordinator struct {
 	mu     sync.RWMutex              // Global lock for coordinator state
 	cfg    *config.Config            // Configuration reference
 	stopCh chan struct{}
+
+	offsetPublisher           OffsetPublisher
+	offsetTopic               string
+	offsetTopicPartitionCount int
+
+	offsets map[string]map[string]map[int]uint64 // group -> topic -> partition -> offset
+}
+
+type OffsetPublisher interface {
+	Publish(topic string, msg types.Message) error
+	CreateTopic(topic string, partitionCount int)
 }
 
 // GroupMetadata holds metadata for a single consumer group.
@@ -50,13 +63,29 @@ type MemberInfo struct {
 	Assignments   []int     `json:"assignments"`
 }
 
+type OffsetCommitMessage struct {
+	Group     string    `json:"group"`
+	Topic     string    `json:"topic"`
+	Partition int       `json:"partition"`
+	Offset    uint64    `json:"offset"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
 // NewCoordinator creates a new Coordinator instance.
-func NewCoordinator(cfg *config.Config) *Coordinator {
-	return &Coordinator{
-		groups: make(map[string]*GroupMetadata),
-		cfg:    cfg,
-		stopCh: make(chan struct{}),
+func NewCoordinator(cfg *config.Config, publisher OffsetPublisher) *Coordinator {
+	c := &Coordinator{
+		groups:                    make(map[string]*GroupMetadata),
+		cfg:                       cfg,
+		stopCh:                    make(chan struct{}),
+		offsetPublisher:           publisher,
+		offsetTopic:               "__consumer_offsets",
+		offsetTopicPartitionCount: 4, // init. dynamic
+		offsets:                   make(map[string]map[string]map[int]uint64),
 	}
+
+	// Create offset topic based on initial partition count.
+	publisher.CreateTopic(c.offsetTopic, c.offsetTopicPartitionCount)
+	return c
 }
 
 // Start launches background monitoring processes (e.g., heartbeat monitor).
@@ -72,10 +101,12 @@ func (c *Coordinator) Stop() {
 // RegisterGroup creates a new consumer group for a topic.
 func (c *Coordinator) RegisterGroup(topicName, groupName string, partitionCount int) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer func() {
+		c.mu.Unlock()
+	}()
 
 	if _, exists := c.groups[groupName]; exists {
-		return fmt.Errorf("group '%s' already exists", groupName)
+		return nil
 	}
 
 	partitions := make([]int, partitionCount)
@@ -89,6 +120,8 @@ func (c *Coordinator) RegisterGroup(topicName, groupName string, partitionCount 
 		Partitions: partitions,
 	}
 
+	// NOTE: updateOffsetPartitionCount assumes caller holds the lock to avoid deadlock.
+	c.updateOffsetPartitionCount()
 	return nil
 }
 
@@ -154,7 +187,7 @@ func (c *Coordinator) RemoveConsumer(groupName, consumerID string) error {
 
 	delete(group.Members, consumerID)
 	c.rebalanceRange(groupName)
-
+	c.updateOffsetPartitionCount()
 	util.Info("✅ Consumer '%s' left group '%s'. Remaining members: %d", consumerID, groupName, len(group.Members))
 	return nil
 }
@@ -239,4 +272,72 @@ func (c *Coordinator) GetGroupStatus(groupName string) (*GroupStatus, error) {
 		Members:        members,
 		LastRebalance:  group.LastRebalance,
 	}, nil
+}
+
+func calculateOffsetPartitionCount(groupCount int) int {
+	return min(max(groupCount/10, 4), 50)
+}
+
+func (c *Coordinator) storeOffsetInMemory(group, topic string, partition int, offset uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, ok := c.offsets[group]; !ok {
+		c.offsets[group] = make(map[string]map[int]uint64)
+	}
+	if _, ok := c.offsets[group][topic]; !ok {
+		c.offsets[group][topic] = make(map[int]uint64)
+	}
+	c.offsets[group][topic][partition] = offset
+}
+
+func (c *Coordinator) CommitOffset(group, topic string, partition int, offset uint64) error {
+	util.Debug("Committing offset: group='%s', topic='%s', partition=%d, offset=%d",
+		group, topic, partition, offset)
+	c.storeOffsetInMemory(group, topic, partition, offset)
+
+	offsetMsg := OffsetCommitMessage{
+		Group:     group,
+		Topic:     topic,
+		Partition: partition,
+		Offset:    offset,
+		Timestamp: time.Now(),
+	}
+
+	payload, _ := json.Marshal(offsetMsg)
+	return c.offsetPublisher.Publish(c.offsetTopic, types.Message{
+		Payload: string(payload),
+		Key:     fmt.Sprintf("%s-%s-%d", group, topic, partition),
+	})
+}
+
+func (c *Coordinator) GetOffset(group, topic string, partition int) (uint64, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if topics, ok := c.offsets[group]; ok {
+		if partitions, ok := topics[topic]; ok {
+			if offset, ok := partitions[partition]; ok {
+				return offset, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("no offset found for group '%s', topic '%s', partition %d", group, topic, partition)
+}
+
+// updateOffsetPartitionCount updates the number of partitions for the internal offset topic.
+//
+// IMPORTANT: this function DOES NOT acquire c.mu. Callers MUST hold the Coordinator lock
+// (either c.mu.Lock() or c.mu.RLock() as appropriate) before calling this to avoid races.
+// This change removes deadlock caused by nested locking when callers already hold the lock.
+func (c *Coordinator) updateOffsetPartitionCount() {
+	// NOTE: intentionally no locking here. Caller must hold lock.
+	groupCount := len(c.groups)
+	newCount := calculateOffsetPartitionCount(groupCount)
+
+	if newCount != c.offsetTopicPartitionCount {
+		c.offsetTopicPartitionCount = newCount
+		c.offsetPublisher.CreateTopic(c.offsetTopic, newCount)
+		util.Info("Updated offset topic partitions to %d for %d groups", newCount, groupCount)
+	}
 }
