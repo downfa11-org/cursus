@@ -168,7 +168,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 			} else {
 				var published int
 				for _, m := range batch.Messages {
-					msg := types.Message{Payload: m.Payload, Key: m.Payload}
+					msg := types.Message{Payload: m.Payload, Key: m.Key}
 					if err := tm.Publish(batch.Topic, msg); err != nil {
 						util.Warn("Failed to publish message in batch: %v", err)
 						continue

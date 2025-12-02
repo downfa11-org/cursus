@@ -120,19 +120,23 @@ func (tm *TopicManager) PublishBatchSync(topicName string, messages []types.Mess
 	}
 
 	partitioned := make(map[int][]types.Message)
-	t.mu.RLock()
+	var partitions []*Partition
+
+	t.mu.Lock()
+	partitions = make([]*Partition, len(t.Partitions))
+	copy(partitions, t.Partitions)
 	for _, msg := range messages {
 		var idx int
 		if msg.Key != "" {
 			keyID := util.GenerateID(msg.Key)
-			idx = int(keyID % uint64(len(t.Partitions)))
+			idx = int(keyID % uint64(len(partitions)))
 		} else {
-			idx = int(t.counter % uint64(len(t.Partitions)))
+			idx = int(t.counter % uint64(len(partitions)))
 			t.counter++
 		}
 		partitioned[idx] = append(partitioned[idx], msg)
 	}
-	t.mu.RUnlock()
+	t.mu.Unlock()
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(partitioned))
@@ -144,7 +148,7 @@ func (tm *TopicManager) PublishBatchSync(topicName string, messages []types.Mess
 			if err := p.EnqueueBatchSync(msgs); err != nil {
 				errCh <- fmt.Errorf("partition %d: %w", p.id, err)
 			}
-		}(t.Partitions[idx], msgs)
+		}(partitions[idx], msgs)
 	}
 
 	wg.Wait()

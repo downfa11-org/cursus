@@ -72,7 +72,7 @@ func LoadConfig() (*ConsumerConfig, error) {
 	if *configPath != "" {
 		data, err := os.ReadFile(*configPath)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
 		}
 		if strings.HasSuffix(*configPath, ".json") {
 			if err := json.Unmarshal(data, cfg); err != nil {

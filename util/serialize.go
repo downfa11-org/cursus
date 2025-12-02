@@ -1,6 +1,7 @@
 package util
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -62,17 +63,77 @@ func ReadWithLength(conn net.Conn) ([]byte, error) {
 	return buf, nil
 }
 
-type Batch struct {
-	Topic      string
-	Partition  int32
-	BatchStart uint64
-	BatchEnd   uint64
-	Acks       int
-	Messages   []types.Message
+func EncodeBatchMessages(topic string, partition int, msgs []types.Message, acks string) ([]byte, error) {
+	var buf bytes.Buffer
+
+	write := func(v any) error {
+		if err := binary.Write(&buf, binary.BigEndian, v); err != nil {
+			return fmt.Errorf("encode value failed: %w", err)
+		}
+		return nil
+	}
+
+	// topic
+	topicBytes := []byte(topic)
+	if err := write(uint16(len(topicBytes))); err != nil {
+		return nil, err
+	}
+	if _, err := buf.Write(topicBytes); err != nil {
+		return nil, fmt.Errorf("write topic bytes failed: %w", err)
+	}
+
+	// partition
+	if err := write(int32(partition)); err != nil {
+		return nil, err
+	}
+
+	// acks
+	acksBytes := []byte(acks)
+	if len(acksBytes) > 255 {
+		acksBytes = acksBytes[:255]
+	}
+	if err := write(uint8(len(acksBytes))); err != nil {
+		return nil, err
+	}
+	if _, err := buf.Write(acksBytes); err != nil {
+		return nil, fmt.Errorf("write acks failed: %w", err)
+	}
+
+	// batch start/end seqNum
+	var batchStart, batchEnd uint64
+	if len(msgs) > 0 {
+		batchStart = msgs[0].SeqNum
+		batchEnd = msgs[len(msgs)-1].SeqNum
+	}
+	if err := write(batchStart); err != nil {
+		return nil, err
+	}
+	if err := write(batchEnd); err != nil {
+		return nil, err
+	}
+
+	if err := write(int32(len(msgs))); err != nil {
+		return nil, err
+	}
+
+	for _, m := range msgs {
+		if err := write(m.SeqNum); err != nil {
+			return nil, err
+		}
+		payloadBytes := []byte(m.Payload)
+		if err := write(uint32(len(payloadBytes))); err != nil {
+			return nil, err
+		}
+		if _, err := buf.Write(payloadBytes); err != nil {
+			return nil, fmt.Errorf("write payload bytes failed: %w", err)
+		}
+	}
+
+	return buf.Bytes(), nil
 }
 
 // DecodeBatchMessages decodes a batch encoded by EncodeBatchMessages
-func DecodeBatchMessages(data []byte) (*Batch, error) {
+func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 	offset := 0
 	read := func(size int) ([]byte, error) {
 		if offset+size > len(data) {
@@ -146,7 +207,7 @@ func DecodeBatchMessages(data []byte) (*Batch, error) {
 		})
 	}
 
-	return &Batch{
+	return &types.Batch{
 		Topic:      topic,
 		Partition:  partition,
 		BatchStart: batchStart,

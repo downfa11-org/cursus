@@ -227,14 +227,25 @@ func (bc *BrokerClient) ConsumeMessages(topic string, partition int, consumerGro
 
 // GetConsumerGroupStatus retrieves consumer group metadata from broker
 func (bc *BrokerClient) GetConsumerGroupStatus(groupID string) (*ConsumerGroupStatus, error) {
-	if err := bc.connect(); err != nil {
-		return nil, err
+	bc.mu.Lock()
+	if bc.conn == nil || bc.closed {
+		bc.mu.Unlock()
+		if err := bc.connect(); err != nil {
+			return nil, err
+		}
+		bc.mu.Lock()
+	}
+	conn := bc.conn
+	bc.mu.Unlock()
+
+	if conn == nil {
+		return nil, fmt.Errorf("connection not available")
 	}
 
 	statusCmd := fmt.Sprintf("GROUP_STATUS group=%s", groupID)
 	cmdBytes := util.EncodeMessage("admin", statusCmd)
 
-	if err := util.WriteWithLength(bc.conn, cmdBytes); err != nil {
+	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
 		return nil, fmt.Errorf("send command: %w", err)
 	}
 
@@ -266,7 +277,7 @@ func (bc *BrokerClient) GetConsumerGroupStatus(groupID string) (*ConsumerGroupSt
 }
 
 // RegisterConsumerGroup registers a consumer group with a topic
-func (bc *BrokerClient) RegisterConsumerGroup(topic, groupName string, consumerCount int) error {
+func (bc *BrokerClient) RegisterConsumerGroup(topic, groupName string) error {
 	if err := bc.connect(); err != nil {
 		return err
 	}

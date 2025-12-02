@@ -153,25 +153,27 @@ func (t *Topic) PublishSync(msg types.Message) error {
 	return err
 }
 
-func (t *Topic) PublishBatchSync(topicName string, msgs []types.Message) error {
+func (t *Topic) PublishBatchSync(msgs []types.Message) error {
 	if len(msgs) == 0 {
 		return nil
 	}
 	partitioned := make(map[int][]types.Message)
 
-	t.mu.Lock()
 	for _, msg := range msgs {
 		var idx int
 		if msg.Key != "" {
 			keyID := util.GenerateID(msg.Key)
+			t.mu.RLock()
 			idx = int(keyID % uint64(len(t.Partitions)))
+			t.mu.RUnlock()
 		} else {
+			t.mu.Lock()
 			idx = int(t.counter % uint64(len(t.Partitions)))
 			t.counter++
+			t.mu.Unlock()
 		}
 		partitioned[idx] = append(partitioned[idx], msg)
 	}
-	t.mu.Unlock()
 	for idx, pm := range partitioned {
 		p := t.Partitions[idx]
 
@@ -244,6 +246,10 @@ func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
 }
 
 func (p *Partition) broadcastToStreams(msg types.Message) {
+	if p.streamManager == nil {
+		return
+	}
+
 	streams := p.streamManager.GetStreamsForPartition(p.topic, p.id)
 	for _, stream := range streams {
 		select {

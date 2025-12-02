@@ -106,7 +106,7 @@ func (a *Actions) ConsumeMessages() *Actions {
 	a.ctx.t.Logf("Consuming from topic '%s'...", a.ctx.topic)
 
 	client := a.ctx.getClient()
-	if err := client.RegisterConsumerGroup(a.ctx.topic, a.ctx.consumerGroup, 1); err != nil {
+	if err := client.RegisterConsumerGroup(a.ctx.topic, a.ctx.consumerGroup); err != nil {
 		a.ctx.t.Logf("Warning: Failed to register consumer group: %v", err)
 	}
 

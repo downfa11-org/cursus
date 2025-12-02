@@ -87,10 +87,13 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 	flag.IntVar(&cfg.MessageSize, "benchmark_message_size", 100, "Message size in bytes (benchmark mode only)")
 
 	configPath := flag.String("config", "/config.yaml", "Path to YAML/JSON config file")
+	flag.Parse()
 
 	if *configPath != "" {
 		data, err := os.ReadFile(*configPath)
-		if err == nil {
+		if err != nil {
+			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
+		} else {
 			if strings.HasSuffix(*configPath, ".json") {
 				if err := json.Unmarshal(data, cfg); err != nil {
 					log.Printf("[WARN] Failed to parse JSON config: %v", err)
@@ -102,8 +105,6 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 			}
 		}
 	}
-
-	flag.Parse()
 
 	if cfg.MaxRetries < 0 {
 		cfg.MaxRetries = 0
@@ -134,6 +135,15 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 	}
 	if cfg.PublishDelayMS < 0 {
 		cfg.PublishDelayMS = 0
+	}
+	if cfg.MaxBackoffMS <= 0 {
+		cfg.MaxBackoffMS = 2000
+	}
+	if cfg.WriteTimeoutMS <= 0 {
+		cfg.WriteTimeoutMS = 5000
+	}
+	if cfg.FlushWaitMS < 0 {
+		cfg.FlushWaitMS = 0
 	}
 	if cfg.Acks != "0" && cfg.Acks != "1" && cfg.Acks != "all" {
 		cfg.Acks = "1"
@@ -354,6 +364,8 @@ func (p *Publisher) partitionSender(part int) {
 	linger := time.Duration(p.config.LingerMS) * time.Millisecond
 
 	for {
+		var batch []types.Message
+
 		buf.mu.Lock()
 		for len(buf.msgs) == 0 && !buf.closed && atomic.LoadInt32(&p.closed) == 0 {
 			buf.cond.Wait()
@@ -362,42 +374,28 @@ func (p *Publisher) partitionSender(part int) {
 			buf.mu.Unlock()
 			return
 		}
+		buf.mu.Unlock()
 
-		var batch []types.Message
-		if len(buf.msgs) >= p.config.BatchSize {
-			batch = buf.msgs[:p.config.BatchSize]
-			buf.msgs = buf.msgs[p.config.BatchSize:]
-			buf.mu.Unlock()
-		} else {
-			batch = append([]types.Message(nil), buf.msgs...)
-			buf.msgs = buf.msgs[:0]
-			buf.mu.Unlock()
-
-			timer := time.NewTimer(linger)
+		batch = p.extractBatch(buf)
+		if len(batch) == 0 {
 			select {
-			case <-timer.C:
-				buf.mu.Lock()
-				if len(buf.msgs) > 0 {
-					batch = append(batch, buf.msgs...)
-					buf.msgs = buf.msgs[:0]
-				}
-				buf.mu.Unlock()
+			case <-time.After(linger):
+				continue
 			case <-p.done:
-				timer.Stop()
 				return
 			}
-			timer.Stop()
-		}
-
-		if len(batch) == 0 {
-			continue
 		}
 
 		start := time.Now()
-
 		log.Printf("[DEBUG] Partition %d sending batch of %d messages", part, len(batch))
 
-		data := EncodeBatchMessages(p.config.Topic, part, batch)
+		data, err := EncodeBatchMessages(p.config.Topic, part, batch, p.config.Acks)
+		if err != nil {
+			log.Printf("[ERROR] encode batch failed: %v", err)
+			p.handleSendFailure(part, batch)
+			continue
+		}
+
 		payload, err := CompressMessage(data, p.config.EnableGzip)
 		if err != nil {
 			log.Printf("[ERROR] compress batch failed: %v", err)
@@ -412,13 +410,14 @@ func (p *Publisher) partitionSender(part int) {
 		if err := p.sendWithRetry(payload, batch, part); err != nil {
 			log.Printf("[ERROR] partition %d send failed: %v", part, err)
 			p.handleSendFailure(part, batch)
-		} else {
-			p.sentMu.Lock()
-			for _, m := range batch {
-				p.sentSeqs[m.SeqNum] = struct{}{}
-			}
-			p.sentMu.Unlock()
+			continue
 		}
+
+		p.sentMu.Lock()
+		for _, m := range batch {
+			p.sentSeqs[m.SeqNum] = struct{}{}
+		}
+		p.sentMu.Unlock()
 
 		elapsed := time.Since(start)
 		p.bmMu.Lock()
@@ -426,6 +425,91 @@ func (p *Publisher) partitionSender(part int) {
 		p.bmTotalTime[part] += elapsed
 		p.bmMu.Unlock()
 	}
+}
+
+// todo. need to migrated util/serialize.go EncodeBathMessage
+func EncodeBatchMessages(topic string, partition int, msgs []types.Message, acks string) ([]byte, error) {
+	var buf bytes.Buffer
+
+	write := func(v any) error {
+		if err := binary.Write(&buf, binary.BigEndian, v); err != nil {
+			return fmt.Errorf("encode value failed: %w", err)
+		}
+		return nil
+	}
+
+	// topic
+	topicBytes := []byte(topic)
+	if err := write(uint16(len(topicBytes))); err != nil {
+		return nil, err
+	}
+	if _, err := buf.Write(topicBytes); err != nil {
+		return nil, fmt.Errorf("write topic bytes failed: %w", err)
+	}
+
+	// partition
+	if err := write(int32(partition)); err != nil {
+		return nil, err
+	}
+
+	// acks
+	acksBytes := []byte(acks)
+	if len(acksBytes) > 255 {
+		acksBytes = acksBytes[:255]
+	}
+	if err := write(uint8(len(acksBytes))); err != nil {
+		return nil, err
+	}
+	if _, err := buf.Write(acksBytes); err != nil {
+		return nil, fmt.Errorf("write acks failed: %w", err)
+	}
+
+	// batch start/end seqNum
+	var batchStart, batchEnd uint64
+	if len(msgs) > 0 {
+		batchStart = msgs[0].SeqNum
+		batchEnd = msgs[len(msgs)-1].SeqNum
+	}
+	if err := write(batchStart); err != nil {
+		return nil, err
+	}
+	if err := write(batchEnd); err != nil {
+		return nil, err
+	}
+
+	if err := write(int32(len(msgs))); err != nil {
+		return nil, err
+	}
+
+	for _, m := range msgs {
+		if err := write(m.SeqNum); err != nil {
+			return nil, err
+		}
+		payloadBytes := []byte(m.Payload)
+		if err := write(uint32(len(payloadBytes))); err != nil {
+			return nil, err
+		}
+		if _, err := buf.Write(payloadBytes); err != nil {
+			return nil, fmt.Errorf("write payload bytes failed: %w", err)
+		}
+	}
+
+	return buf.Bytes(), nil
+}
+
+func (p *Publisher) extractBatch(buf *partitionBuffer) []types.Message {
+	buf.mu.Lock()
+	defer buf.mu.Unlock()
+
+	if len(buf.msgs) >= p.config.BatchSize {
+		batch := buf.msgs[:p.config.BatchSize]
+		buf.msgs = buf.msgs[p.config.BatchSize:]
+		return batch
+	}
+
+	batch := append([]types.Message(nil), buf.msgs...)
+	buf.msgs = buf.msgs[:0]
+	return batch
 }
 
 func (p *Publisher) handleSendFailure(part int, batch []types.Message) {
@@ -486,6 +570,8 @@ func (p *Publisher) sendWithRetry(payload []byte, _ []types.Message, part int) e
 			resp, err = p.decompressMessage(resp)
 			if err != nil {
 				lastErr = fmt.Errorf("decompress ack failed: %w", err)
+				time.Sleep(time.Duration(backoff) * time.Millisecond)
+				backoff = min(backoff*2, p.config.MaxBackoffMS)
 				continue
 			}
 		}
@@ -527,45 +613,6 @@ func (p *Publisher) decompressMessage(data []byte) ([]byte, error) {
 	}
 	defer gr.Close()
 	return io.ReadAll(gr)
-}
-
-func EncodeBatchMessages(topic string, partition int, msgs []types.Message) []byte {
-	var buf bytes.Buffer
-
-	write := func(v any) {
-		if err := binary.Write(&buf, binary.BigEndian, v); err != nil {
-			log.Printf("[ERROR] EncodeBatchMessages write failed: %v", err)
-		}
-	}
-
-	topicBytes := []byte(topic)
-	write(uint16(len(topicBytes)))
-	if _, err := buf.Write(topicBytes); err != nil {
-		log.Printf("[ERROR] EncodeBatchMessages write topic failed: %v", err)
-	}
-
-	write(int32(partition))
-
-	var batchStart, batchEnd uint64
-	if len(msgs) > 0 {
-		batchStart = msgs[0].SeqNum
-		batchEnd = msgs[len(msgs)-1].SeqNum
-	}
-
-	write(batchStart)
-	write(batchEnd)
-	write(int32(len(msgs)))
-
-	for _, m := range msgs {
-		write(m.SeqNum)
-		payloadBytes := []byte(m.Payload)
-		write(uint32(len(payloadBytes)))
-		if _, err := buf.Write(payloadBytes); err != nil {
-			log.Printf("[ERROR] EncodeBatchMessages payload write failed: %v", err)
-		}
-	}
-
-	return buf.Bytes()
 }
 
 func CompressMessage(data []byte, enableGzip bool) ([]byte, error) {

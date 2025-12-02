@@ -215,6 +215,12 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 			continue
 		}
 
+		segmentMsgCount := dh.countMessagesFromReader(reader)
+		if remainingToSkip >= uint64(segmentMsgCount) {
+			remainingToSkip -= uint64(segmentMsgCount)
+			reader.Close()
+			continue
+		}
 		messages := dh.readMessagesFromSegment(reader, remainingToSkip, max-len(allMessages))
 		remainingToSkip = 0
 		allMessages = append(allMessages, messages...)
@@ -226,6 +232,24 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 	}
 
 	return allMessages, nil
+}
+
+func (dh *DiskHandler) countMessagesFromReader(reader *mmap.ReaderAt) int {
+	count := 0
+	pos := 0
+	for pos+4 <= reader.Len() {
+		lenBytes := make([]byte, 4)
+		if _, err := reader.ReadAt(lenBytes, int64(pos)); err != nil {
+			break
+		}
+		msgLen := binary.BigEndian.Uint32(lenBytes)
+		if pos+4+int(msgLen) > reader.Len() {
+			break
+		}
+		pos += 4 + int(msgLen)
+		count++
+	}
+	return count
 }
 
 func (dh *DiskHandler) readMessagesFromSegment(reader *mmap.ReaderAt, startOffset uint64, max int) []types.Message {
@@ -258,7 +282,7 @@ func (dh *DiskHandler) readMessagesFromSegment(reader *mmap.ReaderAt, startOffse
 		if currentMsgIndex >= startOffset {
 			messages = append(messages, types.Message{
 				Payload: string(data),
-				Offset:  startOffset + currentMsgIndex,
+				Offset:  currentMsgIndex,
 			})
 		}
 		currentMsgIndex++
@@ -291,6 +315,9 @@ func (d *DiskHandler) countMessagesInSegmentID(segmentID int) (int, error) {
 			break
 		}
 		msgLen := binary.BigEndian.Uint32(lenBytes)
+		if pos+4+int(msgLen) > reader.Len() {
+			break
+		}
 		pos += 4 + int(msgLen)
 		count++
 	}
