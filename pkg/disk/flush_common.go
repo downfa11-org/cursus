@@ -84,6 +84,7 @@ func (d *DiskHandler) flushLoop() {
 				d.writeBatch(batch)
 			}
 
+			d.ioMu.Lock()
 			if d.file != nil {
 				if err := d.writer.Flush(); err != nil {
 					util.Error("flush failed in shutdown: %v", err)
@@ -91,8 +92,13 @@ func (d *DiskHandler) flushLoop() {
 				if err := d.file.Sync(); err != nil {
 					util.Error("sync failed during shutdown: %v", err)
 				}
-				d.file.Close()
+				if err := d.file.Close(); err != nil {
+					util.Error("close failed during shutdown: %v", err)
+				}
+				d.file = nil
+				d.writer = nil
 			}
+			d.ioMu.Unlock()
 			return
 		}
 	}
@@ -141,6 +147,10 @@ func (d *DiskHandler) writeBatch(batch []string) {
 		validMsgs = append(validMsgs, msg)
 	}
 
+	if len(validMsgs) == 0 {
+		return
+	}
+
 	totalSize := 0
 	for _, msg := range validMsgs {
 		totalSize += 4 + len(msg)
@@ -170,7 +180,7 @@ func (d *DiskHandler) writeBatch(batch []string) {
 	}
 
 	d.CurrentOffset += uint64(len(buffer))
-	d.AbsoluteOffset += uint64(len(batch))
+	d.AbsoluteOffset += uint64(len(validMsgs))
 
 	if err := d.writer.Flush(); err != nil {
 		util.Error("flush failed after batch: %v", err)

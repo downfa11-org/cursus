@@ -88,7 +88,7 @@ func TestStreamConnectionOffsetAndActive(t *testing.T) {
 	now := time.Now()
 	sc.SetLastActive(now)
 
-	if !sc.lastActive.Equal(now) {
+	if !sc.LastActive().Equal(now) {
 		t.Fatalf("expected lastActive to be updated")
 	}
 }

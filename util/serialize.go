@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+
+	"github.com/downfa11-org/go-broker/pkg/types"
 )
 
 // EncodeMessage serializes topic and payload into bytes.
@@ -60,17 +62,13 @@ func ReadWithLength(conn net.Conn) ([]byte, error) {
 	return buf, nil
 }
 
-type BatchMessage struct {
-	SeqNum  uint64
-	Payload string
-}
-
 type Batch struct {
 	Topic      string
 	Partition  int32
 	BatchStart uint64
 	BatchEnd   uint64
-	Messages   []BatchMessage
+	Acks       int
+	Messages   []types.Message
 }
 
 // DecodeBatchMessages decodes a batch encoded by EncodeBatchMessages
@@ -124,7 +122,7 @@ func DecodeBatchMessages(data []byte) (*Batch, error) {
 	}
 	numMsgs := int(binary.BigEndian.Uint32(numMsgsBytes))
 
-	msgs := make([]BatchMessage, 0, numMsgs)
+	msgs := make([]types.Message, 0, numMsgs)
 	for i := 0; i < numMsgs; i++ {
 		seqBytes, err := read(8)
 		if err != nil {
@@ -142,7 +140,7 @@ func DecodeBatchMessages(data []byte) (*Batch, error) {
 		if err != nil {
 			return nil, err
 		}
-		msgs = append(msgs, BatchMessage{
+		msgs = append(msgs, types.Message{
 			SeqNum:  seq,
 			Payload: string(payloadBytes),
 		})

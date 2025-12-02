@@ -117,7 +117,7 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	if actualOffset == 0 {
 		if count, err := dh.SendCurrentSegmentToConn(conn); err == nil {
 			if count > 0 {
-				lastOffset := uint64(count)
+				lastOffset := actualOffset + uint64(count)
 				if err := t.CommitOffset(ctx.ConsumerGroup, partition, lastOffset); err != nil {
 					util.Warn("Failed to commit offset to topic for group '%s': %v", ctx.ConsumerGroup, err)
 				}
@@ -176,8 +176,11 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 }
 
 func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx *ClientContext) error {
-	args := parseKeyValueArgs(rawCmd[7:])
+	if len(rawCmd) < 7 {
+		return fmt.Errorf("invalid STREAM command format")
+	}
 
+	args := parseKeyValueArgs(rawCmd[7:])
 	topicName, ok := args["topic"]
 	if !ok || topicName == "" {
 		return fmt.Errorf("missing topic parameter")

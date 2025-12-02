@@ -1,3 +1,5 @@
+github.com/downfa11-org/go-broker v0.0.0-20251126065655-1cd33f7fc4e7 h1:+qaTcO3t3GNMHvL8B1//HDUfIt7WVHCOc2D0Z2zkPE8=
+github.com/downfa11-org/go-broker v0.0.0-20251126065655-1cd33f7fc4e7/go.mod h1:n1CNCBQf/FqOOY8conee+2irgfA1Qs3Pqi9b9/sifEk=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=

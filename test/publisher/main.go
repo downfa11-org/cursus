@@ -19,6 +19,8 @@ import (
 
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
+
+	"github.com/downfa11-org/go-broker/pkg/types"
 )
 
 type PublisherConfig struct {
@@ -85,24 +87,19 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 	flag.IntVar(&cfg.MessageSize, "benchmark_message_size", 100, "Message size in bytes (benchmark mode only)")
 
 	configPath := flag.String("config", "/config.yaml", "Path to YAML/JSON config file")
-	flag.Parse()
 
 	if *configPath != "" {
 		data, err := os.ReadFile(*configPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read config file: %w", err)
-		}
-
-		if strings.HasSuffix(*configPath, ".json") {
-			if err := json.Unmarshal(data, cfg); err != nil {
-				return nil, fmt.Errorf("failed to parse JSON config: %w", err)
-			}
-		} else {
-			if err := yaml.Unmarshal(data, cfg); err != nil {
-				return nil, fmt.Errorf("failed to parse YAML config: %w", err)
+		if err == nil {
+			if strings.HasSuffix(*configPath, ".json") {
+				_ = json.Unmarshal(data, cfg)
+			} else {
+				_ = yaml.Unmarshal(data, cfg)
 			}
 		}
 	}
+
+	flag.Parse()
 
 	if cfg.MaxRetries < 0 {
 		cfg.MaxRetries = 0
@@ -254,21 +251,16 @@ func (pc *ProducerClient) Close() error {
 	return nil
 }
 
-type BatchMessage struct {
-	SeqNum  uint64
-	Payload string
-}
-
 type partitionBuffer struct {
 	mu     sync.Mutex
-	msgs   []BatchMessage
+	msgs   []types.Message
 	cond   *sync.Cond
 	closed bool
 }
 
 func newPartitionBuffer() *partitionBuffer {
 	p := &partitionBuffer{
-		msgs: make([]BatchMessage, 0),
+		msgs: make([]types.Message, 0),
 	}
 	p.cond = sync.NewCond(&p.mu)
 	return p
@@ -312,7 +304,7 @@ func NewPublisher(cfg *PublisherConfig) *Publisher {
 	for i := 0; i < cfg.Partitions; i++ {
 		p.buffers[i] = newPartitionBuffer()
 		if err := p.producer.ConnectPartition(i, cfg.BrokerAddr, cfg.UseTLS, cfg.TLSCertPath, cfg.TLSKeyPath); err != nil {
-			log.Fatalf("Failed to connect partition %d: %v", i, err)
+			log.Printf("Failed to connect partition %d: %v", i, err)
 		}
 		p.sendersWG.Add(1)
 		go p.partitionSender(i)
@@ -341,7 +333,7 @@ func (p *Publisher) PublishMessage(message string) (uint64, error) {
 	if len(buf.msgs) >= p.config.BufferSize {
 		return 0, fmt.Errorf("partition %d buffer full", part)
 	}
-	bm := BatchMessage{
+	bm := types.Message{
 		SeqNum:  seqNum,
 		Payload: message,
 	}
@@ -367,13 +359,13 @@ func (p *Publisher) partitionSender(part int) {
 			return
 		}
 
-		var batch []BatchMessage
+		var batch []types.Message
 		if len(buf.msgs) >= p.config.BatchSize {
 			batch = buf.msgs[:p.config.BatchSize]
 			buf.msgs = buf.msgs[p.config.BatchSize:]
 			buf.mu.Unlock()
 		} else {
-			batch = append([]BatchMessage(nil), buf.msgs...)
+			batch = append([]types.Message(nil), buf.msgs...)
 			buf.msgs = buf.msgs[:0]
 			buf.mu.Unlock()
 
@@ -399,12 +391,7 @@ func (p *Publisher) partitionSender(part int) {
 
 		start := time.Now()
 
-		buf.mu.Lock()
-		log.Printf("[DEBUG] Partition %d sending batch of %d messages. Current buffer size: %d", part, len(batch), len(buf.msgs))
-		for _, m := range batch {
-			log.Printf("[DEBUG] Partition %d message SeqNum=%d Payload=%s", part, m.SeqNum, m.Payload)
-		}
-		buf.mu.Unlock()
+		log.Printf("[DEBUG] Partition %d sending batch of %d messages", part, len(batch))
 
 		data := EncodeBatchMessages(p.config.Topic, part, batch)
 		payload, err := CompressMessage(data, p.config.EnableGzip)
@@ -437,7 +424,7 @@ func (p *Publisher) partitionSender(part int) {
 	}
 }
 
-func (p *Publisher) handleSendFailure(part int, batch []BatchMessage) {
+func (p *Publisher) handleSendFailure(part int, batch []types.Message) {
 	buf := p.buffers[part]
 	buf.mu.Lock()
 	buf.msgs = append(buf.msgs, batch...)
@@ -445,7 +432,7 @@ func (p *Publisher) handleSendFailure(part int, batch []BatchMessage) {
 	buf.cond.Signal()
 }
 
-func (p *Publisher) sendWithRetry(payload []byte, _ []BatchMessage, part int) error {
+func (p *Publisher) sendWithRetry(payload []byte, _ []types.Message, part int) error {
 	maxAttempts := p.config.MaxRetries + 1
 	backoff := p.config.RetryBackoffMS
 
@@ -538,28 +525,40 @@ func (p *Publisher) decompressMessage(data []byte) ([]byte, error) {
 	return io.ReadAll(gr)
 }
 
-func EncodeBatchMessages(topic string, partition int, msgs []BatchMessage) []byte {
+func EncodeBatchMessages(topic string, partition int, msgs []types.Message) []byte {
 	var buf bytes.Buffer
-	topicBytes := []byte(topic)
-	binary.Write(&buf, binary.BigEndian, uint16(len(topicBytes)))
-	buf.Write(topicBytes)
-	binary.Write(&buf, binary.BigEndian, int32(partition))
 
-	var batchStart uint64 = 0
-	var batchEnd uint64 = 0
+	write := func(v any) {
+		if err := binary.Write(&buf, binary.BigEndian, v); err != nil {
+			log.Printf("[ERROR] EncodeBatchMessages write failed: %v", err)
+		}
+	}
+
+	topicBytes := []byte(topic)
+	write(uint16(len(topicBytes)))
+	if _, err := buf.Write(topicBytes); err != nil {
+		log.Printf("[ERROR] EncodeBatchMessages write topic failed: %v", err)
+	}
+
+	write(int32(partition))
+
+	var batchStart, batchEnd uint64
 	if len(msgs) > 0 {
 		batchStart = msgs[0].SeqNum
 		batchEnd = msgs[len(msgs)-1].SeqNum
 	}
-	binary.Write(&buf, binary.BigEndian, batchStart)
-	binary.Write(&buf, binary.BigEndian, batchEnd)
-	binary.Write(&buf, binary.BigEndian, int32(len(msgs)))
+
+	write(batchStart)
+	write(batchEnd)
+	write(int32(len(msgs)))
 
 	for _, m := range msgs {
-		binary.Write(&buf, binary.BigEndian, m.SeqNum)
+		write(m.SeqNum)
 		payloadBytes := []byte(m.Payload)
-		binary.Write(&buf, binary.BigEndian, uint32(len(payloadBytes)))
-		buf.Write(payloadBytes)
+		write(uint32(len(payloadBytes)))
+		if _, err := buf.Write(payloadBytes); err != nil {
+			log.Printf("[ERROR] EncodeBatchMessages payload write failed: %v", err)
+		}
 	}
 
 	return buf.Bytes()
@@ -670,8 +669,12 @@ func printBenchmarkSummaryFixed(
 		totalBatches += ps.BatchCount
 	}
 
-	batchesPerSec := float64(totalBatches) / totalDuration.Seconds()
-	messagesPerSec := float64(sentMessages) / totalDuration.Seconds()
+	seconds := totalDuration.Seconds()
+	if seconds <= 0 {
+		seconds = 0.001
+	}
+	batchesPerSec := float64(totalBatches) / seconds
+	messagesPerSec := float64(sentMessages) / seconds
 
 	fmt.Println("=== BENCHMARK SUMMARY ===")
 	fmt.Printf("Partitions            : %d\n", len(partitionStats))

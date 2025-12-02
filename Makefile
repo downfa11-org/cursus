@@ -74,23 +74,12 @@ e2e-coverage: e2e-build
 	@echo "E2E coverage report saved to e2e-coverage.out"  
   
 .PHONY: bench
-bench:
-	@echo "[MAKE] Running benchmark..."
-	$(MAKE) build-api
-	cd test/publisher && go build -o ../../bin/publisher .
-	cd test/consumer && go build -o ../../bin/consumer .
-	@bash -c '\
-		bin/go-broker & \
-		BROKER_PID=$$!; \
-		for i in {1..30}; do \
-			if curl -f http://localhost:9080/health 2>/dev/null; then break; fi; \
-			sleep 1; \
-		done; \
-		./bin/publisher & \
-		./bin/consumer & \
-		wait; \
-		kill $$BROKER_PID || true; \
-	'
+bench: e2e-build
+	@echo "[MAKE] Running benchmark with docker-compose..."
+	timeout 60s docker compose -f test/e2e/docker-compose.yml up --build --remove-orphans
+	@echo "[MAKE] Containers finished or timed out"
+	docker compose -f test/e2e/docker-compose.yml logs
+	docker compose -f test/e2e/docker-compose.yml down -v
 
 .PHONY: build  
 build: build-api build-cli 

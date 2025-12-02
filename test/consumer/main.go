@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -16,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/downfa11-org/go-broker/util"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
@@ -186,7 +186,7 @@ func (pc *PartitionConsumer) pollAndProcess() {
 
 	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d",
 		pc.consumer.config.Topic, pc.partitionID, currentOffset)
-	if err := sendBinaryMessage(pc.conn, encodeMessage(pc.consumer.config.Topic, consumeCmd)); err != nil {
+	if err := util.WriteWithLength(pc.conn, util.EncodeMessage(pc.consumer.config.Topic, consumeCmd)); err != nil {
 		log.Printf("Partition %d: send command failed, reconnecting: %v", pc.partitionID, err)
 		pc.closeConn()
 		return
@@ -200,7 +200,7 @@ func (pc *PartitionConsumer) pollAndProcess() {
 	for i := 0; i < batchSize; i++ {
 		duration := time.Duration(pc.consumer.config.StreamingReadDeadlineMS) * time.Millisecond
 		pc.conn.SetReadDeadline(time.Now().Add(duration))
-		msgBytes, err := readBinaryMessage(pc.conn)
+		msgBytes, err := util.ReadWithLength(pc.conn)
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				time.Sleep(pc.consumer.config.PollInterval)
@@ -249,12 +249,12 @@ func (pc *PartitionConsumer) commitOffset() {
 
 	commitCmd := fmt.Sprintf("COMMIT_OFFSET topic=%s partition=%d group=%s offset=%d",
 		pc.consumer.config.Topic, pc.partitionID, pc.consumer.config.GroupID, currentOffset)
-	if err := sendBinaryMessage(conn, encodeMessage("", commitCmd)); err != nil {
+	if err := util.WriteWithLength(conn, util.EncodeMessage("", commitCmd)); err != nil {
 		log.Printf("Partition %d: commit send failed: %v", pc.partitionID, err)
 		return
 	}
 
-	resp, err := readBinaryMessage(conn)
+	resp, err := util.ReadWithLength(conn)
 	if err != nil {
 		log.Printf("Partition %d: commit response failed: %v", pc.partitionID, err)
 		return
@@ -322,14 +322,14 @@ func (gc *GroupCoordinator) sendHeartbeat() {
 
 	heartbeatCmd := fmt.Sprintf("HEARTBEAT topic=%s group=%s consumer=%s",
 		gc.consumer.config.Topic, gc.consumer.config.GroupID, gc.consumer.config.ConsumerID)
-	cmdBytes := encodeMessage("", heartbeatCmd)
+	cmdBytes := util.EncodeMessage("", heartbeatCmd)
 
-	if err := sendBinaryMessage(conn, cmdBytes); err != nil {
+	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
 		log.Printf("Heartbeat send failed: %v", err)
 		return
 	}
 
-	_, err = readBinaryMessage(conn)
+	_, err = util.ReadWithLength(conn)
 	if err != nil {
 		log.Printf("Heartbeat response failed: %v", err)
 	}
@@ -448,13 +448,13 @@ func (c *Consumer) joinGroup() ([]int, error) {
 
 	joinCmd := fmt.Sprintf("JOIN_GROUP topic=%s group=%s consumer=%s",
 		c.config.Topic, c.config.GroupID, c.config.ConsumerID)
-	cmdBytes := encodeMessage("", joinCmd)
+	cmdBytes := util.EncodeMessage("", joinCmd)
 
-	if err := sendBinaryMessage(conn, cmdBytes); err != nil {
+	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
 		return nil, fmt.Errorf("send join command: %w", err)
 	}
 
-	resp, err := readBinaryMessage(conn)
+	resp, err := util.ReadWithLength(conn)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
@@ -504,7 +504,7 @@ func (c *Consumer) startStreaming() error {
 				conn := pc.conn
 				streamCmd := fmt.Sprintf("STREAM topic=%s partition=%d group=%s",
 					c.config.Topic, pid, c.config.GroupID)
-				if err := sendBinaryMessage(conn, encodeMessage("", streamCmd)); err != nil {
+				if err := util.WriteWithLength(conn, util.EncodeMessage("", streamCmd)); err != nil {
 					log.Printf("Partition %d: STREAM command send failed: %v", pid, err)
 					pc.mu.Lock()
 					pc.conn.Close()
@@ -522,7 +522,7 @@ func (c *Consumer) startStreaming() error {
 					}
 
 					conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
-					msgBytes, err := readBinaryMessage(conn)
+					msgBytes, err := util.ReadWithLength(conn)
 					if err != nil {
 						if ne, ok := err.(net.Error); ok && ne.Timeout() {
 							time.Sleep(50 * time.Millisecond)
@@ -614,55 +614,6 @@ func (c *Consumer) PrintBenchmarkSummary() {
 	fmt.Printf("Elapsed time: %v\n", duration)
 	fmt.Printf("Approx TPS: %.2f\n", tps)
 	fmt.Println("==================================")
-}
-
-func sendBinaryMessage(conn net.Conn, msg []byte) error {
-	buf := make([]byte, 4+len(msg))
-	binary.BigEndian.PutUint32(buf[0:4], uint32(len(msg)))
-	copy(buf[4:], msg)
-	_, err := conn.Write(buf)
-	return err
-}
-
-func readBinaryMessage(conn net.Conn) ([]byte, error) {
-	lenBuf := make([]byte, 4)
-	if _, err := io.ReadFull(conn, lenBuf); err != nil {
-		if err == io.EOF {
-			return nil, io.EOF
-		}
-		log.Printf("❌ Read length error: %v, raw: % x", err, lenBuf)
-		return nil, err
-	}
-	msgLen := binary.BigEndian.Uint32(lenBuf)
-	data := make([]byte, msgLen)
-	if _, err := io.ReadFull(conn, data); err != nil {
-		if err == io.EOF {
-			return nil, io.EOF
-		}
-		log.Printf("❌ Read message error: %v, expected %d bytes, received %d bytes, raw: % x", err, msgLen, len(data), data)
-		return nil, err
-	}
-
-	dataStr := string(data)
-	if !strings.HasPrefix(dataStr, "OK") {
-		if len(data) > 64 {
-			log.Printf("✅ Read message (truncated to 64 bytes): %s ...", string(data[:64]))
-		} else {
-			log.Printf("✅ Read message: %s", string(data))
-		}
-	}
-
-	return data, nil
-}
-
-func encodeMessage(topic, payload string) []byte {
-	topicBytes := []byte(topic)
-	payloadBytes := []byte(payload)
-	data := make([]byte, 2+len(topicBytes)+len(payloadBytes))
-	binary.BigEndian.PutUint16(data[:2], uint16(len(topicBytes)))
-	copy(data[2:2+len(topicBytes)], topicBytes)
-	copy(data[2+len(topicBytes):], payloadBytes)
-	return data
 }
 
 func main() {

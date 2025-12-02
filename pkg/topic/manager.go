@@ -100,6 +100,62 @@ func (tm *TopicManager) PublishWithAck(topicName string, msg types.Message) erro
 	return tm.publishInternal(topicName, msg, true)
 }
 
+// Batch Sync (acks=1)
+func (tm *TopicManager) PublishBatchSync(topicName string, messages []types.Message) error {
+	if len(messages) == 0 {
+		return nil
+	}
+
+	t := tm.GetTopic(topicName)
+	if t == nil {
+		if tm.cfg.AutoCreateTopics {
+			tm.CreateTopic(topicName, 4)
+			t = tm.GetTopic(topicName)
+			if t == nil {
+				return fmt.Errorf("topic '%s' creation failed", topicName)
+			}
+		} else {
+			return fmt.Errorf("topic '%s' does not exist", topicName)
+		}
+	}
+
+	partitioned := make(map[int][]types.Message)
+	t.mu.RLock()
+	for _, msg := range messages {
+		var idx int
+		if msg.Key != "" {
+			keyID := util.GenerateID(msg.Key)
+			idx = int(keyID % uint64(len(t.Partitions)))
+		} else {
+			idx = int(t.counter % uint64(len(t.Partitions)))
+			t.counter++
+		}
+		partitioned[idx] = append(partitioned[idx], msg)
+	}
+	t.mu.RUnlock()
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(partitioned))
+
+	for idx, msgs := range partitioned {
+		wg.Add(1)
+		go func(p *Partition, msgs []types.Message) {
+			defer wg.Done()
+			if err := p.EnqueueBatchSync(msgs); err != nil {
+				errCh <- fmt.Errorf("partition %d: %w", p.id, err)
+			}
+		}(t.Partitions[idx], msgs)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	if len(errCh) > 0 {
+		return <-errCh
+	}
+	return nil
+}
+
 func (tm *TopicManager) publishInternal(topicName string, msg types.Message, requireAck bool) error {
 	util.Debug("Starting publish. Topic: %s, RequireAck: %v, ProducerID: %s, SeqNum: %d",
 		topicName, requireAck, msg.ProducerID, msg.SeqNum)

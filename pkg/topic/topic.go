@@ -153,6 +153,35 @@ func (t *Topic) PublishSync(msg types.Message) error {
 	return err
 }
 
+func (t *Topic) PublishBatchSync(topicName string, msgs []types.Message) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	partitioned := make(map[int][]types.Message)
+
+	t.mu.RLock()
+	for _, msg := range msgs {
+		var idx int
+		if msg.Key != "" {
+			keyID := util.GenerateID(msg.Key)
+			idx = int(keyID % uint64(len(t.Partitions)))
+		} else {
+			idx = int(t.counter % uint64(len(t.Partitions)))
+			t.counter++
+		}
+		partitioned[idx] = append(partitioned[idx], msg)
+	}
+	t.mu.RUnlock()
+	for idx, pm := range partitioned {
+		p := t.Partitions[idx]
+
+		if err := p.EnqueueBatchSync(pm); err != nil {
+			return fmt.Errorf("partition %d: failed to publish batch: %w", idx, err)
+		}
+	}
+	return nil
+}
+
 // Enqueue pushes a message into the partition queue.
 func (p *Partition) Enqueue(msg types.Message) {
 	p.mu.RLock()
@@ -188,6 +217,29 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 	}
 
 	p.broadcastToStreams(msg)
+	return nil
+}
+
+func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return fmt.Errorf("partition %d is closed", p.id)
+	}
+
+	if appender, ok := p.dh.(interface{ AppendMessageSync(string) error }); ok {
+		for _, msg := range msgs {
+			if err := appender.AppendMessageSync(msg.Payload); err != nil {
+				return fmt.Errorf("disk write failed for partition %d: %w", p.id, err)
+			}
+		}
+	} else {
+		return fmt.Errorf("disk handler does not support sync write")
+	}
+
+	for _, msg := range msgs {
+		p.broadcastToStreams(msg)
+	}
 	return nil
 }
 

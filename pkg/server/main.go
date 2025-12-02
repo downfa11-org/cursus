@@ -159,24 +159,20 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 				continue
 			}
 
-			successCount := 0
-			for _, m := range batch.Messages {
-				msg := types.Message{
-					ID:      util.GenerateID(m.Payload),
-					Payload: m.Payload,
-					Key:     m.Payload,
-				}
-
-				util.Info("Publishing message to: ID=%d, Key=%s, Payload=%s", msg.ID, msg.Key, strings.ReplaceAll(msg.Payload, "\n", " "))
-
-				if err := tm.Publish(batch.Topic, msg); err != nil {
-					util.Error("Failed to publish message seq=%d: %v", m.SeqNum, err)
+			acks := batch.Acks
+			if acks == 1 {
+				if err := tm.PublishBatchSync(batch.Topic, batch.Messages); err != nil {
+					writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
 					continue
 				}
-				successCount++
+			} else {
+				for _, m := range batch.Messages {
+					msg := types.Message{Payload: m.Payload, Key: m.Payload}
+					tm.Publish(batch.Topic, msg)
+				}
 			}
-			failedCount := len(batch.Messages) - successCount
-			writeResponse(conn, fmt.Sprintf("OK:processed=%d,failed=%d", successCount, failedCount))
+
+			writeResponse(conn, fmt.Sprintf("OK:processed=%d", len(batch.Messages)))
 			continue
 		} else {
 			if topicName == "" || payload == "" {
@@ -235,10 +231,14 @@ func writeResponseWithTimeout(conn net.Conn, msg string, timeout time.Duration) 
 
 // isBatchMessage checks if the data is in binary batch format
 func isBatchMessage(data []byte) bool {
-	if len(data) < 4 {
+	if len(data) < 6 {
 		return false
 	}
-	topicLen := binary.BigEndian.Uint16(data[0:2])
+	if data[0] != 0xBA || data[1] != 0x7C {
+		return false
+	}
+
+	topicLen := binary.BigEndian.Uint16(data[2:4])
 	if topicLen == 0 || int(topicLen)+2 > len(data) {
 		return false
 	}

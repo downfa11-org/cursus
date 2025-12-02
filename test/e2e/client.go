@@ -303,13 +303,16 @@ func (bc *BrokerClient) SendHeartbeat() error {
 	}
 
 	conn := bc.conn
+	topic := bc.topic
+	consumerGroup := bc.consumerGroup
+	consumerID := bc.consumerID
 	bc.mu.Unlock()
 
 	if conn == nil {
 		return fmt.Errorf("connection closed")
 	}
 
-	heartbeatCmd := fmt.Sprintf("HEARTBEAT topic=%s group=%s consumer=%s", bc.topic, bc.consumerGroup, bc.consumerID)
+	heartbeatCmd := fmt.Sprintf("HEARTBEAT topic=%s group=%s consumer=%s", topic, consumerGroup, consumerID)
 	cmdBytes := util.EncodeMessage("", heartbeatCmd)
 
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
