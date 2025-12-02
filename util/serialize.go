@@ -168,7 +168,7 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 	if err != nil {
 		return nil, err
 	}
-	partition := int32(binary.BigEndian.Uint32(partBytes))
+	partition := int(binary.BigEndian.Uint32(partBytes))
 
 	// Acks
 	acksLenBytes, err := read(1)

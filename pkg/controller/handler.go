@@ -114,20 +114,6 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	}
 
 	maxMessages := DefaultMaxPollRecords
-	if actualOffset == 0 {
-		if count, err := dh.SendCurrentSegmentToConn(conn); err == nil {
-			if count > 0 {
-				lastOffset := actualOffset + uint64(count)
-				if ch.Coordinator != nil {
-					if err := ch.Coordinator.CommitOffset(ctx.ConsumerGroup, topicName, partition, lastOffset); err != nil {
-						util.Warn("Failed to commit offset to OffsetManager for group '%s': %v", ctx.ConsumerGroup, err)
-					}
-				}
-			}
-			return count, nil
-		}
-	}
-
 	messages, err := dh.ReadMessages(actualOffset, maxMessages)
 	if err != nil {
 		util.Error("Failed to read messages: %v", err)
@@ -147,15 +133,14 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		lastOffset++
 	}
 
-	if streamedCount > 0 {
-		if ch.Coordinator != nil {
-			if err := ch.Coordinator.CommitOffset(ctx.ConsumerGroup, topicName, partition, lastOffset); err != nil {
-				util.Warn("Failed to commit offset to OffsetManager for group '%s': %v", ctx.ConsumerGroup, err)
-			} else {
-				util.Debug("Successfully committed offset %d to OffsetManager for group '%s', topic '%s', partition %d",
-					lastOffset, ctx.ConsumerGroup, topicName, partition)
-			}
+	if streamedCount > 0 && ch.Coordinator != nil {
+		if err := ch.Coordinator.CommitOffset(ctx.ConsumerGroup, topicName, partition, lastOffset); err != nil {
+			util.Warn("Failed to commit offset to OffsetManager for group '%s': %v", ctx.ConsumerGroup, err)
+		} else {
+			util.Debug("Successfully committed offset %d to OffsetManager for group '%s', topic '%s', partition %d",
+				lastOffset, ctx.ConsumerGroup, topicName, partition)
 		}
+
 	}
 
 	duration := time.Since(startTime)

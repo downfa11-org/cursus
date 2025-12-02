@@ -237,16 +237,16 @@ func (pc *PartitionConsumer) processMessage(msgBytes []byte) {
 	if pc.consumer.config.EnableBenchmark {
 		atomic.AddInt64(&pc.consumer.bmMsgCount, 1)
 		pc.incrementPartitionCount()
-	}
-
-	const maxLen = 40
-	msgStr := string(msgBytes)
-	runes := []rune(msgStr)
-
-	if len(runes) > maxLen {
-		log.Printf("Partition [%d] %s...", pc.partitionID, string(runes[:maxLen]))
 	} else {
-		log.Printf("Partition [%d] %s", pc.partitionID, msgStr)
+		const maxLen = 40
+		msgStr := string(msgBytes)
+		runes := []rune(msgStr)
+
+		if len(runes) > maxLen {
+			log.Printf("Partition [%d] %s...", pc.partitionID, string(runes[:maxLen]))
+		} else {
+			log.Printf("Partition [%d] %s", pc.partitionID, msgStr)
+		}
 	}
 }
 
@@ -413,6 +413,15 @@ func (c *Consumer) Start() error {
 		c.partitionConsumers[pid] = pc
 	}
 
+	switch c.config.Mode {
+	case ModePolling:
+		go c.startPolling()
+	case ModeStreaming:
+		go c.startStreaming()
+	default:
+		go c.startPolling()
+	}
+
 	c.startCommitLoop()
 	go c.startConsuming()
 
@@ -556,7 +565,7 @@ func (c *Consumer) startStreaming() error {
 					msgBytes, err := util.ReadWithLength(conn)
 					if err != nil {
 						if ne, ok := err.(net.Error); ok && ne.Timeout() {
-							time.Sleep(50 * time.Millisecond)
+							time.Sleep(time.Duration(c.config.StreamingRetryIntervalMS) * time.Millisecond)
 							continue
 						}
 						log.Printf("Partition [%d] streaming read error: %v", pid, err)
@@ -677,15 +686,6 @@ func main() {
 		log.Fatalf("Failed to start consumer: %v", err)
 	}
 	log.Println("consumer started.")
-
-	switch c.config.Mode {
-	case ModePolling:
-		go c.startPolling()
-	case ModeStreaming:
-		go c.startStreaming()
-	default:
-		go c.startPolling()
-	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

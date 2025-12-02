@@ -43,6 +43,7 @@ func main() {
 			t := tm.GetTopic(topicName)
 			if t == nil && cfg.AutoCreateTopics {
 				tm.CreateTopic(topicName, 4)
+				t = tm.GetTopic(topicName)
 			}
 			if t != nil {
 				if _, err := tm.RegisterConsumerGroup(topicName, gcfg.Name, gcfg.ConsumerCount); err != nil {

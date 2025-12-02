@@ -227,14 +227,11 @@ func (bc *BrokerClient) ConsumeMessages(topic string, partition int, consumerGro
 
 // GetConsumerGroupStatus retrieves consumer group metadata from broker
 func (bc *BrokerClient) GetConsumerGroupStatus(groupID string) (*ConsumerGroupStatus, error) {
-	bc.mu.Lock()
-	if bc.conn == nil || bc.closed {
-		bc.mu.Unlock()
-		if err := bc.connect(); err != nil {
-			return nil, err
-		}
-		bc.mu.Lock()
+	if err := bc.connect(); err != nil {
+		return nil, err
 	}
+
+	bc.mu.Lock()
 	conn := bc.conn
 	bc.mu.Unlock()
 
@@ -286,11 +283,23 @@ func (bc *BrokerClient) RegisterConsumerGroup(topic, groupName string) error {
 	registerCmd := fmt.Sprintf("REGISTER_GROUP topic=%s group=%s", topic, groupName)
 	cmdBytes := util.EncodeMessage("", registerCmd)
 
-	if err := util.WriteWithLength(bc.conn, cmdBytes); err != nil {
+	bc.mu.Lock()
+	conn := bc.conn
+	bc.mu.Unlock()
+
+	if conn == nil {
+		return fmt.Errorf("connection not available")
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return fmt.Errorf("set read deadline: %w", err)
+	}
+	defer conn.SetReadDeadline(time.Time{})
+
+	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
 		return fmt.Errorf("send add consumer command: %w", err)
 	}
 
-	resp, err := util.ReadWithLength(bc.conn)
+	resp, err := util.ReadWithLength(conn)
 	if err != nil {
 		return fmt.Errorf("read response: %w", err)
 	}

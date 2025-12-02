@@ -18,7 +18,7 @@ func (m Message) String() string {
 
 type Batch struct {
 	Topic      string
-	Partition  int32
+	Partition  int
 	BatchStart uint64
 	BatchEnd   uint64
 	Acks       int

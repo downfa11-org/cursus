@@ -78,10 +78,10 @@ bench:
 	@bash -c '\
 	set +e; \
 	echo "[MAKE] Running benchmark with docker-compose..."; \
-	timeout 300s docker compose -f test/docker-compose.yml up --build --remove-orphans; \
+	timeout 180s docker compose -f test/docker-compose.yml up --build --remove-orphans; \
 	echo "[MAKE] Containers finished or timed out"; \
-	docker compose -f test/e2e/docker-compose.yml logs; \
-	docker compose -f test/e2e/docker-compose.yml down -v; \
+	docker compose -f test/docker-compose.yml logs; \
+	docker compose -f test/docker-compose.yml down -v; \
 	'
 
 .PHONY: build  
