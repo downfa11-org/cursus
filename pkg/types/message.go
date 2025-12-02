@@ -9,6 +9,7 @@ type Message struct {
 	Offset     uint64
 	Key        string // optional: partition routing key
 	Epoch      int64
+	RetryCount int
 }
 
 func (m Message) String() string {

@@ -12,15 +12,18 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 
 	"github.com/downfa11-org/go-broker/pkg/types"
+	"github.com/downfa11-org/go-broker/util"
 )
 
 type PublisherConfig struct {
@@ -92,6 +95,10 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 	if *configPath != "" {
 		data, err := os.ReadFile(*configPath)
 		if err != nil {
+			if os.IsNotExist(err) {
+				log.Printf("Config file %s not found, using flag defaults", *configPath)
+				return cfg, nil
+			}
 			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
 		} else {
 			if strings.HasSuffix(*configPath, ".json") {
@@ -147,6 +154,9 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 	}
 	if cfg.Acks != "0" && cfg.Acks != "1" && cfg.Acks != "all" {
 		cfg.Acks = "1"
+	}
+	if cfg.Acks == "all" {
+		cfg.Acks = "-1"
 	}
 	if cfg.EnableIdempotence && cfg.Acks == "0" {
 		log.Printf("[WARN] Idempotence requires acks >= 1, setting acks=1")
@@ -289,7 +299,8 @@ type Publisher struct {
 
 	sendersWG sync.WaitGroup
 
-	rr uint32
+	rr       uint32
+	inFlight []int32
 
 	sentMu   sync.Mutex
 	sentSeqs map[uint64]struct{}
@@ -313,6 +324,7 @@ func NewPublisher(cfg *PublisherConfig) *Publisher {
 		done:         make(chan struct{}),
 		bmTotalTime:  make(map[int]time.Duration),
 		bmTotalCount: make(map[int]int),
+		inFlight:     make([]int32, cfg.Partitions),
 	}
 
 	for i := 0; i < cfg.Partitions; i++ {
@@ -337,22 +349,22 @@ func (p *Publisher) PublishMessage(message string) (uint64, error) {
 		return 0, fmt.Errorf("publisher closed")
 	}
 
-	seqNum := p.producer.NextSeqNum()
 	part := p.nextPartition()
 	buf := p.buffers[part]
 
 	buf.mu.Lock()
-	defer buf.mu.Unlock()
-
 	if len(buf.msgs) >= p.config.BufferSize {
+		buf.mu.Unlock()
 		return 0, fmt.Errorf("partition %d buffer full", part)
 	}
+	seqNum := p.producer.NextSeqNum()
 	bm := types.Message{
 		SeqNum:  seqNum,
 		Payload: message,
 	}
 
 	buf.msgs = append(buf.msgs, bm)
+	buf.mu.Unlock()
 	buf.cond.Signal()
 
 	return seqNum, nil
@@ -360,12 +372,11 @@ func (p *Publisher) PublishMessage(message string) (uint64, error) {
 
 func (p *Publisher) partitionSender(part int) {
 	defer p.sendersWG.Done()
+
 	buf := p.buffers[part]
 	linger := time.Duration(p.config.LingerMS) * time.Millisecond
 
 	for {
-		var batch []types.Message
-
 		buf.mu.Lock()
 		for len(buf.msgs) == 0 && !buf.closed && atomic.LoadInt32(&p.closed) == 0 {
 			buf.cond.Wait()
@@ -374,62 +385,97 @@ func (p *Publisher) partitionSender(part int) {
 			buf.mu.Unlock()
 			return
 		}
+
+		batch := p.extract(buf, false)
 		buf.mu.Unlock()
 
-		batch = p.extractBatch(buf)
 		if len(batch) == 0 {
-			select {
-			case <-time.After(linger):
-				continue
-			case <-p.done:
-				return
-			}
-		}
-
-		start := time.Now()
-		log.Printf("[DEBUG] Partition %d sending batch of %d messages", part, len(batch))
-
-		data, err := EncodeBatchMessages(p.config.Topic, part, batch, p.config.Acks)
-		if err != nil {
-			log.Printf("[ERROR] encode batch failed: %v", err)
-			p.handleSendFailure(part, batch)
 			continue
 		}
 
-		payload, err := CompressMessage(data, p.config.EnableGzip)
-		if err != nil {
-			log.Printf("[ERROR] compress batch failed: %v", err)
-			p.handleSendFailure(part, batch)
+		p.sendBatch(part, batch)
+
+		select {
+		case <-time.After(linger):
 			continue
+		case <-p.done:
+			return
 		}
-
-		lenBuf := make([]byte, 4)
-		binary.BigEndian.PutUint32(lenBuf, uint32(len(payload)))
-		payload = append(lenBuf, payload...)
-
-		if err := p.sendWithRetry(payload, batch, part); err != nil {
-			log.Printf("[ERROR] partition %d send failed: %v", part, err)
-			p.handleSendFailure(part, batch)
-			continue
-		}
-
-		p.sentMu.Lock()
-		for _, m := range batch {
-			p.sentSeqs[m.SeqNum] = struct{}{}
-		}
-		p.sentMu.Unlock()
-
-		elapsed := time.Since(start)
-		p.bmMu.Lock()
-		p.bmTotalCount[part] += 1
-		p.bmTotalTime[part] += elapsed
-		p.bmMu.Unlock()
 	}
+}
+
+func (p *Publisher) extract(buf *partitionBuffer, lock bool) []types.Message {
+	if lock {
+		buf.mu.Lock()
+		defer buf.mu.Unlock()
+	}
+
+	if len(buf.msgs) == 0 {
+		return nil
+	}
+
+	n := p.config.BatchSize
+	if len(buf.msgs) < n {
+		n = len(buf.msgs)
+	}
+
+	batch := make([]types.Message, n)
+	copy(batch, buf.msgs[:n])
+	buf.msgs = buf.msgs[n:]
+	return batch
+}
+
+func (p *Publisher) sendBatch(part int, batch []types.Message) {
+	if len(batch) == 0 {
+		return
+	}
+
+	atomic.AddInt32(&p.inFlight[part], 1)
+	defer atomic.AddInt32(&p.inFlight[part], -1)
+
+	start := time.Now()
+
+	data, err := EncodeBatchMessages(p.config.Topic, part, batch, p.config.Acks)
+	if err != nil {
+		log.Printf("[ERROR] encode batch failed: %v", err)
+		p.handleSendFailure(part, batch)
+		return
+	}
+
+	payload, err := CompressMessage(data, p.config.EnableGzip)
+	if err != nil {
+		log.Printf("[ERROR] compress batch failed: %v", err)
+		p.handleSendFailure(part, batch)
+		return
+	}
+
+	lenBuf := make([]byte, 4)
+	binary.BigEndian.PutUint32(lenBuf, uint32(len(payload)))
+	payload = append(lenBuf, payload...)
+
+	if err := p.sendWithRetry(payload, batch, part); err != nil {
+		log.Printf("[ERROR] send failed: %v", err)
+		p.handleSendFailure(part, batch)
+		return
+	}
+
+	p.sentMu.Lock()
+	for _, m := range batch {
+		p.sentSeqs[m.SeqNum] = struct{}{}
+	}
+	p.sentMu.Unlock()
+
+	elapsed := time.Since(start)
+	p.bmMu.Lock()
+	p.bmTotalCount[part] += 1
+	p.bmTotalTime[part] += elapsed
+	p.bmMu.Unlock()
 }
 
 // todo. need to migrated util/serialize.go EncodeBathMessage
 func EncodeBatchMessages(topic string, partition int, msgs []types.Message, acks string) ([]byte, error) {
 	var buf bytes.Buffer
+	buf.Write([]byte{0xBA, 0x7C})
 
 	write := func(v any) error {
 		if err := binary.Write(&buf, binary.BigEndian, v); err != nil {
@@ -497,26 +543,16 @@ func EncodeBatchMessages(topic string, partition int, msgs []types.Message, acks
 	return buf.Bytes(), nil
 }
 
-func (p *Publisher) extractBatch(buf *partitionBuffer) []types.Message {
+func (p *Publisher) handleSendFailure(part int, batch []types.Message) {
+	if len(batch) == 0 {
+		return
+	}
+
+	buf := p.buffers[part]
 	buf.mu.Lock()
 	defer buf.mu.Unlock()
 
-	if len(buf.msgs) >= p.config.BatchSize {
-		batch := buf.msgs[:p.config.BatchSize]
-		buf.msgs = buf.msgs[p.config.BatchSize:]
-		return batch
-	}
-
-	batch := append([]types.Message(nil), buf.msgs...)
-	buf.msgs = buf.msgs[:0]
-	return batch
-}
-
-func (p *Publisher) handleSendFailure(part int, batch []types.Message) {
-	buf := p.buffers[part]
-	buf.mu.Lock()
 	buf.msgs = append(buf.msgs, batch...)
-	buf.mu.Unlock()
 	buf.cond.Signal()
 }
 
@@ -557,7 +593,7 @@ func (p *Publisher) sendWithRetry(payload []byte, _ []types.Message, part int) e
 		}
 
 		_ = conn.SetReadDeadline(time.Now().Add(time.Duration(p.config.AckTimeoutMS) * time.Millisecond))
-		resp, err := p.readWithLength(conn)
+		resp, err := util.ReadWithLength(conn)
 		_ = conn.SetReadDeadline(time.Time{})
 		if err != nil {
 			lastErr = fmt.Errorf("read ack failed: %w", err)
@@ -585,22 +621,6 @@ func (p *Publisher) sendWithRetry(payload []byte, _ []types.Message, part int) e
 		return nil
 	}
 	return lastErr
-}
-
-func (p *Publisher) readWithLength(conn net.Conn) ([]byte, error) {
-	lenBuf := make([]byte, 4)
-	if _, err := io.ReadFull(conn, lenBuf); err != nil {
-		return nil, fmt.Errorf("read length: %w", err)
-	}
-
-	msgLen := binary.BigEndian.Uint32(lenBuf)
-	msgBuf := make([]byte, msgLen)
-
-	if _, err := io.ReadFull(conn, msgBuf); err != nil {
-		return nil, fmt.Errorf("read message: %w", err)
-	}
-	// EOF, unexpected header -> ACK is not gzipped
-	return msgBuf, nil
 }
 
 func (p *Publisher) decompressMessage(data []byte) ([]byte, error) {
@@ -656,30 +676,13 @@ func (p *Publisher) Flush() {
 		buf.mu.Unlock()
 	}
 
-	timeout := time.After(time.Duration(p.config.LingerMS*2) * time.Millisecond)
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		allEmpty := true
-		for _, buf := range p.buffers {
-			buf.mu.Lock()
-			if len(buf.msgs) > 0 {
-				allEmpty = false
-			}
-			buf.mu.Unlock()
+	for part := 0; part < p.partitions; part++ {
+		buf := p.buffers[part]
+		buf.mu.Lock()
+		for len(buf.msgs) > 0 || atomic.LoadInt32(&p.inFlight[part]) > 0 {
+			buf.cond.Wait()
 		}
-
-		if allEmpty {
-			break
-		}
-
-		select {
-		case <-timeout:
-			log.Println("[WARN] flush timeout, some messages may be unsent")
-			return
-		case <-ticker.C:
-		}
+		buf.mu.Unlock()
 	}
 }
 
@@ -799,8 +802,8 @@ func main() {
 	}
 
 	log.Println("All messages queued, flushing...")
-	pub.Flush()
 
+	pub.Flush()
 	time.Sleep(time.Duration(cfg.FlushWaitMS) * time.Millisecond)
 
 	duration := time.Since(start)
@@ -832,6 +835,10 @@ func main() {
 	sentMessages := len(pub.sentSeqs)
 	pub.sentMu.Unlock()
 	printBenchmarkSummaryFixed(partitionStats, sentMessages, duration)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
 }
 
 func generateMessage(size int, seqNum int) string {

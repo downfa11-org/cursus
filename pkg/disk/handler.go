@@ -208,6 +208,7 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 	dh.mu.Unlock()
 
 	remainingToSkip := offset
+	cumulativeOffset := uint64(0)
 	for segmentID := 0; segmentID <= currentSegment; segmentID++ {
 		filePath := fmt.Sprintf("%s_segment_%d.log", dh.BaseName, segmentID)
 		reader, err := mmap.Open(filePath)
@@ -218,11 +219,14 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 		segmentMsgCount := dh.countMessagesFromReader(reader)
 		if remainingToSkip >= uint64(segmentMsgCount) {
 			remainingToSkip -= uint64(segmentMsgCount)
+			cumulativeOffset += uint64(segmentMsgCount)
 			reader.Close()
 			continue
 		}
-		messages := dh.readMessagesFromSegment(reader, remainingToSkip, max-len(allMessages))
+
+		messages := dh.readMessagesFromSegment(reader, remainingToSkip, max-len(allMessages), cumulativeOffset)
 		remainingToSkip = 0
+		cumulativeOffset += uint64(segmentMsgCount)
 		allMessages = append(allMessages, messages...)
 		reader.Close()
 
@@ -252,7 +256,7 @@ func (dh *DiskHandler) countMessagesFromReader(reader *mmap.ReaderAt) int {
 	return count
 }
 
-func (dh *DiskHandler) readMessagesFromSegment(reader *mmap.ReaderAt, startOffset uint64, max int) []types.Message {
+func (dh *DiskHandler) readMessagesFromSegment(reader *mmap.ReaderAt, startOffset uint64, max int, segmentStartOffset uint64) []types.Message {
 	messages := []types.Message{}
 	pos := 0
 	currentMsgIndex := uint64(0)
@@ -282,7 +286,7 @@ func (dh *DiskHandler) readMessagesFromSegment(reader *mmap.ReaderAt, startOffse
 		if currentMsgIndex >= startOffset {
 			messages = append(messages, types.Message{
 				Payload: string(data),
-				Offset:  currentMsgIndex,
+				Offset:  segmentStartOffset + currentMsgIndex,
 			})
 		}
 		currentMsgIndex++

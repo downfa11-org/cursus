@@ -249,16 +249,16 @@ func (bc *BrokerClient) GetConsumerGroupStatus(groupID string) (*ConsumerGroupSt
 		return nil, fmt.Errorf("send command: %w", err)
 	}
 
-	if err := bc.conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return nil, fmt.Errorf("set read deadline: %w", err)
 	}
 	defer func() {
-		if err := bc.conn.SetReadDeadline(time.Time{}); err != nil {
+		if err := conn.SetReadDeadline(time.Time{}); err != nil {
 			util.Error("failed to reset read deadline: %v", err)
 		}
 	}()
 
-	respBuf, err := util.ReadWithLength(bc.conn)
+	respBuf, err := util.ReadWithLength(conn)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}

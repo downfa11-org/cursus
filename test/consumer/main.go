@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -72,6 +73,10 @@ func LoadConfig() (*ConsumerConfig, error) {
 	if *configPath != "" {
 		data, err := os.ReadFile(*configPath)
 		if err != nil {
+			if os.IsNotExist(err) {
+				log.Printf("Config file %s not found, using flag defaults", *configPath)
+				return cfg, nil
+			}
 			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
 		}
 		if strings.HasSuffix(*configPath, ".json") {
@@ -142,12 +147,13 @@ type Message struct {
 }
 
 type PartitionConsumer struct {
-	partitionID int
-	consumer    *Consumer
-	offset      uint64
-	conn        net.Conn
-	mu          sync.Mutex
-	closed      bool
+	partitionID       int
+	consumer          *Consumer
+	offset            uint64
+	conn              net.Conn
+	mu                sync.Mutex
+	closed            bool
+	partitionMsgCount *int64
 }
 
 func (pc *PartitionConsumer) ensureConnection() error {
@@ -167,7 +173,7 @@ func (pc *PartitionConsumer) ensureConnection() error {
 		if err == nil {
 			return nil
 		}
-		log.Printf("Partition %d: connect retry %d failed: %v", pc.partitionID, i+1, err)
+		log.Printf("Partition [%d] connect retry %d failed: %v", pc.partitionID, i+1, err)
 		duration := time.Duration(pc.consumer.config.ConnectRetryBackoffMS) * time.Millisecond
 		time.Sleep(duration)
 	}
@@ -176,7 +182,7 @@ func (pc *PartitionConsumer) ensureConnection() error {
 
 func (pc *PartitionConsumer) pollAndProcess() {
 	if err := pc.ensureConnection(); err != nil {
-		log.Printf("Partition %d: cannot poll: %v", pc.partitionID, err)
+		log.Printf("Partition [%d] cannot poll: %v", pc.partitionID, err)
 		return
 	}
 
@@ -184,10 +190,10 @@ func (pc *PartitionConsumer) pollAndProcess() {
 	currentOffset := pc.offset
 	pc.mu.Unlock()
 
-	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d",
-		pc.consumer.config.Topic, pc.partitionID, currentOffset)
+	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d group=%s",
+		pc.consumer.config.Topic, pc.partitionID, currentOffset, pc.consumer.config.GroupID)
 	if err := util.WriteWithLength(pc.conn, util.EncodeMessage(pc.consumer.config.Topic, consumeCmd)); err != nil {
-		log.Printf("Partition %d: send command failed, reconnecting: %v", pc.partitionID, err)
+		log.Printf("Partition [%d] send command failed, reconnecting: %v", pc.partitionID, err)
 		pc.closeConn()
 		return
 	}
@@ -207,11 +213,12 @@ func (pc *PartitionConsumer) pollAndProcess() {
 				i-- // Don't count timeout against batch size
 				continue
 			}
-			if err == io.EOF {
-				pc.closeConn()
-				return
+			if errors.Is(err, io.EOF) {
+				time.Sleep(pc.consumer.config.PollInterval)
+				i-- // Don't count against batch
+				continue
 			}
-			log.Printf("Partition %d: read message error: %v", pc.partitionID, err)
+			log.Printf("Partition [%d] read message error: %v", pc.partitionID, err)
 			pc.closeConn()
 			break
 		}
@@ -227,13 +234,29 @@ func (pc *PartitionConsumer) pollAndProcess() {
 }
 
 func (pc *PartitionConsumer) processMessage(msgBytes []byte) {
-	if !pc.consumer.config.EnableBenchmark {
-		log.Printf("Partition %d: %s", pc.partitionID, string(msgBytes))
-	}
-
 	if pc.consumer.config.EnableBenchmark {
 		atomic.AddInt64(&pc.consumer.bmMsgCount, 1)
+		pc.incrementPartitionCount()
 	}
+
+	const chunkSize = 20
+	msgStr := string(msgBytes)
+	runes := []rune(msgStr)
+
+	for start := 0; start < len(runes); start += chunkSize {
+		end := start + chunkSize
+		if end > len(runes) {
+			end = len(runes)
+		}
+		log.Printf("Partition [%d] %s", pc.partitionID, string(runes[start:end]))
+	}
+}
+
+func (pc *PartitionConsumer) incrementPartitionCount() {
+	if pc.partitionMsgCount == nil {
+		pc.partitionMsgCount = new(int64)
+	}
+	atomic.AddInt64(pc.partitionMsgCount, 1)
 }
 
 func (pc *PartitionConsumer) commitOffset() {
@@ -243,26 +266,26 @@ func (pc *PartitionConsumer) commitOffset() {
 
 	conn, err := pc.consumer.client.Connect(pc.consumer.config.BrokerAddr)
 	if err != nil {
-		log.Printf("Partition %d: commit connect failed: %v", pc.partitionID, err)
+		log.Printf("Partition [%d] commit connect failed: %v", pc.partitionID, err)
 		return
 	}
 	defer conn.Close()
 
 	commitCmd := fmt.Sprintf("COMMIT_OFFSET topic=%s partition=%d group=%s offset=%d",
 		pc.consumer.config.Topic, pc.partitionID, pc.consumer.config.GroupID, currentOffset)
-	if err := util.WriteWithLength(conn, util.EncodeMessage("", commitCmd)); err != nil {
-		log.Printf("Partition %d: commit send failed: %v", pc.partitionID, err)
+	if err := util.WriteWithLength(conn, util.EncodeMessage(pc.consumer.config.Topic, commitCmd)); err != nil {
+		log.Printf("Partition [%d] commit send failed: %v", pc.partitionID, err)
 		return
 	}
 
 	resp, err := util.ReadWithLength(conn)
 	if err != nil {
-		log.Printf("Partition %d: commit response failed: %v", pc.partitionID, err)
+		log.Printf("Partition [%d] commit response failed: %v", pc.partitionID, err)
 		return
 	}
 
 	if strings.Contains(string(resp), "ERROR:") {
-		log.Printf("Partition %d: commit error: %s", pc.partitionID, string(resp))
+		log.Printf("Partition [%d] commit error: %s", pc.partitionID, string(resp))
 	}
 
 	pc.consumer.mu.Lock()
@@ -383,8 +406,8 @@ func (c *Consumer) Start() error {
 		return fmt.Errorf("join group failed: %w", err)
 	}
 
-	log.Printf("✅ Successfully joined group '%s' with %d partitions: %v",
-		c.config.GroupID, len(assigned), assigned)
+	log.Printf("✅ Successfully joined topic '%s' for group '%s' with %d partitions: %v",
+		c.config.Topic, c.config.GroupID, len(assigned), assigned)
 
 	c.partitionConsumers = make(map[int]*PartitionConsumer)
 	for _, pid := range assigned {
@@ -403,6 +426,10 @@ func (c *Consumer) startConsuming() {
 		c.bmStartTime = time.Now()
 	}
 
+	if c.config.Mode != ModePolling {
+		return
+	}
+
 	for pid, pc := range c.partitionConsumers {
 		go func(pid int, pc *PartitionConsumer) {
 			ticker := time.NewTicker(c.config.PollInterval)
@@ -413,9 +440,7 @@ func (c *Consumer) startConsuming() {
 					pc.close()
 					return
 				case <-ticker.C:
-					if c.config.Mode == ModePolling {
-						pc.pollAndProcess()
-					}
+					pc.pollAndProcess()
 				}
 			}
 		}(pid, pc)
@@ -497,16 +522,22 @@ func (c *Consumer) startStreaming() error {
 				duration := time.Duration(pc.consumer.config.StreamingRetryIntervalMS) * time.Millisecond
 
 				if err := pc.ensureConnection(); err != nil {
-					log.Printf("Partition %d: streaming connection failed, retrying: %v", pid, err)
+					log.Printf("Partition [%d] streaming connection failed, retrying: %v", pid, err)
 					time.Sleep(duration)
 					continue
 				}
 
+				pc.mu.Lock()
 				conn := pc.conn
+				pc.mu.Unlock()
+				if conn == nil {
+					time.Sleep(duration)
+					continue
+				}
 				streamCmd := fmt.Sprintf("STREAM topic=%s partition=%d group=%s",
 					c.config.Topic, pid, c.config.GroupID)
 				if err := util.WriteWithLength(conn, util.EncodeMessage("", streamCmd)); err != nil {
-					log.Printf("Partition %d: STREAM command send failed: %v", pid, err)
+					log.Printf("Partition [%d] STREAM command send failed: %v", pid, err)
 					pc.mu.Lock()
 					pc.conn.Close()
 					pc.conn = nil
@@ -522,14 +553,15 @@ func (c *Consumer) startStreaming() error {
 					default:
 					}
 
-					conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+					deadline := time.Duration(c.config.StreamingReadDeadlineMS) * time.Millisecond
+					conn.SetReadDeadline(time.Now().Add(deadline))
 					msgBytes, err := util.ReadWithLength(conn)
 					if err != nil {
 						if ne, ok := err.(net.Error); ok && ne.Timeout() {
 							time.Sleep(50 * time.Millisecond)
 							continue
 						}
-						log.Printf("Partition %d: streaming read error: %v", pid, err)
+						log.Printf("Partition [%d] streaming read error: %v", pid, err)
 						pc.mu.Lock()
 						pc.conn.Close()
 						pc.conn = nil
@@ -537,7 +569,7 @@ func (c *Consumer) startStreaming() error {
 						break
 					}
 					if len(msgBytes) == 0 {
-						time.Sleep(50 * time.Millisecond)
+						time.Sleep(time.Duration(c.config.StreamingRetryIntervalMS) * time.Millisecond)
 						continue
 					}
 
@@ -559,16 +591,14 @@ func (c *Consumer) startStreaming() error {
 
 func (c *Consumer) commitAllOffsets() {
 	c.mu.RLock()
-	offsetsCopy := make(map[int]uint64)
-	for k, v := range c.offsets {
-		offsetsCopy[k] = v
+	consumers := make([]*PartitionConsumer, 0, len(c.partitionConsumers))
+	for _, pc := range c.partitionConsumers {
+		consumers = append(consumers, pc)
 	}
 	c.mu.RUnlock()
 
-	for partitionID := range offsetsCopy {
-		if pc, exists := c.partitionConsumers[partitionID]; exists {
-			pc.commitOffset()
-		}
+	for _, pc := range consumers {
+		pc.commitOffset()
 	}
 }
 
@@ -607,13 +637,23 @@ func (c *Consumer) PrintBenchmarkSummary() {
 	}
 	c.bmMu.Lock()
 	defer c.bmMu.Unlock()
+
 	duration := time.Since(c.bmStartTime)
+	total := atomic.LoadInt64(&c.bmMsgCount)
 	tps := float64(atomic.LoadInt64(&c.bmMsgCount)) / duration.Seconds()
 
 	fmt.Println("=== CONSUMER BENCHMARK SUMMARY ===")
-	fmt.Printf("Total messages consumed: %d\n", c.bmMsgCount)
+	fmt.Printf("Total messages consumed: %d\n", total)
 	fmt.Printf("Elapsed time: %v\n", duration)
 	fmt.Printf("Approx TPS: %.2f\n", tps)
+	fmt.Println("--- Partition Message Counts ---")
+	for _, pc := range c.partitionConsumers {
+		count := int64(0)
+		if pc.partitionMsgCount != nil {
+			count = atomic.LoadInt64(pc.partitionMsgCount)
+		}
+		fmt.Printf("Partition [%d]: %d messages\n", pc.partitionID, count)
+	}
 	fmt.Println("==================================")
 }
 

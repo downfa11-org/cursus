@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 
 	"github.com/downfa11-org/go-broker/pkg/types"
 )
@@ -65,6 +66,7 @@ func ReadWithLength(conn net.Conn) ([]byte, error) {
 
 func EncodeBatchMessages(topic string, partition int, msgs []types.Message, acks string) ([]byte, error) {
 	var buf bytes.Buffer
+	buf.Write([]byte{0xBA, 0x7C})
 
 	write := func(v any) error {
 		if err := binary.Write(&buf, binary.BigEndian, v); err != nil {
@@ -134,6 +136,11 @@ func EncodeBatchMessages(topic string, partition int, msgs []types.Message, acks
 
 // DecodeBatchMessages decodes a batch encoded by EncodeBatchMessages
 func DecodeBatchMessages(data []byte) (*types.Batch, error) {
+	if len(data) < 2 || data[0] != 0xBA || data[1] != 0x7C {
+		return nil, fmt.Errorf("invalid batch header")
+	}
+	data = data[2:]
+
 	offset := 0
 	read := func(size int) ([]byte, error) {
 		if offset+size > len(data) {
@@ -162,6 +169,25 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 		return nil, err
 	}
 	partition := int32(binary.BigEndian.Uint32(partBytes))
+
+	// Acks
+	acksLenBytes, err := read(1)
+	if err != nil {
+		return nil, err
+	}
+	acksLen := int(acksLenBytes[0])
+	acksBytes, err := read(acksLen)
+	if err != nil {
+		return nil, err
+	}
+	acksStr := string(acksBytes)
+	acks, err := strconv.Atoi(acksStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid acks string: %s", acksStr)
+	}
+	if acks != -1 && acks != 0 && acks != 1 {
+		return nil, fmt.Errorf("invalid acks value: %d", acks)
+	}
 
 	// Batch start/end
 	batchStartBytes, err := read(8)
@@ -212,6 +238,7 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 		Partition:  partition,
 		BatchStart: batchStart,
 		BatchEnd:   batchEnd,
+		Acks:       acks,
 		Messages:   msgs,
 	}, nil
 }

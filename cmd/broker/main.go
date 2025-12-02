@@ -45,7 +45,7 @@ func main() {
 				tm.CreateTopic(topicName, 4)
 			}
 			if t != nil {
-				if err := tm.RegisterConsumerGroup(topicName, gcfg.Name, gcfg.ConsumerCount); err != nil {
+				if _, err := tm.RegisterConsumerGroup(topicName, gcfg.Name, gcfg.ConsumerCount); err != nil {
 					util.Error("⚠️ Failed to register static consumer group %q on topic %q: %v", gcfg.Name, topicName, err)
 				}
 			}

@@ -9,8 +9,7 @@ log_level: "info"
 # Disk persistence
 disk_flush_batch_size: 500          
 linger_ms: 200              
-channel_buffer_size: 8192      
-disk_write_timeout_ms: 10         
+channel_buffer_size: 8192              
 segment_size: 10485760             
 segment_roll_time_ms: 300000       
 

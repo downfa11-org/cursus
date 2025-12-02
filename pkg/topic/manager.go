@@ -213,25 +213,27 @@ func (tm *TopicManager) publishInternal(topicName string, msg types.Message, req
 	return nil
 }
 
-func (tm *TopicManager) RegisterConsumerGroup(topicName, groupName string, consumerCount int) *types.ConsumerGroup {
+func (tm *TopicManager) RegisterConsumerGroup(topicName, groupName string, consumerCount int) (*types.ConsumerGroup, error) {
 	t := tm.GetTopic(topicName)
 	if t == nil {
-		return nil
+		return nil, fmt.Errorf("topic '%s' does not exist", topicName)
 	}
 
 	group := t.RegisterConsumerGroup(groupName, consumerCount)
 
 	if tm.coordinator != nil {
 		if err := tm.coordinator.RegisterGroup(topicName, groupName, len(t.Partitions)); err != nil {
-			util.Warn("Failed to register group '%s' with coordinator: %v", groupName, err)
-			return nil
+			if deregErr := t.DeregisterConsumerGroup(groupName); deregErr != nil {
+				util.Error("Failed to rollback consumer group '%s' on topic '%s': %v", groupName, topicName, deregErr)
+			}
+			return nil, fmt.Errorf("failed to register group '%s' with coordinator: %w", groupName, err)
 		}
 
 		assignments := tm.coordinator.GetAssignments(groupName)
 		t.applyAssignments(groupName, assignments)
 	}
 
-	return group
+	return group, nil
 }
 
 func (tm *TopicManager) Flush() {

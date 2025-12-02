@@ -7,7 +7,6 @@ services:
     container_name: broker    
     command: ./broker    
     volumes:    
-      - ./logs:/root/broker-logs    
       - ./config.yaml:/root/config.yaml    
     environment:    
       - CONFIG_PATH=/root/config.yaml    

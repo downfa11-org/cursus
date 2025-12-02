@@ -5,8 +5,8 @@ max_retries: 1
 retry_backoff_ms: 50
 publish_delay_ms: 100
 
-acks: "0"
-num_messages: 100
+acks: "1"
+num_messages: 10000
 partitions: 12
 max_inflight_requests: 100
 batch_size: 1000

@@ -119,7 +119,7 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 			if count > 0 {
 				lastOffset := actualOffset + uint64(count)
 				if err := t.CommitOffset(ctx.ConsumerGroup, partition, lastOffset); err != nil {
-					util.Warn("Failed to commit offset to topic for group '%s': %v", ctx.ConsumerGroup, err)
+					util.Warn("Failed to commit offset to topic '%s', %v", topicName, err)
 				}
 				if ch.Coordinator != nil {
 					if err := ch.Coordinator.CommitOffset(ctx.ConsumerGroup, topicName, partition, lastOffset); err != nil {
@@ -152,7 +152,7 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 
 	if streamedCount > 0 {
 		if err := t.CommitOffset(ctx.ConsumerGroup, partition, lastOffset); err != nil {
-			util.Warn("Failed to commit offset to topic for group '%s': %v", ctx.ConsumerGroup, err)
+			util.Warn("Failed to commit offset to topic '%s' for group '%s': %v", topicName, ctx.ConsumerGroup, err)
 		} else {
 			util.Debug("Successfully committed offset %d to topic for group '%s', topic '%s', partition %d",
 				lastOffset, ctx.ConsumerGroup, topicName, partition)
@@ -526,7 +526,7 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 					break
 				}
 
-				util.Debug("group registered, start to add consumer")
+				util.Debug("Group registered, Start to add consumer")
 
 				assignments, err = ch.Coordinator.AddConsumer(groupName, consumerID)
 				if err != nil {

@@ -165,6 +165,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 					writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
 					continue
 				}
+				writeResponse(conn, fmt.Sprintf("OK:processed=%d", len(batch.Messages)))
 			} else {
 				var published int
 				for _, m := range batch.Messages {
@@ -203,8 +204,8 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 					continue
 				}
 				writeResponse(conn, "OK")
-			case "all":
-				writeResponse(conn, "ERROR: acks=all not implemented")
+			case "-1":
+				writeResponse(conn, "ERROR: acks=-1(all) not implemented")
 			default:
 				writeResponse(conn, fmt.Sprintf("ERROR: invalid acks: %s", acks))
 			}

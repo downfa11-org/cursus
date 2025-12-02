@@ -110,6 +110,20 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *type
 	return group
 }
 
+// DeregisterConsumerGroup removes a consumer group from the topic.
+func (t *Topic) DeregisterConsumerGroup(groupName string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if _, ok := t.consumerGroups[groupName]; !ok {
+		return fmt.Errorf("consumer group '%s' does not exist", groupName)
+	}
+
+	delete(t.consumerGroups, groupName)
+	util.Info("Consumer group '%s' deregistered from topic '%s'", groupName, t.Name)
+	return nil
+}
+
 // Publish sends a message to one partition.
 func (t *Topic) Publish(msg types.Message) {
 	var idx int
@@ -159,21 +173,20 @@ func (t *Topic) PublishBatchSync(msgs []types.Message) error {
 	}
 	partitioned := make(map[int][]types.Message)
 
+	t.mu.Lock()
 	for _, msg := range msgs {
 		var idx int
 		if msg.Key != "" {
 			keyID := util.GenerateID(msg.Key)
-			t.mu.RLock()
 			idx = int(keyID % uint64(len(t.Partitions)))
-			t.mu.RUnlock()
 		} else {
-			t.mu.Lock()
 			idx = int(t.counter % uint64(len(t.Partitions)))
 			t.counter++
-			t.mu.Unlock()
 		}
 		partitioned[idx] = append(partitioned[idx], msg)
 	}
+	t.mu.Unlock()
+
 	for idx, pm := range partitioned {
 		p := t.Partitions[idx]
 

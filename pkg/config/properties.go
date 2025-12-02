@@ -141,6 +141,10 @@ func LoadConfig() (*Config, error) {
 	if *configPath != "" {
 		data, err := os.ReadFile(*configPath)
 		if err != nil {
+			if os.IsNotExist(err) {
+				util.Info("Config file %s not found, using flag defaults", *configPath)
+				return cfg, nil
+			}
 			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
 		}
 		if strings.HasSuffix(*configPath, ".json") {
