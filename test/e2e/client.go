@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -293,7 +294,11 @@ func (bc *BrokerClient) RegisterConsumerGroup(topic, groupName string) error {
 	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return fmt.Errorf("set read deadline: %w", err)
 	}
-	defer conn.SetReadDeadline(time.Time{})
+	defer func() {
+		if err := conn.SetReadDeadline(time.Time{}); err != nil {
+			log.Printf("failed to reset read deadline: %v", err)
+		}
+	}()
 
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
 		return fmt.Errorf("send add consumer command: %w", err)
