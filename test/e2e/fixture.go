@@ -110,6 +110,7 @@ func (ctx *TestContext) Then() *Consequences {
 // Cleanup stops broker and cleans up resources
 func (ctx *TestContext) Cleanup() {
 	ctx.t.Log("Cleaning up test resources...")
+
 	if ctx.topic != "" {
 		if err := ctx.getClient().DeleteTopic(ctx.topic); err != nil {
 			ctx.t.Logf("Failed to delete topic %s: %v", ctx.topic, err)
@@ -117,5 +118,10 @@ func (ctx *TestContext) Cleanup() {
 			ctx.t.Logf("Topic %s deleted", ctx.topic)
 		}
 	}
+
+	if ctx.client != nil {
+		ctx.client.Close()
+	}
+
 	time.Sleep(1 * time.Second)
 }

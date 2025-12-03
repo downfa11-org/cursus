@@ -26,7 +26,6 @@ func (d *DiskHandler) flushLoop() {
 		select {
 		case msg, ok := <-d.writeCh:
 			if !ok {
-				util.Debug("writeCh closed")
 				continue
 			}
 			batch = append(batch, msg)
@@ -85,6 +84,7 @@ func (d *DiskHandler) flushLoop() {
 				d.writeBatch(batch)
 			}
 
+			d.ioMu.Lock()
 			if d.file != nil {
 				if err := d.writer.Flush(); err != nil {
 					util.Error("flush failed in shutdown: %v", err)
@@ -92,8 +92,33 @@ func (d *DiskHandler) flushLoop() {
 				if err := d.file.Sync(); err != nil {
 					util.Error("sync failed during shutdown: %v", err)
 				}
-				d.file.Close()
+				if err := d.file.Close(); err != nil {
+					util.Error("close failed during shutdown: %v", err)
+				}
+				d.file = nil
+				d.writer = nil
 			}
+			d.ioMu.Unlock()
+			return
+		}
+	}
+}
+
+func (d *DiskHandler) syncLoop() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			d.ioMu.Lock()
+			if d.file != nil {
+				if err := d.file.Sync(); err != nil {
+					util.Error("failed to sync file: %v", err)
+				}
+			}
+			d.ioMu.Unlock()
+		case <-d.done:
 			return
 		}
 	}
@@ -101,9 +126,6 @@ func (d *DiskHandler) flushLoop() {
 
 // writeBatch writes a batch of messages into the current segment file.
 func (d *DiskHandler) writeBatch(batch []string) {
-	start := time.Now()
-	util.Debug("Starting batch write: %d messages", len(batch))
-
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
@@ -116,54 +138,58 @@ func (d *DiskHandler) writeBatch(batch []string) {
 		}
 	}
 
-	var lenBuf [4]byte
-
+	validMsgs := make([]string, 0, len(batch))
 	for _, msg := range batch {
-		data := []byte(msg)
-		if len(data) > 0xFFFFFFFF {
-			util.Error("message too large to write: %d bytes", len(data))
+		if len(msg) > 0xFFFFFFFF {
+			util.Error("message too large to write: %d bytes", len(msg))
 			continue
 		}
-		binary.BigEndian.PutUint32(lenBuf[:], uint32(len(data)))
-
-		totalLen := uint64(4 + len(data))
-		if d.CurrentOffset+totalLen > d.SegmentSize {
-			if err := d.rotateSegment(); err != nil {
-				util.Error("rotateSegment failed to rotate segment: %v", err)
-				break
-			}
-		}
-
-		if _, err := d.writer.Write(lenBuf[:]); err != nil {
-			util.Error("writeBatch failed writing length: %v", err)
-			break
-		}
-		if _, err := d.writer.Write(data); err != nil {
-			util.Error("writeBatch failed writing data: %v", err)
-			break
-		}
-
-		d.CurrentOffset += totalLen
-		d.AbsoluteOffset++
+		validMsgs = append(validMsgs, msg)
 	}
+
+	if len(validMsgs) == 0 {
+		return
+	}
+
+	totalSize := 0
+	for _, msg := range validMsgs {
+		totalSize += 4 + len(msg)
+	}
+
+	buffer := make([]byte, 0, totalSize)
+	lenBuf := make([]byte, 4)
+
+	for _, msg := range validMsgs {
+		msgLen := len(msg)
+		binary.BigEndian.PutUint32(lenBuf, uint32(msgLen))
+		buffer = append(buffer, lenBuf...)
+		buffer = append(buffer, msg...)
+	}
+
+	bufferLen := uint64(len(buffer))
+	if d.CurrentOffset+bufferLen > d.SegmentSize {
+		if err := d.rotateSegment(); err != nil {
+			util.Error("rotateSegment failed to rotate segment: %v", err)
+			return
+		}
+	}
+
+	if _, err := d.writer.Write(buffer); err != nil {
+		util.Error("writeBatch failed: %v", err)
+		return
+	}
+
+	d.CurrentOffset += uint64(len(buffer))
+	d.AbsoluteOffset += uint64(len(validMsgs))
 
 	if err := d.writer.Flush(); err != nil {
 		util.Error("flush failed after batch: %v", err)
 		return
 	}
-
-	if d.file != nil {
-		if err := d.file.Sync(); err != nil {
-			util.Error("sync failed after batch: %v", err)
-		}
-	}
-	util.Debug("✅ WriteBatch Completed in %v", time.Since(start))
 }
 
 // WriteDirect writes a single message immediately without batching.
 func (d *DiskHandler) WriteDirect(msg string) {
-	util.Debug("[WRITE_DIRECT] Starting direct write (len=%d)", len(msg))
-
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
@@ -205,12 +231,6 @@ func (d *DiskHandler) WriteDirect(msg string) {
 
 	if err := d.writer.Flush(); err != nil {
 		util.Error("flush failed in WriteDirect: %v", err)
-	}
-
-	if d.file != nil {
-		if err := d.file.Sync(); err != nil {
-			util.Error("failed to sync disk file: %v", err)
-		}
 	}
 }
 

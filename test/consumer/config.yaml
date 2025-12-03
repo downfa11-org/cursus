@@ -1,13 +1,8 @@
 broker_addr: "broker:9000"
+enable_benchmark: true
+
+topic: "bench-topic"
 group_id: "test-consumer-group-1"
-consumer_id: "consumer-1"  
-topic: "my-topic"  
-partitions: [0, 1, 2, 3]  
-heartbeat_interval_ms: 3000  
-session_timeout_ms: 10000  
-max_poll_records: 100  
-poll_interval_ms: 1000  
-auto_commit: true  
-auto_commit_interval_ms: 5000  
-max_retries: 3  
-retry_backoff_ms: 100
+consumer_id: "consumer-1"
+
+poll_interval: 1000ms

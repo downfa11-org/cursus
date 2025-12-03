@@ -1,10 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"compress/gzip"
-	"crypto/tls"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,130 +9,63 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
+	"github.com/downfa11-org/go-broker/util"
+	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
 
-// ConsumerConfig holds all consumer configuration
+type ConsumerMode string
+
+const (
+	ModePolling   ConsumerMode = "polling"
+	ModeStreaming ConsumerMode = "streaming"
+)
+
 type ConsumerConfig struct {
 	BrokerAddr string `yaml:"broker_addr" json:"broker_addr"`
+	Topic      string `yaml:"topic" json:"topic"`
 	GroupID    string `yaml:"group_id" json:"group_id"`
 	ConsumerID string `yaml:"consumer_id" json:"consumer_id"`
-	Topic      string `yaml:"topic" json:"topic"`
-	Partitions []int  `yaml:"partitions" json:"partitions"`
 
-	// Heartbeat settings
-	HeartbeatIntervalMS int `yaml:"heartbeat_interval_ms" json:"heartbeat_interval_ms"`
-	SessionTimeoutMS    int `yaml:"session_timeout_ms" json:"session_timeout_ms"`
+	EnableBenchmark bool         `yaml:"enable_benchmark" json:"enable_benchmark"`
+	Mode            ConsumerMode `yaml:"mode" json:"mode"`
 
-	// Fetcher settings
-	MaxPollRecords int `yaml:"max_poll_records" json:"max_poll_records"`
-	PollIntervalMS int `yaml:"poll_interval_ms" json:"poll_interval_ms"`
+	PollInterval       time.Duration `yaml:"poll_interval" json:"poll_interval"`
+	BatchSize          int           `yaml:"batch_size" json:"batch_size"`
+	AutoCommitInterval time.Duration `yaml:"auto_commit_interval" json:"auto_commit_interval"`
 
-	// Offset settings
-	AutoCommit           bool   `yaml:"auto_commit" json:"auto_commit"`
-	AutoCommitIntervalMS int    `yaml:"auto_commit_interval_ms" json:"auto_commit_interval_ms"`
-	AutoOffsetReset      string `yaml:"auto_offset_reset" json:"auto_offset_reset"`
-	RebalanceTimeoutMS   int    `yaml:"rebalance_timeout_ms" json:"rebalance_timeout_ms"`
+	SessionTimeoutMS         int `yaml:"session_timeout_ms" json:"session_timeout_ms"`
+	MaxPollRecords           int `yaml:"max_poll_records" json:"max_poll_records"`
+	MaxConnectRetries        int `yaml:"max_connect_retries" json:"max_connect_retries"`
+	ConnectRetryBackoffMS    int `yaml:"connect_retry_backoff_ms" json:"connect_retry_backoff_ms"`
+	HeartbeatIntervalMS      int `yaml:"heartbeat_interval_ms" json:"heartbeat_interval_ms"`
+	StreamingReadDeadlineMS  int `yaml:"streaming_read_deadline_ms" json:"streaming_read_deadline_ms"`
+	StreamingRetryIntervalMS int `yaml:"streaming_retry_interval_ms" json:"streaming_retry_interval_ms"`
 
-	// Retry settings
-	MaxRetries     int `yaml:"max_retries" json:"max_retries"`
-	RetryBackoffMS int `yaml:"retry_backoff_ms" json:"retry_backoff_ms"`
-
-	// Join group retry
-	JoinGroupMaxRetries   int `yaml:"join_group_max_retries" json:"join_group_max_retries"`
-	JoinGroupRetryDelayMS int `yaml:"join_group_retry_delay_ms" json:"join_group_retry_delay_ms"`
-
-	DefaultPartitions []int `yaml:"default_partitions" json:"default_partitions"`
-	EmptyPollDelayMS  int   `yaml:"empty_poll_delay_ms" json:"empty_poll_delay_ms"`
-	PollTimeoutMS     int   `yaml:"poll_timeout_ms" json:"poll_timeout_ms"`
-
-	// TLS
-	UseTLS      bool   `yaml:"use_tls" json:"use_tls"`
-	TLSCertPath string `yaml:"tls_cert_path" json:"tls_cert_path"`
-	TLSKeyPath  string `yaml:"tls_key_path" json:"tls_key_path"`
-
-	// compression
-	EnableGzip bool `yaml:"enable_gzip" json:"enable_gzip"`
+	EnableAutoCommit bool `yaml:"enable_auto_commit" json:"enable_auto_commit"`
+	EnableGzip       bool `yaml:"enable_gzip" json:"enable_gzip"`
 }
 
-// Message represents a consumed message
-type Message struct {
-	Partition int
-	Offset    int
-	Payload   string
-}
-
-// OffsetManager tracks offsets per partition
-type OffsetManager struct {
-	offsets map[int]int
-	mu      sync.RWMutex
-}
-
-func NewOffsetManager() *OffsetManager {
-	return &OffsetManager{
-		offsets: make(map[int]int),
-	}
-}
-
-func (om *OffsetManager) Commit(partition, offset int) {
-	om.mu.Lock()
-	defer om.mu.Unlock()
-	om.offsets[partition] = offset
-}
-
-func (om *OffsetManager) Get(partition int) int {
-	om.mu.RLock()
-	defer om.mu.RUnlock()
-	return om.offsets[partition]
-}
-
-// Consumer represents a message consumer
-type Consumer struct {
-	config         *ConsumerConfig
-	offsetManager  *OffsetManager
-	heartbeatDone  chan struct{}
-	pollDone       chan struct{}
-	lastCommitTime time.Time
-	ready          chan struct{}
-}
-
-func LoadConsumerConfig() (*ConsumerConfig, error) {
+func LoadConfig() (*ConsumerConfig, error) {
 	cfg := &ConsumerConfig{}
-
-	// defaults
-	flag.StringVar(&cfg.BrokerAddr, "broker", "localhost:9000", "Broker address")
+	flag.StringVar(&cfg.ConsumerID, "consumer-id", "consumer-1", "Consumer ID")
 	flag.StringVar(&cfg.GroupID, "group-id", "default-group", "Consumer group ID")
-	flag.StringVar(&cfg.ConsumerID, "consumer-id", "", "Consumer ID (auto-generated if empty)")
-	flag.StringVar(&cfg.Topic, "topic", "my-topic", "Topic name")
-	flag.IntVar(&cfg.HeartbeatIntervalMS, "heartbeat-interval-ms", 3000, "Heartbeat interval in milliseconds")
-	flag.IntVar(&cfg.SessionTimeoutMS, "session-timeout-ms", 10000, "Session timeout in milliseconds")
-	flag.IntVar(&cfg.MaxPollRecords, "max-poll-records", 100, "Maximum records per poll")
-	flag.IntVar(&cfg.PollIntervalMS, "poll-interval-ms", 1000, "Poll interval in milliseconds")
+	flag.StringVar(&cfg.Topic, "topic", "", "Topic to consume")
+	flag.DurationVar(&cfg.PollInterval, "poll-interval", 1*time.Second, "Poll interval")
+	flag.IntVar(&cfg.BatchSize, "batch-size", 100, "Batch size for consuming")
+	flag.DurationVar(&cfg.AutoCommitInterval, "auto-commit-interval", 5*time.Second, "Auto commit interval")
 
-	flag.BoolVar(&cfg.AutoCommit, "auto-commit", true, "Enable auto commit")
-	flag.IntVar(&cfg.AutoCommitIntervalMS, "auto-commit-interval-ms", 5000, "Auto commit interval in milliseconds")
-	flag.StringVar(&cfg.AutoOffsetReset, "auto-offset-reset", "earliest", "Auto offset reset policy (earliest/latest)")
-
-	flag.IntVar(&cfg.MaxRetries, "max-retries", 3, "Maximum retry attempts")
-	flag.IntVar(&cfg.RetryBackoffMS, "retry-backoff-ms", 100, "Initial backoff time in milliseconds")
-
-	flag.IntVar(&cfg.JoinGroupMaxRetries, "join-group-max-retries", 10, "Maximum retry attempts for JOIN_GROUP")
-	flag.IntVar(&cfg.JoinGroupRetryDelayMS, "join-group-retry-delay-ms", 500, "Retry delay in milliseconds for JOIN_GROUP")
-
-	flag.IntVar(&cfg.EmptyPollDelayMS, "empty-poll-delay-ms", 50, "Delay when no messages available in milliseconds")
-	flag.IntVar(&cfg.PollTimeoutMS, "poll-timeout-ms", 5000, "Poll timeout in milliseconds")
-
-	flag.IntVar(&cfg.RebalanceTimeoutMS, "rebalance-timeout-ms", 60000, "Rebalance timeout")
-
-	flag.BoolVar(&cfg.UseTLS, "use-tls", false, "Enable TLS")
-	flag.StringVar(&cfg.TLSCertPath, "tls-cert", "", "TLS cert path")
-	flag.StringVar(&cfg.TLSKeyPath, "tls-key", "", "TLS key path")
-
-	flag.BoolVar(&cfg.EnableGzip, "enable-gzip", false, "Enable gzip")
+	flag.IntVar(&cfg.MaxPollRecords, "max-poll-records", 500, "Max records per poll")
+	flag.BoolVar(&cfg.EnableAutoCommit, "enable-auto-commit", true, "Enable auto commit")
+	flag.IntVar(&cfg.SessionTimeoutMS, "session-timeout-ms", 30000, "Session timeout in milliseconds")
+	flag.BoolVar(&cfg.EnableGzip, "enable-gzip", false, "Enable gzip compression")
 
 	configPath := flag.String("config", "/config.yaml", "Path to YAML/JSON config file")
 	flag.Parse()
@@ -144,574 +73,626 @@ func LoadConsumerConfig() (*ConsumerConfig, error) {
 	if *configPath != "" {
 		data, err := os.ReadFile(*configPath)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read config file: %w", err)
+			if os.IsNotExist(err) {
+				log.Printf("Config file %s not found, using flag defaults", *configPath)
+				return cfg, nil
+			}
+			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
 		}
-
 		if strings.HasSuffix(*configPath, ".json") {
 			if err := json.Unmarshal(data, cfg); err != nil {
-				return nil, fmt.Errorf("failed to parse JSON config: %w", err)
+				return nil, err
 			}
 		} else {
 			if err := yaml.Unmarshal(data, cfg); err != nil {
-				return nil, fmt.Errorf("failed to parse YAML config: %w", err)
+				return nil, err
 			}
 		}
 	}
 
-	if strings.TrimSpace(cfg.BrokerAddr) == "" {
+	if len(cfg.BrokerAddr) == 0 {
 		cfg.BrokerAddr = "localhost:9000"
 	}
-
-	if strings.TrimSpace(cfg.GroupID) == "" {
-		cfg.GroupID = "default-group"
+	if cfg.PollInterval == 0 {
+		cfg.PollInterval = 1 * time.Second
 	}
-
-	if strings.TrimSpace(cfg.Topic) == "" {
-		cfg.Topic = "default-topic"
+	if cfg.BatchSize == 0 {
+		cfg.BatchSize = 100
 	}
-
-	if cfg.HeartbeatIntervalMS <= 0 {
-		cfg.HeartbeatIntervalMS = 1000
+	if cfg.AutoCommitInterval == 0 {
+		cfg.AutoCommitInterval = 5 * time.Second
 	}
-
-	if cfg.SessionTimeoutMS <= 0 {
-		cfg.SessionTimeoutMS = 5000
+	if cfg.MaxPollRecords == 0 {
+		cfg.MaxPollRecords = 500
 	}
-
-	if cfg.MaxPollRecords <= 0 {
-		cfg.MaxPollRecords = 1
+	if cfg.Mode == "" {
+		cfg.Mode = ModePolling
 	}
-
-	if cfg.PollIntervalMS <= 0 {
-		cfg.PollIntervalMS = 200
+	if cfg.MaxConnectRetries == 0 {
+		cfg.MaxConnectRetries = 5
 	}
-
-	if cfg.AutoCommitIntervalMS <= 0 {
-		cfg.AutoCommitIntervalMS = 1000
+	if cfg.ConnectRetryBackoffMS == 0 {
+		cfg.ConnectRetryBackoffMS = 1000
 	}
-
-	if cfg.MaxRetries < 0 {
-		cfg.MaxRetries = 0
+	if cfg.HeartbeatIntervalMS == 0 {
+		cfg.HeartbeatIntervalMS = cfg.SessionTimeoutMS / 2
 	}
-
-	if cfg.RetryBackoffMS <= 0 {
-		cfg.RetryBackoffMS = 50
+	if cfg.StreamingReadDeadlineMS == 0 {
+		cfg.StreamingReadDeadlineMS = 5 * 60 * 1000 // 5min
 	}
-
-	if cfg.JoinGroupMaxRetries <= 0 {
-		cfg.JoinGroupMaxRetries = 5
-	}
-
-	if cfg.JoinGroupRetryDelayMS <= 0 {
-		cfg.JoinGroupRetryDelayMS = 200
-	}
-
-	if cfg.EmptyPollDelayMS < 0 {
-		cfg.EmptyPollDelayMS = 0
-	}
-
-	if cfg.PollTimeoutMS <= 0 {
-		cfg.PollTimeoutMS = 1000
-	}
-
-	if cfg.ConsumerID == "" {
-		cfg.ConsumerID = fmt.Sprintf("consumer-%d", time.Now().UnixNano())
-	}
-
-	if cfg.AutoOffsetReset != "earliest" && cfg.AutoOffsetReset != "latest" {
-		cfg.AutoOffsetReset = "earliest"
-	}
-
-	if cfg.SessionTimeoutMS <= cfg.HeartbeatIntervalMS {
-		log.Printf("[WARN] SessionTimeoutMS (%d) must exceed HeartbeatIntervalMS (%d), adjusting to %d",
-			cfg.SessionTimeoutMS, cfg.HeartbeatIntervalMS, cfg.HeartbeatIntervalMS*10)
-		cfg.SessionTimeoutMS = cfg.HeartbeatIntervalMS * 10
-	}
-
-	if cfg.RebalanceTimeoutMS < cfg.SessionTimeoutMS {
-		cfg.RebalanceTimeoutMS = cfg.SessionTimeoutMS
-	}
-
-	// validate TLS config
-	if cfg.UseTLS && (cfg.TLSCertPath == "" || cfg.TLSKeyPath == "") {
-		return nil, fmt.Errorf("TLS enabled but cert/key paths not provided")
+	if cfg.StreamingRetryIntervalMS == 0 {
+		cfg.StreamingRetryIntervalMS = 50
 	}
 
 	return cfg, nil
 }
 
-func (c *Consumer) dial() (net.Conn, error) {
-	if c.config.UseTLS {
-		if c.config.TLSCertPath == "" || c.config.TLSKeyPath == "" {
-			return nil, fmt.Errorf("TLS enabled but cert/key paths not provided")
-		}
-
-		cert, err := tls.LoadX509KeyPair(c.config.TLSCertPath, c.config.TLSKeyPath)
-		if err != nil {
-			return nil, fmt.Errorf("load TLS cert: %w", err)
-		}
-
-		tlsConfig := &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
-		}
-
-		return tls.Dial("tcp", c.config.BrokerAddr, tlsConfig)
-	}
-
-	return net.Dial("tcp", c.config.BrokerAddr)
+type ConsumerClient struct {
+	ID string
 }
 
-func NewConsumer(cfg *ConsumerConfig) (*Consumer, error) {
-	consumer := &Consumer{
-		config:         cfg,
-		offsetManager:  NewOffsetManager(),
-		heartbeatDone:  make(chan struct{}),
-		pollDone:       make(chan struct{}),
-		lastCommitTime: time.Now(),
-		ready:          make(chan struct{}),
-	}
-
-	if len(cfg.Partitions) == 0 {
-		if len(cfg.DefaultPartitions) > 0 {
-			cfg.Partitions = cfg.DefaultPartitions
-		} else {
-			cfg.Partitions = []int{0, 1, 2, 3}
-		}
-	}
-
-	if err := consumer.joinGroup(); err != nil {
-		log.Printf("Failed to join group: %v", err)
-		return nil, fmt.Errorf("failed to join group: %w", err)
-	}
-
-	for _, partition := range cfg.Partitions {
-		consumer.offsetManager.Commit(partition, 0)
-	}
-
-	go consumer.startHeartbeat()
-
-	close(consumer.ready)
-
-	log.Printf("Consumer '%s' initialized for group '%s' on topic '%s'",
-		cfg.ConsumerID, cfg.GroupID, cfg.Topic)
-
-	return consumer, nil
+func NewConsumerClient() *ConsumerClient {
+	return &ConsumerClient{ID: uuid.New().String()}
 }
 
-func (c *Consumer) WriteWithLength(conn net.Conn, data []byte) error {
-	compressed, err := CompressMessage(data, c.config.EnableGzip)
-	if err != nil {
-		return fmt.Errorf("compress: %w", err)
-	}
-
-	lenBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(lenBuf, uint32(len(compressed)))
-
-	if _, err := conn.Write(lenBuf); err != nil {
-		return fmt.Errorf("write length: %w", err)
-	}
-
-	if _, err := conn.Write(compressed); err != nil {
-		return fmt.Errorf("write data: %w", err)
-	}
-
-	return nil
+func (c *ConsumerClient) Connect(addr string) (net.Conn, error) {
+	return net.Dial("tcp", addr)
 }
 
-func (c *Consumer) ReadWithLength(conn net.Conn) ([]byte, error) {
-	lenBuf := make([]byte, 4)
-	if _, err := io.ReadFull(conn, lenBuf); err != nil {
-		return nil, fmt.Errorf("read length: %w", err)
-	}
-
-	msgLen := binary.BigEndian.Uint32(lenBuf)
-	msgBuf := make([]byte, msgLen)
-
-	if _, err := io.ReadFull(conn, msgBuf); err != nil {
-		return nil, fmt.Errorf("read message: %w", err)
-	}
-
-	return DecompressMessage(msgBuf, c.config.EnableGzip)
+type Message struct {
+	Topic     string
+	Partition int
+	Offset    uint64
+	Value     []byte
 }
 
-func EncodeMessage(topic, payload string) []byte {
-	topicBytes := []byte(topic)
-	payloadBytes := []byte(payload)
-	data := make([]byte, 2+len(topicBytes)+len(payloadBytes))
-	binary.BigEndian.PutUint16(data[:2], uint16(len(topicBytes)))
-	copy(data[2:2+len(topicBytes)], topicBytes)
-	copy(data[2+len(topicBytes):], payloadBytes)
-	return data
+type PartitionConsumer struct {
+	partitionID       int
+	consumer          *Consumer
+	offset            uint64
+	conn              net.Conn
+	mu                sync.Mutex
+	closed            bool
+	partitionMsgCount *int64
 }
 
-func CompressMessage(data []byte, enableGzip bool) ([]byte, error) {
-	if !enableGzip {
-		return data, nil
+func (pc *PartitionConsumer) ensureConnection() error {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	if pc.closed {
+		return fmt.Errorf("partition consumer closed")
 	}
-
-	var buf bytes.Buffer
-	gw := gzip.NewWriter(&buf)
-	if _, err := gw.Write(data); err != nil {
-		return nil, err
-	}
-	if err := gw.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-func DecompressMessage(data []byte, enableGzip bool) ([]byte, error) {
-	if !enableGzip {
-		return data, nil
-	}
-
-	gr, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	defer gr.Close()
-
-	return io.ReadAll(gr)
-}
-
-func (c *Consumer) startHeartbeat() {
-	ticker := time.NewTicker(time.Duration(c.config.HeartbeatIntervalMS) * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-c.heartbeatDone:
-			return
-		case <-ticker.C:
-			if err := c.sendHeartbeat(); err != nil {
-				log.Printf("Heartbeat failed: %v", err)
-			}
-		}
-	}
-}
-
-func (c *Consumer) sendHeartbeat() error {
-	conn, err := c.dial()
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
-	cmd := EncodeMessage("admin", fmt.Sprintf("HEARTBEAT topic=%s group=%s member=%s", c.config.Topic, c.config.GroupID, c.config.ConsumerID))
-	if err := c.WriteWithLength(conn, cmd); err != nil {
-		return err
-	}
-
-	_, err = c.ReadWithLength(conn)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return err
-	}
-	return nil
-}
-
-func (c *Consumer) Poll(timeout time.Duration) ([]Message, error) {
-	var allMessages []Message
-	remainingQuota := c.config.MaxPollRecords
-
-	for _, partition := range c.config.Partitions {
-		if remainingQuota <= 0 {
-			break
-		}
-
-		offset := c.offsetManager.Get(partition)
-		batchSize := remainingQuota
-
-		messages, err := c.fetchMessagesWithLimit(partition, offset, batchSize)
-		if err != nil {
-			continue
-		}
-
-		if len(messages) > 0 {
-			if c.config.AutoCommit {
-				lastOffset := messages[len(messages)-1].Offset
-				c.offsetManager.Commit(partition, lastOffset+1)
-			}
-		}
-
-		allMessages = append(allMessages, messages...)
-		remainingQuota -= len(messages)
-	}
-
-	if c.config.AutoCommit && time.Since(c.lastCommitTime) >
-		time.Duration(c.config.AutoCommitIntervalMS)*time.Millisecond {
-		c.commitOffsets()
-		c.lastCommitTime = time.Now()
-	}
-
-	if len(allMessages) == 0 {
-		time.Sleep(time.Duration(c.config.EmptyPollDelayMS) * time.Millisecond)
-	}
-
-	return allMessages, nil
-}
-
-func (c *Consumer) fetchMessagesWithLimit(partition, offset, maxMessages int) ([]Message, error) {
-	conn, err := c.dial()
-	if err != nil {
-		return nil, fmt.Errorf("connect to broker: %w", err)
-	}
-	defer conn.Close()
-
-	timeout := time.Duration(c.config.PollTimeoutMS) * time.Millisecond
-	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-		return nil, fmt.Errorf("set read deadline: %w", err)
-	}
-
-	autoOffsetReset := c.config.AutoOffsetReset
-	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d group=%s autoOffsetReset=%s",
-		c.config.Topic, partition, offset, c.config.GroupID, autoOffsetReset)
-	cmdBytes := EncodeMessage(c.config.Topic, consumeCmd)
-
-	if err := c.WriteWithLength(conn, cmdBytes); err != nil {
-		return nil, fmt.Errorf("send consume command: %w", err)
-	}
-
-	var messages []Message
-	for i := 0; i < maxMessages; i++ {
-		if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-			return messages, fmt.Errorf("reset read deadline: %w", err)
-		}
-
-		msgBytes, err := c.ReadWithLength(conn)
-		if err != nil {
-			if err == io.EOF || strings.Contains(err.Error(), "EOF") {
-				break
-			}
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				break
-			}
-			return messages, err
-		}
-
-		messages = append(messages, Message{
-			Partition: partition,
-			Offset:    offset + i,
-			Payload:   string(msgBytes),
-		})
-	}
-
-	if err := conn.SetReadDeadline(time.Time{}); err != nil {
-		log.Printf("Warning: Failed to clear read deadline: %v", err)
-	}
-
-	return messages, nil
-}
-
-func (c *Consumer) commitOffsets() {
-	for _, partition := range c.config.Partitions {
-		conn, err := c.dial()
-		if err != nil {
-			log.Printf("Failed to connect for offset commit partition %d: %v", partition, err)
-			continue
-		}
-
-		offset := c.offsetManager.Get(partition)
-		commitCmd := EncodeMessage("admin",
-			fmt.Sprintf("COMMIT_OFFSET topic=%s partition=%d group=%s offset=%d", c.config.Topic, partition, c.config.GroupID, offset))
-
-		if err := c.WriteWithLength(conn, commitCmd); err != nil {
-			log.Printf("Failed to commit offset for partition %d: %v", partition, err)
-			conn.Close()
-			continue
-		}
-
-		_, err = c.ReadWithLength(conn)
-		if err != nil && !errors.Is(err, io.EOF) {
-			log.Printf("Failed to read commit response for partition %d: %v", partition, err)
-		}
-
-		conn.Close()
-	}
-}
-
-func (c *Consumer) Close() error {
-	close(c.heartbeatDone)
-	close(c.pollDone)
-
-	// Final commit
-	if c.config.AutoCommit {
-		c.commitOffsets()
-	}
-
-	return nil
-}
-
-func (c *Consumer) joinGroup() error {
-	maxRetries := 10 // default
-	if c.config.JoinGroupMaxRetries > 0 {
-		maxRetries = c.config.JoinGroupMaxRetries
-	}
-
-	retryDelay := 500 * time.Millisecond // default
-	if c.config.JoinGroupRetryDelayMS > 0 {
-		retryDelay = time.Duration(c.config.JoinGroupRetryDelayMS) * time.Millisecond
-	}
-
-	conn1, err := c.dial()
-	if err != nil {
-		return fmt.Errorf("connect to broker: %w", err)
-	}
-	defer conn1.Close()
-
-	setGroupCmd := EncodeMessage(c.config.Topic, fmt.Sprintf("SETGROUP group=%s", c.config.GroupID))
-	if err := c.WriteWithLength(conn1, setGroupCmd); err != nil {
-		return fmt.Errorf("send setgroup command: %w", err)
-	}
-
-	resp1, err := c.ReadWithLength(conn1)
-	if err != nil {
-		return fmt.Errorf("read setgroup response: %w", err)
-	}
-	log.Printf("Consumer group set to '%s' '%s'", c.config.GroupID, resp1)
-	// REGISTER_GROUP
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		conn2, err := c.dial()
-		if err != nil {
-			if attempt < maxRetries {
-				time.Sleep(retryDelay)
-				retryDelay *= 2
-				continue
-			}
-			return fmt.Errorf("connect to broker: %w", err)
-		}
-
-		registerCmd := EncodeMessage("admin", fmt.Sprintf("REGISTER_GROUP topic=%s group=%s", c.config.Topic, c.config.GroupID))
-		if err := c.WriteWithLength(conn2, registerCmd); err != nil {
-			conn2.Close()
-			if attempt < maxRetries {
-				time.Sleep(retryDelay)
-				retryDelay *= 2
-				continue
-			}
-			return fmt.Errorf("send register_group command: %w", err)
-		}
-
-		resp2, err := c.ReadWithLength(conn2)
-		conn2.Close()
-
-		if err != nil {
-			if attempt < maxRetries {
-				log.Printf("Waiting for topic to be created... (attempt %d/%d)", attempt+1, maxRetries)
-				time.Sleep(retryDelay)
-				retryDelay *= 2
-				continue
-			}
-			return fmt.Errorf("read register_group response: %w", err)
-		}
-
-		if strings.HasPrefix(string(resp2), "ERROR:") {
-			if strings.Contains(string(resp2), "does not exist") {
-				// Topic is not created, retry
-				if attempt < maxRetries {
-					log.Printf("Waiting for topic to be created... (attempt %d/%d)", attempt+1, maxRetries)
-					time.Sleep(retryDelay)
-					retryDelay *= 2
-					continue
-				}
-			}
-			return fmt.Errorf("register group failed: %s", string(resp2))
-		}
-
-		log.Printf("✅ Registered group '%s': %s", c.config.GroupID, string(resp2))
-		break
-	}
-
-	// JOIN_GROUP
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		conn3, err := c.dial()
-		if err != nil {
-			if attempt < maxRetries {
-				time.Sleep(retryDelay)
-				retryDelay *= 2
-				continue
-			}
-			return fmt.Errorf("connect to broker: %w", err)
-		}
-
-		joinCmd := EncodeMessage("admin", fmt.Sprintf("JOIN_GROUP topic=%s group=%s member=%s", c.config.Topic, c.config.GroupID, c.config.ConsumerID))
-		if err := c.WriteWithLength(conn3, joinCmd); err != nil {
-			conn3.Close()
-			if attempt < maxRetries {
-				time.Sleep(retryDelay)
-				retryDelay *= 2
-				continue
-			}
-			return fmt.Errorf("send join_group command: %w", err)
-		}
-
-		resp3, err := c.ReadWithLength(conn3)
-		conn3.Close()
-
-		if err != nil {
-			if attempt < maxRetries {
-				time.Sleep(retryDelay)
-				retryDelay *= 2
-				continue
-			}
-			return fmt.Errorf("read join_group response: %w", err)
-		}
-
-		if strings.HasPrefix(string(resp3), "ERROR:") {
-			if strings.Contains(string(resp3), "group not found") {
-				return fmt.Errorf("join group failed: %s", string(resp3))
-			}
-			return fmt.Errorf("join group failed: %s", string(resp3))
-		}
-
-		log.Printf("Joined group '%s': %s", c.config.GroupID, string(resp3))
+	if pc.conn != nil {
 		return nil
 	}
 
-	return fmt.Errorf("failed to join group after %d attempts", maxRetries)
+	var err error
+	for i := 0; i < pc.consumer.config.MaxConnectRetries; i++ {
+		pc.conn, err = pc.consumer.client.Connect(pc.consumer.config.BrokerAddr)
+		if err == nil {
+			return nil
+		}
+		log.Printf("Partition [%d] connect retry %d failed: %v", pc.partitionID, i+1, err)
+		duration := time.Duration(pc.consumer.config.ConnectRetryBackoffMS) * time.Millisecond
+		time.Sleep(duration)
+	}
+	return fmt.Errorf("failed to connect after retries: %w", err)
+}
+
+func (pc *PartitionConsumer) pollAndProcess() {
+	if err := pc.ensureConnection(); err != nil {
+		log.Printf("Partition [%d] cannot poll: %v", pc.partitionID, err)
+		return
+	}
+
+	pc.mu.Lock()
+	currentOffset := pc.offset
+	pc.mu.Unlock()
+
+	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d group=%s",
+		pc.consumer.config.Topic, pc.partitionID, currentOffset, pc.consumer.config.GroupID)
+	if err := util.WriteWithLength(pc.conn, util.EncodeMessage(pc.consumer.config.Topic, consumeCmd)); err != nil {
+		log.Printf("Partition [%d] send command failed, reconnecting: %v", pc.partitionID, err)
+		pc.closeConn()
+		return
+	}
+
+	batchSize := pc.consumer.config.BatchSize
+	if batchSize > pc.consumer.config.MaxPollRecords {
+		batchSize = pc.consumer.config.MaxPollRecords
+	}
+
+	for i := 0; i < batchSize; i++ {
+		duration := time.Duration(pc.consumer.config.StreamingReadDeadlineMS) * time.Millisecond
+		pc.conn.SetReadDeadline(time.Now().Add(duration))
+		msgBytes, err := util.ReadWithLength(pc.conn)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				time.Sleep(pc.consumer.config.PollInterval)
+				i-- // Don't count timeout against batch size
+				continue
+			}
+			if errors.Is(err, io.EOF) {
+				time.Sleep(pc.consumer.config.PollInterval)
+				i-- // Don't count against batch
+				continue
+			}
+			log.Printf("Partition [%d] read message error: %v", pc.partitionID, err)
+			pc.closeConn()
+			break
+		}
+		if len(msgBytes) == 0 {
+			break
+		}
+
+		pc.processMessage(msgBytes)
+		pc.mu.Lock()
+		pc.offset++
+		pc.mu.Unlock()
+	}
+}
+
+func (pc *PartitionConsumer) processMessage(msgBytes []byte) {
+	if pc.consumer.config.EnableBenchmark {
+		atomic.AddInt64(&pc.consumer.bmMsgCount, 1)
+		pc.incrementPartitionCount()
+	} else {
+		const maxLen = 40
+		msgStr := string(msgBytes)
+		runes := []rune(msgStr)
+
+		if len(runes) > maxLen {
+			log.Printf("Partition [%d] %s...", pc.partitionID, string(runes[:maxLen]))
+		} else {
+			log.Printf("Partition [%d] %s", pc.partitionID, msgStr)
+		}
+	}
+}
+
+func (pc *PartitionConsumer) incrementPartitionCount() {
+	if pc.partitionMsgCount == nil {
+		pc.partitionMsgCount = new(int64)
+	}
+	atomic.AddInt64(pc.partitionMsgCount, 1)
+}
+
+func (pc *PartitionConsumer) commitOffset() {
+	pc.mu.Lock()
+	currentOffset := pc.offset
+	pc.mu.Unlock()
+
+	conn, err := pc.consumer.client.Connect(pc.consumer.config.BrokerAddr)
+	if err != nil {
+		log.Printf("Partition [%d] commit connect failed: %v", pc.partitionID, err)
+		return
+	}
+	defer conn.Close()
+
+	commitCmd := fmt.Sprintf("COMMIT_OFFSET topic=%s partition=%d group=%s offset=%d",
+		pc.consumer.config.Topic, pc.partitionID, pc.consumer.config.GroupID, currentOffset)
+	if err := util.WriteWithLength(conn, util.EncodeMessage(pc.consumer.config.Topic, commitCmd)); err != nil {
+		log.Printf("Partition [%d] commit send failed: %v", pc.partitionID, err)
+		return
+	}
+
+	resp, err := util.ReadWithLength(conn)
+	if err != nil {
+		log.Printf("Partition [%d] commit response failed: %v", pc.partitionID, err)
+		return
+	}
+
+	if strings.Contains(string(resp), "ERROR:") {
+		log.Printf("Partition [%d] commit error: %s", pc.partitionID, string(resp))
+	}
+
+	pc.consumer.mu.Lock()
+	pc.consumer.offsets[pc.partitionID] = currentOffset
+	pc.consumer.mu.Unlock()
+}
+
+func (pc *PartitionConsumer) close() {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if pc.closed {
+		return
+	}
+	pc.closed = true
+	if pc.conn != nil {
+		pc.conn.Close()
+		pc.conn = nil
+	}
+}
+
+func (pc *PartitionConsumer) closeConn() {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if pc.conn != nil {
+		pc.conn.Close()
+		pc.conn = nil
+	}
+}
+
+type GroupCoordinator struct {
+	consumer *Consumer
+	assigned []int
+	doneCh   chan struct{}
+}
+
+func (gc *GroupCoordinator) start() {
+	duration := time.Duration(gc.consumer.config.HeartbeatIntervalMS) * time.Millisecond
+	heartbeatTicker := time.NewTicker(duration)
+	defer heartbeatTicker.Stop()
+
+	for {
+		select {
+		case <-heartbeatTicker.C:
+			gc.sendHeartbeat()
+		case <-gc.doneCh:
+			return
+		}
+	}
+}
+
+func (gc *GroupCoordinator) sendHeartbeat() {
+	conn, err := gc.consumer.client.Connect(gc.consumer.config.BrokerAddr)
+	if err != nil {
+		log.Printf("Heartbeat failed: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	heartbeatCmd := fmt.Sprintf("HEARTBEAT topic=%s group=%s consumer=%s",
+		gc.consumer.config.Topic, gc.consumer.config.GroupID, gc.consumer.config.ConsumerID)
+	cmdBytes := util.EncodeMessage("", heartbeatCmd)
+
+	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
+		log.Printf("Heartbeat send failed: %v", err)
+		return
+	}
+
+	_, err = util.ReadWithLength(conn)
+	if err != nil {
+		log.Printf("Heartbeat response failed: %v", err)
+	}
+}
+
+type Consumer struct {
+	config             ConsumerConfig
+	client             *ConsumerClient
+	partitionConsumers map[int]*PartitionConsumer
+	coordinator        *GroupCoordinator
+
+	offsets map[int]uint64
+	doneCh  chan struct{}
+	mu      sync.RWMutex
+
+	closed  bool
+	closeMu sync.Mutex
+
+	bmMu        sync.Mutex
+	bmMsgCount  int64
+	bmStartTime time.Time
+}
+
+func NewConsumer(cfg ConsumerConfig) (*Consumer, error) {
+	client := NewConsumerClient()
+	c := &Consumer{
+		config:             cfg,
+		client:             client,
+		partitionConsumers: make(map[int]*PartitionConsumer),
+		offsets:            make(map[int]uint64),
+		doneCh:             make(chan struct{}),
+	}
+	return c, nil
+}
+
+func (c *Consumer) Start() error {
+	c.coordinator = &GroupCoordinator{
+		consumer: c,
+		assigned: make([]int, 0),
+		doneCh:   make(chan struct{}),
+	}
+	go c.coordinator.start()
+	log.Println("coordinator started.")
+
+	assigned, err := c.joinGroup()
+	if err != nil {
+		log.Printf("❌ Failed to join consumer group: %v", err)
+		log.Printf("   Topic: %s, Group: %s, Consumer: %s",
+			c.config.Topic, c.config.GroupID, c.config.ConsumerID)
+		return fmt.Errorf("join group failed: %w", err)
+	}
+
+	log.Printf("✅ Successfully joined topic '%s' for group '%s' with %d partitions: %v",
+		c.config.Topic, c.config.GroupID, len(assigned), assigned)
+
+	c.partitionConsumers = make(map[int]*PartitionConsumer)
+	for _, pid := range assigned {
+		pc := &PartitionConsumer{partitionID: pid, consumer: c, offset: 0}
+		c.partitionConsumers[pid] = pc
+	}
+
+	switch c.config.Mode {
+	case ModePolling:
+		go c.startPolling()
+	case ModeStreaming:
+		go c.startStreaming()
+	default:
+		go c.startPolling()
+	}
+
+	c.startCommitLoop()
+	go c.startConsuming()
+
+	return nil
+}
+
+func (c *Consumer) startConsuming() {
+	if c.config.EnableBenchmark {
+		c.bmStartTime = time.Now()
+	}
+
+	if c.config.Mode != ModePolling {
+		return
+	}
+
+	for pid, pc := range c.partitionConsumers {
+		go func(pid int, pc *PartitionConsumer) {
+			ticker := time.NewTicker(c.config.PollInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-c.doneCh:
+					pc.close()
+					return
+				case <-ticker.C:
+					pc.pollAndProcess()
+				}
+			}
+		}(pid, pc)
+	}
+}
+
+func (c *Consumer) startCommitLoop() {
+	go func() {
+		ticker := time.NewTicker(c.config.AutoCommitInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if c.config.EnableAutoCommit {
+					c.commitAllOffsets()
+				}
+			case <-c.doneCh:
+				return
+			}
+		}
+	}()
+}
+
+func (c *Consumer) joinGroup() ([]int, error) {
+	log.Println("Joining group")
+	conn, err := c.client.Connect(c.config.BrokerAddr)
+	if err != nil {
+		return nil, fmt.Errorf("connect failed: %w", err)
+	}
+	defer conn.Close()
+
+	joinCmd := fmt.Sprintf("JOIN_GROUP topic=%s group=%s consumer=%s",
+		c.config.Topic, c.config.GroupID, c.config.ConsumerID)
+	cmdBytes := util.EncodeMessage("", joinCmd)
+
+	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
+		return nil, fmt.Errorf("send join command: %w", err)
+	}
+
+	resp, err := util.ReadWithLength(conn)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	respStr := strings.TrimSpace(string(resp))
+	if strings.HasPrefix(respStr, "ERROR:") {
+		return nil, fmt.Errorf("broker error: %s", respStr)
+	}
+
+	var assigned []int
+	if strings.Contains(respStr, "with partitions:") {
+		start := strings.Index(respStr, "[")
+		end := strings.Index(respStr, "]")
+		if start != -1 && end != -1 {
+			partitionStr := respStr[start+1 : end]
+			parts := strings.Fields(partitionStr)
+			for _, p := range parts {
+				var id int
+				if _, err := fmt.Sscanf(p, "%d", &id); err == nil {
+					assigned = append(assigned, id)
+				}
+			}
+		}
+	}
+
+	return assigned, nil
+}
+
+func (c *Consumer) startStreaming() error {
+	for pid, pc := range c.partitionConsumers {
+		go func(pid int, pc *PartitionConsumer) {
+			for {
+				select {
+				case <-c.doneCh:
+					return
+				default:
+				}
+
+				duration := time.Duration(pc.consumer.config.StreamingRetryIntervalMS) * time.Millisecond
+
+				if err := pc.ensureConnection(); err != nil {
+					log.Printf("Partition [%d] streaming connection failed, retrying: %v", pid, err)
+					time.Sleep(duration)
+					continue
+				}
+
+				pc.mu.Lock()
+				conn := pc.conn
+				pc.mu.Unlock()
+				if conn == nil {
+					time.Sleep(duration)
+					continue
+				}
+				streamCmd := fmt.Sprintf("STREAM topic=%s partition=%d group=%s",
+					c.config.Topic, pid, c.config.GroupID)
+				if err := util.WriteWithLength(conn, util.EncodeMessage("", streamCmd)); err != nil {
+					log.Printf("Partition [%d] STREAM command send failed: %v", pid, err)
+					pc.mu.Lock()
+					pc.conn.Close()
+					pc.conn = nil
+					pc.mu.Unlock()
+					time.Sleep(duration)
+					continue
+				}
+
+				for {
+					select {
+					case <-c.doneCh:
+						return
+					default:
+					}
+
+					deadline := time.Duration(c.config.StreamingReadDeadlineMS) * time.Millisecond
+					conn.SetReadDeadline(time.Now().Add(deadline))
+					msgBytes, err := util.ReadWithLength(conn)
+					if err != nil {
+						if ne, ok := err.(net.Error); ok && ne.Timeout() {
+							time.Sleep(time.Duration(c.config.StreamingRetryIntervalMS) * time.Millisecond)
+							continue
+						}
+						log.Printf("Partition [%d] streaming read error: %v", pid, err)
+						pc.mu.Lock()
+						pc.conn.Close()
+						pc.conn = nil
+						pc.mu.Unlock()
+						break
+					}
+					if len(msgBytes) == 0 {
+						time.Sleep(time.Duration(c.config.StreamingRetryIntervalMS) * time.Millisecond)
+						continue
+					}
+
+					if c.config.EnableBenchmark {
+						atomic.AddInt64(&pc.consumer.bmMsgCount, 1)
+					}
+
+					pc.mu.Lock()
+					pc.offset++
+					pc.mu.Unlock()
+				}
+			}
+		}(pid, pc)
+	}
+
+	<-c.doneCh
+	return nil
+}
+
+func (c *Consumer) commitAllOffsets() {
+	c.mu.RLock()
+	consumers := make([]*PartitionConsumer, 0, len(c.partitionConsumers))
+	for _, pc := range c.partitionConsumers {
+		consumers = append(consumers, pc)
+	}
+	c.mu.RUnlock()
+
+	for _, pc := range consumers {
+		pc.commitOffset()
+	}
+}
+
+func (c *Consumer) startPolling() error {
+	<-c.coordinator.doneCh
+	return nil
+}
+
+func (c *Consumer) Close() error {
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
+	if c.closed {
+		return nil
+	}
+	c.closed = true
+
+	for _, pc := range c.partitionConsumers {
+		pc.mu.Lock()
+		pc.closed = true
+		if pc.conn != nil {
+			pc.conn.Close()
+		}
+		pc.mu.Unlock()
+	}
+
+	close(c.doneCh)
+	if c.coordinator != nil {
+		close(c.coordinator.doneCh)
+	}
+	return nil
+}
+
+func (c *Consumer) PrintBenchmarkSummary() {
+	if !c.config.EnableBenchmark {
+		return
+	}
+	c.bmMu.Lock()
+	defer c.bmMu.Unlock()
+
+	duration := time.Since(c.bmStartTime)
+	total := atomic.LoadInt64(&c.bmMsgCount)
+	tps := float64(atomic.LoadInt64(&c.bmMsgCount)) / duration.Seconds()
+
+	fmt.Println("=== CONSUMER BENCHMARK SUMMARY ===")
+	fmt.Printf("Total messages consumed: %d\n", total)
+	fmt.Printf("Consume elapsed time: %v\n", duration)
+	fmt.Printf("Consume Throughput: %.2f msg/s\n", tps)
+	fmt.Println("--- Partition Message Counts ---")
+	for _, pc := range c.partitionConsumers {
+		count := int64(0)
+		if pc.partitionMsgCount != nil {
+			count = atomic.LoadInt64(pc.partitionMsgCount)
+		}
+		fmt.Printf("Partition [%d]: %d messages\n", pc.partitionID, count)
+	}
+	fmt.Println("==================================")
 }
 
 func main() {
-	cfg, err := LoadConsumerConfig()
+	cfg, err := LoadConfig()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	fmt.Printf("📋 Consumer Configuration:\n")
-	fmt.Printf("  Broker: %s\n", cfg.BrokerAddr)
-	fmt.Printf("  Group ID: %s\n", cfg.GroupID)
-	fmt.Printf("  Consumer ID: %s\n", cfg.ConsumerID)
-	fmt.Printf("  Topic: %s\n", cfg.Topic)
-	fmt.Printf("  Partitions: %v\n", cfg.Partitions)
-	fmt.Printf("  Heartbeat Interval: %dms\n", cfg.HeartbeatIntervalMS)
-	fmt.Printf("  Max Poll Records: %d\n", cfg.MaxPollRecords)
-	fmt.Printf("  Auto Commit: %v\n\n", cfg.AutoCommit)
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		log.Printf("Failed to marshal config: %v", err)
+	} else {
+		log.Printf("Configuration:\n%s", string(data))
+	}
 
-	consumer, err := NewConsumer(cfg)
+	c, err := NewConsumer(*cfg)
 	if err != nil {
 		log.Fatalf("Failed to create consumer: %v", err)
 	}
-	defer consumer.Close()
 
-	<-consumer.ready
-	fmt.Println("Starting to consume messages...")
+	if err := c.Start(); err != nil {
+		log.Fatalf("Failed to start consumer: %v", err)
+	}
+	log.Println("consumer started.")
 
-	pollInterval := time.Duration(cfg.PollIntervalMS) * time.Millisecond
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
 
-	messageCount := 0
-	for range ticker.C {
-		messages, err := consumer.Poll(5 * time.Second)
-		if err != nil {
-			log.Printf("Poll error: %v", err)
-			continue
-		}
-
-		for _, msg := range messages {
-			messageCount++
-			fmt.Printf("[%d] Partition %d, Offset %d: %s\n",
-				messageCount, msg.Partition, msg.Offset, msg.Payload)
-		}
+	c.PrintBenchmarkSummary()
+	if err := c.Close(); err != nil {
+		log.Printf("Error closing consumer: %v", err)
 	}
 }

@@ -1,8 +1,25 @@
 broker_port: 9000  
-cleanup_interval: 60  
+
 enable_exporter: true  
 exporter_port: 9100  
 use_tls: false  
 enable_gzip: false  
-channel_buffer_size: 10000
 log_level: "info"
+
+# Disk persistence
+disk_flush_batch_size: 500          
+linger_ms: 200              
+channel_buffer_size: 8192              
+segment_size: 10485760             
+segment_roll_time_ms: 300000       
+
+# Internal channel buffers
+partition_channel_buffer_size: 20000
+consumer_channel_buffer_size: 5000
+
+# Group Coordinator
+consumer_session_timeout_ms: 30000
+consumer_heartbeat_check_ms: 5000
+
+# System maintenance
+cleanup_interval: 60

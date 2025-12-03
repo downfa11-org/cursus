@@ -9,10 +9,20 @@ type Message struct {
 	Offset     uint64
 	Key        string // optional: partition routing key
 	Epoch      int64
+	RetryCount int
 }
 
 func (m Message) String() string {
 	return m.Payload
+}
+
+type Batch struct {
+	Topic      string
+	Partition  int
+	BatchStart uint64
+	BatchEnd   uint64
+	Acks       int
+	Messages   []Message
 }
 
 // AppendResult represents the result of appending a message to storage

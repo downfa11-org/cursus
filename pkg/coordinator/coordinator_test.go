@@ -9,7 +9,7 @@ import (
 
 func TestCoordinator_Register_Add_Remove(t *testing.T) {
 	cfg := &config.Config{ConsumerSessionTimeoutMS: 30000, ConsumerHeartbeatCheckMS: 5000}
-	c := coordinator.NewCoordinator(cfg)
+	c := coordinator.NewCoordinator(cfg, &coordinator.DummyPublisher{})
 
 	err := c.RegisterGroup("orders", "groupA", 3)
 	if err != nil {

@@ -7,7 +7,6 @@ services:
     container_name: broker    
     command: ./broker    
     volumes:    
-      - ./logs:/root/broker-logs    
       - ./config.yaml:/root/config.yaml    
     environment:    
       - CONFIG_PATH=/root/config.yaml    
@@ -21,9 +20,9 @@ services:
       - test_network  
     healthcheck:    
       test: ["CMD", "curl", "-f", "http://localhost:9080/health"]    
-      interval: 10s    
-      timeout: 5s    
-      retries: 5    
+      interval: 2s    
+      timeout: 1s    
+      retries: 3    
     
   publisher:    
     build:    
@@ -34,9 +33,7 @@ services:
       broker:    
         condition: service_healthy    
     volumes:    
-      - ./publisher/config.yaml:/config.yaml    
-    environment:    
-      - BROKER_ADDR=broker:9000    
+      - ./publisher/config.yaml:/config.yaml       
     command: ["./publisher", "-config", "/config.yaml"]    
     networks:    
       - test_network  
@@ -48,7 +45,9 @@ services:
     container_name: broker-consumer    
     depends_on:    
       broker:    
-        condition: service_healthy    
+        condition: service_healthy  
+      publisher:
+        condition: service_started
     volumes:    
       - ./consumer/config.yaml:/config.yaml    
     environment:    

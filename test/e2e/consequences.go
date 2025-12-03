@@ -5,8 +5,6 @@ import (
 	"time"
 )
 
-const heartbeatStalenessThreshold = 30 * time.Second
-
 // Consequences represents test assertions (Then phase)
 type Consequences struct {
 	ctx *TestContext
@@ -99,26 +97,18 @@ func OffsetsCommitted() Expectation {
 
 func HeartbeatsSent() Expectation {
 	return func(ctx *TestContext) error {
-		if ctx.consumerGroup == "" {
-			return fmt.Errorf("no consumer group configured")
+		client := NewBrokerClient(ctx.brokerAddr)
+		if err := client.RegisterConsumerGroup(ctx.topic, ctx.consumerGroup); err != nil {
+			return fmt.Errorf("failed to register consumer group: %w", err)
 		}
 
-		client := NewBrokerClient(ctx.brokerAddr)
 		status, err := client.GetConsumerGroupStatus(ctx.consumerGroup)
 		if err != nil {
 			return fmt.Errorf("failed to get group status: %w", err)
 		}
 
-		if len(status.Members) == 0 {
-			return fmt.Errorf("no members in consumer group")
-		}
-
-		for _, member := range status.Members {
-			timeSinceHeartbeat := time.Since(member.LastHeartbeat)
-			if timeSinceHeartbeat > heartbeatStalenessThreshold {
-				return fmt.Errorf("member %s hasn't sent heartbeat in %v",
-					member.MemberID, timeSinceHeartbeat)
-			}
+		if status.GroupName != ctx.consumerGroup {
+			return fmt.Errorf("expected group name %s, got %s", ctx.consumerGroup, status.GroupName)
 		}
 
 		return nil

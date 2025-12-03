@@ -1,5 +1,38 @@
 {
-  "listen_port": 12345,
-  "log_base": "broker_log",
-  "segment_size": 1048576
+  "broker.port": 9000,
+  "log_level": "info",
+  "log.dir": "broker-logs",
+  
+  "health.check.port": 9080,
+  "enable.exporter": true,
+  "exporter.port": 9100,
+
+  "linger.ms": 200,
+  "channel.buffer.size": 8192,
+
+  "disk.flush.batch.size": 500,
+  "disk.write.timeout.ms": 10,
+  "segment.size": 10485760,
+  "segment.roll.time.ms": 300000,
+
+  "partition.channel.buffer.size": 20000,
+
+  "consumer.channel.buffer.size": 5000,
+  "consumer.session.timeout.ms": 30000,
+  "consumer.heartbeat.check.ms": 5000,
+
+  "cleanup.interval": 60,
+
+  "auto.create.topics": true,
+  "static_consumer_groups": [],
+
+  "max.stream.connections": 1000,
+  "stream.timeout": 1800000000000,
+  "stream.heartbeat.interval": 30000000000,
+
+  "tls.enable": false,
+  "tls.cert_path": "",
+  "tls.key_path": "",
+
+  "gzip.enable": false
 }

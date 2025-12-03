@@ -1,6 +1,5 @@
 APP_NAME := go-broker  
-CLI_NAME := go-broker-cli  
-BENCH_NAME := go-broker-bench  
+CLI_NAME := go-broker-cli   
   
 GO := go  
 GOLINT := golangci-lint  
@@ -74,13 +73,19 @@ e2e-coverage: e2e-build
 	$(GO) test -v -timeout 10m -coverprofile=e2e-coverage.out ./test/e2e/...  
 	@echo "E2E coverage report saved to e2e-coverage.out"  
   
-.PHONY: bench  
-bench:  
-	@echo "[MAKE] Running benchmark..."  
-	go run ./cmd/bench  
-  
+.PHONY: bench
+bench:
+	@bash -c '\
+	set +e; \
+	echo "[MAKE] Running benchmark with docker-compose..."; \
+	timeout 180s docker compose -f test/docker-compose.yml up --build --remove-orphans; \
+	echo "[MAKE] Containers finished or timed out"; \
+	docker compose -f test/docker-compose.yml logs; \
+	docker compose -f test/docker-compose.yml down -v; \
+	'
+
 .PHONY: build  
-build: build-api build-cli build-bench  
+build: build-api build-cli 
   
 .PHONY: build-api  
 build-api:  
@@ -91,11 +96,6 @@ build-api:
 build-cli:  
 	@echo "[MAKE] Building CLI..."  
 	CGO_ENABLED=0 GOOS=linux $(GO) build $(BUILD_FLAGS) -o bin/$(CLI_NAME) ./cmd/cli/main.go  
-  
-.PHONY: build-bench  
-build-bench:  
-	@echo "[MAKE] Building Benchmark..."  
-	CGO_ENABLED=0 GOOS=linux $(GO) build $(BUILD_FLAGS) -o bin/$(BENCH_NAME) ./cmd/bench/main.go  
   
 .PHONY: clean  
 clean:  
@@ -153,7 +153,7 @@ help:
 	@echo "  make e2e-verbose     Run E2E tests with race detection" 
 	@echo "  make e2e-logs        Show E2E test container logs" 
 	@echo "  make bench           Run benchmarks"  
-	@echo "  make build           Build all binaries (api, cli, bench)"  
+	@echo "  make build           Build all binaries (api, cli)"  
 	@echo "  make clean           Remove build artifacts"  
 	@echo "  make run             Run broker in dev mode" 
 	@echo "  make tools           Install or update development tools"  

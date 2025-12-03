@@ -2,12 +2,11 @@ package topic
 
 import (
 	"fmt"
-	"runtime"
-	"strconv"
 	"sync"
 	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/go-broker/pkg/stream"
 	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
 )
@@ -21,27 +20,19 @@ type Topic struct {
 	Partitions     []*Partition
 	counter        uint64
 	consumerGroups map[string]*types.ConsumerGroup
-	coordinator    Coordinator
 	mu             sync.RWMutex
 	cfg            *config.Config
+	streamManager  *stream.StreamManager
 }
 
 // Partition handles messages for one shard of a topic.
 type Partition struct {
-	id     int
-	topic  string
-	ch     chan types.Message
-	subs   map[string]chan types.Message
-	mu     sync.RWMutex
-	dh     interface{}
-	closed bool
-}
-
-type Coordinator interface {
-	RegisterGroup(topicName, groupName string, partitionCount int) error
-	AddConsumer(groupName, consumerID string) ([]int, error)
-	RemoveConsumer(groupName, consumerID string) error
-	GetAssignments(groupName string) map[string][]int
+	id            int
+	topic         string
+	mu            sync.RWMutex
+	dh            interface{}
+	closed        bool
+	streamManager *stream.StreamManager
 }
 
 type DiskAppender interface {
@@ -50,59 +41,34 @@ type DiskAppender interface {
 }
 
 // NewTopic initializes a topic with partitions.
-func NewTopic(name string, partitionCount int, hp HandlerProvider, coordinator Coordinator, cfg *config.Config) (*Topic, error) {
+func NewTopic(name string, partitionCount int, hp HandlerProvider, cfg *config.Config, sm *stream.StreamManager) (*Topic, error) {
 	partitions := make([]*Partition, partitionCount)
 	for i := 0; i < partitionCount; i++ {
 		dh, err := hp.GetHandler(name, i)
 		if err != nil {
 			return nil, fmt.Errorf("open handler for %s[%d]: %w", name, i, err)
 		}
-		partitions[i] = NewPartition(i, name, dh, cfg)
+		partitions[i] = NewPartition(i, name, dh, sm)
 	}
 	return &Topic{
 		Name:           name,
 		Partitions:     partitions,
 		consumerGroups: make(map[string]*types.ConsumerGroup),
-		coordinator:    coordinator,
 		cfg:            cfg,
+		streamManager:  sm,
 	}, nil
 }
 
 // NewPartition creates a partition instance.
-func NewPartition(id int, topic string, dh interface{}, cfg *config.Config) *Partition {
-	bufSize := DefaultBufSize
-	if cfg != nil && cfg.PartitionChannelBufSize > 0 {
-		bufSize = cfg.PartitionChannelBufSize
-	}
-
+func NewPartition(id int, topic string, dh interface{}, sm *stream.StreamManager) *Partition {
 	p := &Partition{
-		id:    id,
-		topic: topic,
-		ch:    make(chan types.Message, bufSize),
-		subs:  make(map[string]chan types.Message),
-		dh:    dh,
+		id:            id,
+		topic:         topic,
+		dh:            dh,
+		streamManager: sm,
 	}
 
-	go p.run()
 	return p
-}
-
-// run dispatches messages to subscribers.
-func (p *Partition) run() {
-	for msg := range p.ch {
-		p.mu.RLock()
-		for _, subCh := range p.subs {
-			subCh <- msg
-		}
-		p.mu.RUnlock()
-	}
-
-	p.mu.Lock()
-	for _, subCh := range p.subs {
-		close(subCh)
-	}
-	p.subs = nil
-	p.mu.Unlock()
 }
 
 // AddPartitions extends the topic with new partitions.
@@ -114,7 +80,7 @@ func (t *Topic) AddPartitions(extra int, hp HandlerProvider) {
 			util.Error("❌ failed to attach partition %d for topic '%s': %v\n", idx, t.Name, err)
 			return
 		}
-		newP := NewPartition(idx, t.Name, dh, t.cfg)
+		newP := NewPartition(idx, t.Name, dh, t.streamManager)
 		t.Partitions = append(t.Partitions, newP)
 	}
 }
@@ -124,30 +90,7 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *type
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	consumerBufSize := DefaultConsumerBufSize
-	if t.cfg != nil && t.cfg.ConsumerChannelBufSize > 0 {
-		consumerBufSize = t.cfg.ConsumerChannelBufSize
-	}
-
 	if g, ok := t.consumerGroups[groupName]; ok {
-		newConsumerID := len(g.Consumers)
-		newConsumer := &types.Consumer{
-			ID:     newConsumerID,
-			MsgCh:  make(chan types.Message, consumerBufSize),
-			StopCh: make(chan struct{}),
-		}
-		g.Consumers = append(g.Consumers, newConsumer)
-
-		if t.coordinator != nil {
-			if assignments, err := t.coordinator.AddConsumer(groupName, fmt.Sprintf("%d", newConsumerID)); err != nil {
-				util.Error("❌ failed to add consumer %d: %v\n", newConsumerID, err)
-			} else {
-				assignmentMap := map[string][]int{
-					fmt.Sprintf("%d", newConsumerID): assignments,
-				}
-				t.applyAssignments(groupName, assignmentMap)
-			}
-		}
 		return g
 	}
 
@@ -159,46 +102,26 @@ func (t *Topic) RegisterConsumerGroup(groupName string, consumerCount int) *type
 
 	for i := 0; i < consumerCount; i++ {
 		group.Consumers[i] = &types.Consumer{
-			ID:     i,
-			MsgCh:  make(chan types.Message, consumerBufSize),
-			StopCh: make(chan struct{}),
-		}
-	}
-
-	if t.coordinator != nil {
-		if err := t.coordinator.RegisterGroup(t.Name, groupName, len(t.Partitions)); err != nil {
-			util.Error("❌ failed to register group with coordinator: %v\n", err)
-			return nil
-		}
-
-		for i := 0; i < consumerCount; i++ {
-			_, err := t.coordinator.AddConsumer(groupName, fmt.Sprintf("%d", i))
-			if err != nil {
-				util.Error("❌ failed to add consumer %d: %v\n", i, err)
-			}
-		}
-
-		assignments := t.coordinator.GetAssignments(groupName)
-		t.applyAssignments(groupName, assignments)
-	} else {
-		for pid, p := range t.Partitions {
-			groupCh := p.RegisterGroup(groupName)
-			if groupCh == nil {
-				continue
-			}
-			target := pid % consumerCount
-			go func(ch <-chan types.Message, consumer *types.Consumer) {
-				for msg := range ch {
-					consumer.MsgCh <- msg
-				}
-			}(groupCh, group.Consumers[target])
+			ID: i,
 		}
 	}
 
 	t.consumerGroups[groupName] = group
-	util.Info("👥 registered consumer group '%s' with %d consumers on topic '%s'\n",
-		groupName, consumerCount, t.Name)
 	return group
+}
+
+// DeregisterConsumerGroup removes a consumer group from the topic.
+func (t *Topic) DeregisterConsumerGroup(groupName string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if _, ok := t.consumerGroups[groupName]; !ok {
+		return fmt.Errorf("consumer group '%s' does not exist", groupName)
+	}
+
+	delete(t.consumerGroups, groupName)
+	util.Info("Consumer group '%s' deregistered from topic '%s'", groupName, t.Name)
+	return nil
 }
 
 // Publish sends a message to one partition.
@@ -224,35 +147,54 @@ func (t *Topic) Publish(msg types.Message) {
 func (t *Topic) PublishSync(msg types.Message) error {
 	var idx int
 	t.mu.Lock()
-	util.Debug("[TOPIC_PUBLISH_SYNC] Starting sync publish. Topic: %s, Key: %s", t.Name, msg.Key)
+	util.Debug("Starting sync publish. Topic: %s, Key: %s", t.Name, msg.Key)
 
 	if msg.Key != "" {
 		keyID := util.GenerateID(msg.Key)
 		idx = int(keyID % uint64(len(t.Partitions)))
-		util.Debug("[TOPIC_PUBLISH_SYNC] Key-based routing to partition %d", idx)
+		util.Debug("Key-based routing to partition %d", idx)
 	} else {
 		idx = int(t.counter % uint64(len(t.Partitions)))
 		t.counter++
-		util.Debug("[TOPIC_PUBLISH_SYNC] Round-robin routing to partition %d", idx)
+		util.Debug("Round-robin routing to partition %d", idx)
 	}
 	t.mu.Unlock()
 
-	util.Debug("[TOPIC_PUBLISH_SYNC] Calling Partition[%d].EnqueueSync", idx)
+	util.Debug("Calling Partition[%d].EnqueueSync", idx)
 	p := t.Partitions[idx]
 	err := p.EnqueueSync(msg)
-	util.Debug("[TOPIC_PUBLISH_SYNC] EnqueueSync completed with error: %v", err)
+	util.Debug("EnqueueSync completed with error: %v", err)
 	return err
 }
 
-// Consume retrieves a consumer's channel.
-func (t *Topic) Consume(groupName string, consumerIdx int) <-chan types.Message {
-	t.mu.RLock()
-	group, ok := t.consumerGroups[groupName]
-	t.mu.RUnlock()
-	if !ok || consumerIdx >= len(group.Consumers) {
+func (t *Topic) PublishBatchSync(msgs []types.Message) error {
+	if len(msgs) == 0 {
 		return nil
 	}
-	return group.Consumers[consumerIdx].MsgCh
+	partitioned := make(map[int][]types.Message)
+
+	t.mu.Lock()
+	for _, msg := range msgs {
+		var idx int
+		if msg.Key != "" {
+			keyID := util.GenerateID(msg.Key)
+			idx = int(keyID % uint64(len(t.Partitions)))
+		} else {
+			idx = int(t.counter % uint64(len(t.Partitions)))
+			t.counter++
+		}
+		partitioned[idx] = append(partitioned[idx], msg)
+	}
+	t.mu.Unlock()
+
+	for idx, pm := range partitioned {
+		p := t.Partitions[idx]
+
+		if err := p.EnqueueBatchSync(pm); err != nil {
+			return fmt.Errorf("partition %d: failed to publish batch: %w", idx, err)
+		}
+	}
+	return nil
 }
 
 // Enqueue pushes a message into the partition queue.
@@ -260,39 +202,27 @@ func (p *Partition) Enqueue(msg types.Message) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if p.closed {
-		util.Debug("⚠️ Partition closed, dropping message [partition-%d]", p.id)
+		util.Warn("⚠️ Partition closed, dropping message [partition-%d]", p.id)
 		return
 	}
 
-	util.Debug("Enqueueing message to in-memory channel [partition-%d]", p.id)
-	p.ch <- msg
 	if appender, ok := p.dh.(DiskAppender); ok {
 		util.Debug("Calling AppendMessage for disk persistence [partition-%d]", p.id)
 		appender.AppendMessage(msg.Payload)
 	} else {
-		util.Debug("⚠️ DiskHandler does not implement AppendMessage [partition-%d]\n", p.id)
+		util.Warn("⚠️ DiskHandler does not implement AppendMessage [partition-%d]\n", p.id)
 	}
+
+	p.broadcastToStreams(msg)
 }
 
 func (p *Partition) EnqueueSync(msg types.Message) error {
-	util.Debug("EnqueueSync called [partition-%d]", p.id)
-
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if p.closed {
 		return fmt.Errorf("partition %d is closed", p.id)
 	}
 
-	// send to In-memory
-	util.Debug("Sending to in-memory channel [partition-%d]", p.id)
-	select {
-	case p.ch <- msg:
-	case <-time.After(5 * time.Second):
-		return fmt.Errorf("partition %d channel full", p.id)
-	}
-
-	// write sync to disk
-	util.Debug("Calling AppendMessageSync [partition-%d]", p.id)
 	if appender, ok := p.dh.(interface{ AppendMessageSync(string) error }); ok {
 		if err := appender.AppendMessageSync(msg.Payload); err != nil {
 			return fmt.Errorf("disk write failed: %w", err)
@@ -301,23 +231,53 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 		return fmt.Errorf("disk handler does not support sync write")
 	}
 
-	util.Debug("EnqueueSync completed successfully [partition-%d]", p.id)
+	p.broadcastToStreams(msg)
 	return nil
 }
 
-// RegisterGroup registers a consumer group to a partition.
-func (p *Partition) RegisterGroup(groupName string) chan types.Message {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	if p.closed {
-		return nil
+		return fmt.Errorf("partition %d is closed", p.id)
 	}
-	if ch, ok := p.subs[groupName]; ok {
-		return ch
+
+	if appender, ok := p.dh.(interface{ AppendMessageSync(string) error }); ok {
+		for _, msg := range msgs {
+			if err := appender.AppendMessageSync(msg.Payload); err != nil {
+				return fmt.Errorf("disk write failed for partition %d: %w", p.id, err)
+			}
+		}
+	} else {
+		return fmt.Errorf("disk handler does not support sync write")
 	}
-	ch := make(chan types.Message, DefaultBufSize)
-	p.subs[groupName] = ch
-	return ch
+
+	for _, msg := range msgs {
+		p.broadcastToStreams(msg)
+	}
+	return nil
+}
+
+func (p *Partition) broadcastToStreams(msg types.Message) {
+	if p.streamManager == nil {
+		return
+	}
+
+	streams := p.streamManager.GetStreamsForPartition(p.topic, p.id)
+	for _, stream := range streams {
+		select {
+		case <-stream.StopCh():
+			util.Debug("Stream stopped, skipping broadcast for partition %d", p.id)
+			continue
+		default:
+			if err := util.WriteWithLength(stream.Conn(), []byte(msg.Payload)); err != nil {
+				util.Warn("Failed to broadcast to stream for topic '%s' partition %d: %v", p.topic, p.id, err)
+				continue
+			}
+			stream.IncrementOffset()
+			stream.SetLastActive(time.Now())
+		}
+	}
 }
 
 // applyAssignments connects partitions to consumers according to coordinator results.
@@ -327,61 +287,7 @@ func (t *Topic) applyAssignments(groupName string, assignments map[string][]int)
 		return
 	}
 
-	for _, consumer := range group.Consumers {
-		select {
-		case <-consumer.StopCh:
-			// already closed
-		default:
-			close(consumer.StopCh)
-		}
-		consumer.StopCh = make(chan struct{})
-	}
-
-	for consumerIDStr, partitionIDs := range assignments {
-		consumerID, _ := strconv.Atoi(consumerIDStr)
-		if consumerID >= len(group.Consumers) {
-			continue
-		}
-		consumer := group.Consumers[consumerID]
-
-		for _, pid := range partitionIDs {
-			if pid >= len(t.Partitions) {
-				continue
-			}
-			p := t.Partitions[pid]
-			groupCh := p.RegisterGroup(groupName)
-			if groupCh == nil {
-				continue
-			}
-
-			stopCh := consumer.StopCh
-			go func(ch <-chan types.Message, c *types.Consumer, stop <-chan struct{}) {
-				for {
-					select {
-					case <-stop:
-						return
-					case msg, ok := <-ch:
-						if !ok {
-							return
-						}
-						for {
-							select {
-							case <-stop:
-								return
-							case c.MsgCh <- msg:
-								// delivered
-								goto NEXT
-							default:
-								// MsgCh full → yield, retry
-								runtime.Gosched()
-							}
-						}
-					NEXT:
-					}
-				}
-			}(groupCh, consumer, stopCh)
-		}
-	}
+	util.Debug("Applied assignments for group '%s': %v", groupName, assignments)
 }
 
 func (t *Topic) GetCommittedOffset(groupName string, partition int) (uint64, bool) {
@@ -425,8 +331,4 @@ func (p *Partition) Close() {
 		return
 	}
 	p.closed = true
-	close(p.ch)
-	for _, sub := range p.subs {
-		close(sub)
-	}
 }

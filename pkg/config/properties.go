@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/downfa11-org/go-broker/util"
 	"gopkg.in/yaml.v3"
@@ -16,20 +17,16 @@ type ConsumerGroupConfig struct {
 	Name            string         `yaml:"name" json:"name"`
 	ConsumerCount   int            `yaml:"consumer_count" json:"consumer_count"`
 	Topics          []string       `yaml:"topics" json:"topics"`
-	TopicPartitions map[string]int `yaml:"topic_partitions" json:"topic_partitions"` // optional
+	TopicPartitions map[string]int `yaml:"topic_partitions" json:"topic_partitions"`
 }
 
-// Config represents the broker configuration including tunable performance options
 type Config struct {
-	// Server settings
 	BrokerPort      int           `yaml:"broker_port" json:"broker.port"`
 	HealthCheckPort int           `yaml:"health_check_port" json:"health.check.port"`
 	EnableExporter  bool          `yaml:"enable_exporter" json:"enable.exporter"`
 	ExporterPort    int           `yaml:"exporter_port" json:"exporter.port"`
-	EnableBenchmark bool          `yaml:"enable_benchmark" json:"enable.benchmark"`
 	LogLevel        util.LogLevel `yaml:"log_level" json:"log_level"`
 
-	// Disk persistence
 	LogDir             string `yaml:"log_dir" json:"log.dir"`
 	DiskFlushBatchSize int    `yaml:"disk_flush_batch_size" json:"disk.flush.batch.size"`
 	LingerMS           int    `yaml:"linger_ms" json:"linger.ms"`
@@ -38,78 +35,118 @@ type Config struct {
 	SegmentSize        int    `yaml:"segment_size" json:"segment.size"`
 	SegmentRollTimeMS  int    `yaml:"segment_roll_time_ms" json:"segment.roll.time.ms"`
 
-	// Internal channel buffers
 	PartitionChannelBufSize int `yaml:"partition_channel_buffer_size" json:"partition.channel.buffer.size"`
 	ConsumerChannelBufSize  int `yaml:"consumer_channel_buffer_size" json:"consumer.channel.buffer.size"`
 
-	// Group Coordinator
 	ConsumerSessionTimeoutMS int `yaml:"consumer_session_timeout_ms" json:"consumer.session.timeout.ms"`
 	ConsumerHeartbeatCheckMS int `yaml:"consumer_heartbeat_check_ms" json:"consumer.heartbeat.check.ms"`
 
-	// System maintenance
 	CleanupInterval      int                   `yaml:"cleanup_interval" json:"cleanup.interval"`
 	AutoCreateTopics     bool                  `yaml:"auto_create_topics" json:"auto.create.topics"`
 	StaticConsumerGroups []ConsumerGroupConfig `yaml:"static_consumer_groups" json:"static_consumer_groups"`
 
-	// Security & compression (server-side)
+	MaxStreamConnections    int           `yaml:"max_stream_connections" json:"max.stream.connections"`
+	StreamTimeout           time.Duration `yaml:"stream_timeout" json:"stream.timeout"`
+	StreamHeartbeatInterval time.Duration `yaml:"stream_heartbeat_interval" json:"stream.heartbeat.interval"`
+
 	UseTLS      bool   `yaml:"use_tls" json:"tls.enable"`
 	TLSCertPath string `yaml:"tls_cert_path" json:"tls.cert_path"`
 	TLSKeyPath  string `yaml:"tls_key_path" json:"tls.key_path"`
 	EnableGzip  bool   `yaml:"enable_gzip" json:"gzip.enable"`
-	TLSCert     tls.Certificate
+
+	TLSCert tls.Certificate
+}
+
+func defaultConfig() *Config {
+	return &Config{
+		BrokerPort:               9000,
+		HealthCheckPort:          9080,
+		EnableExporter:           true,
+		ExporterPort:             9100,
+		LogLevel:                 util.LogLevelInfo,
+		LogDir:                   "broker-logs",
+		DiskFlushBatchSize:       50,
+		LingerMS:                 50,
+		ChannelBufferSize:        1024,
+		DiskWriteTimeoutMS:       5,
+		SegmentSize:              1 << 20,
+		SegmentRollTimeMS:        0,
+		PartitionChannelBufSize:  10000,
+		ConsumerChannelBufSize:   1000,
+		ConsumerSessionTimeoutMS: 30000,
+		ConsumerHeartbeatCheckMS: 5000,
+		CleanupInterval:          300,
+		AutoCreateTopics:         true,
+		MaxStreamConnections:     1000,
+		StreamTimeout:            30 * time.Minute,
+		StreamHeartbeatInterval:  30 * time.Second,
+		EnableGzip:               false,
+	}
 }
 
 func LoadConfig() (*Config, error) {
-	cfg := &Config{}
+	cfg := defaultConfig()
 	configPath := flag.String("config", "", "Path to YAML/JSON config file")
-	logLevelStr := flag.String("log-level", "info", "Log Level (debug, info, warn, error)")
 
-	// Server settings
-	flag.IntVar(&cfg.BrokerPort, "port", 9000, "Broker port")
-	flag.IntVar(&cfg.HealthCheckPort, "health-port", 9080, "Health check server port")
-	flag.BoolVar(&cfg.EnableExporter, "exporter", true, "Enable Prometheus exporter")
-	flag.IntVar(&cfg.ExporterPort, "exporter-port", 9100, "Exporter port")
-	flag.BoolVar(&cfg.EnableBenchmark, "benchmark", false, "Enable benchmark mode")
+	flag.IntVar(&cfg.BrokerPort, "port", cfg.BrokerPort, "Broker port")
+	flag.IntVar(&cfg.HealthCheckPort, "health-port", cfg.HealthCheckPort, "Health port")
+	flag.StringVar(&cfg.LogDir, "log-dir", cfg.LogDir, "Log directory")
+	flag.BoolVar(&cfg.EnableExporter, "exporter", cfg.EnableExporter, "Enable exporter")
+	flag.IntVar(&cfg.ExporterPort, "exporter-port", cfg.ExporterPort, "Exporter port")
 
-	// Disk persistence
-	flag.StringVar(&cfg.LogDir, "log-dir", "broker-logs", "Path for logs")
-	flag.IntVar(&cfg.DiskFlushBatchSize, "disk-flush-batch", 50, "Number of messages per disk flush")
-	flag.IntVar(&cfg.LingerMS, "linger-ms", 50, "Maximum time to wait before flush (ms)")
-	flag.IntVar(&cfg.ChannelBufferSize, "channel-buffer", 1024, "DiskHandler write channel buffer size")
-	flag.IntVar(&cfg.DiskWriteTimeoutMS, "disk-write-timeout", 5, "Synchronous write timeout if channel is full (ms)")
-	flag.IntVar(&cfg.SegmentSize, "segment-size", 1048576, "Segment file size in bytes (default: 1MB)")
-	flag.IntVar(&cfg.SegmentRollTimeMS, "segment-roll-time-ms", 0, "Time-based segment rotation in milliseconds (0=disabled)")
+	logLevelStr := flag.String("log-level", "info", "Log level")
 
-	// Internal buffers
-	flag.IntVar(&cfg.PartitionChannelBufSize, "partition-ch-buffer", 10000, "Partition input channel buffer size")
-	flag.IntVar(&cfg.ConsumerChannelBufSize, "consumer-ch-buffer", 1000, "Consumer channel buffer size")
+	flag.IntVar(&cfg.CleanupInterval, "cleanup-interval", cfg.CleanupInterval, "Cleanup seconds")
+	flag.BoolVar(&cfg.AutoCreateTopics, "auto-create-topics", cfg.AutoCreateTopics, "Auto-create topics")
 
-	// Group coordinator
-	flag.IntVar(&cfg.ConsumerSessionTimeoutMS, "consumer-session-timeout", 30000, "Consumer session timeout in milliseconds")
-	flag.IntVar(&cfg.ConsumerHeartbeatCheckMS, "consumer-heartbeat-check", 5000, "Heartbeat check interval in milliseconds")
+	flag.IntVar(&cfg.DiskFlushBatchSize, "disk-flush-batch", cfg.DiskFlushBatchSize, "Disk flush batch")
+	flag.IntVar(&cfg.LingerMS, "linger-ms", cfg.LingerMS, "Linger ms")
+	flag.IntVar(&cfg.ChannelBufferSize, "channel-buffer", cfg.ChannelBufferSize, "Channel buffer")
+	flag.IntVar(&cfg.DiskWriteTimeoutMS, "disk-write-timeout", cfg.DiskWriteTimeoutMS, "Disk write timeout")
+	flag.IntVar(&cfg.SegmentSize, "segment-size", cfg.SegmentSize, "Segment size")
+	flag.IntVar(&cfg.SegmentRollTimeMS, "segment-roll-time-ms", cfg.SegmentRollTimeMS, "Segment roll time")
 
-	// System maintenance
-	flag.IntVar(&cfg.CleanupInterval, "cleanup-interval", 300, "Cleanup interval in seconds")
-	flag.BoolVar(&cfg.AutoCreateTopics, "auto-create-topics", true, "Auto-create topics on publish")
+	flag.IntVar(&cfg.PartitionChannelBufSize, "partition-ch-buffer", cfg.PartitionChannelBufSize, "Partition buffer")
+	flag.IntVar(&cfg.ConsumerChannelBufSize, "consumer-ch-buffer", cfg.ConsumerChannelBufSize, "Consumer buffer")
 
-	// Security & compression
-	flag.BoolVar(&cfg.UseTLS, "tls", false, "Enable TLS")
-	flag.StringVar(&cfg.TLSCertPath, "tls-cert", "", "TLS certificate path")
-	flag.StringVar(&cfg.TLSKeyPath, "tls-key", "", "TLS key path")
-	flag.BoolVar(&cfg.EnableGzip, "gzip", false, "Enable gzip compression")
+	flag.IntVar(&cfg.ConsumerSessionTimeoutMS, "consumer-session-timeout", cfg.ConsumerSessionTimeoutMS, "Session timeout")
+	flag.IntVar(&cfg.ConsumerHeartbeatCheckMS, "consumer-heartbeat-check", cfg.ConsumerHeartbeatCheckMS, "Heartbeat check")
 
-	if envPath := os.Getenv("CONFIG_PATH"); envPath != "" && *configPath == "" {
-		*configPath = envPath
-	}
+	flag.BoolVar(&cfg.UseTLS, "tls", cfg.UseTLS, "Enable TLS")
+	flag.StringVar(&cfg.TLSCertPath, "tls-cert", cfg.TLSCertPath, "TLS cert")
+	flag.StringVar(&cfg.TLSKeyPath, "tls-key", cfg.TLSKeyPath, "TLS key")
+	flag.BoolVar(&cfg.EnableGzip, "gzip", cfg.EnableGzip, "Enable gzip")
+
+	flag.IntVar(&cfg.MaxStreamConnections, "max-stream-connections", cfg.MaxStreamConnections, "Max stream connections")
+	flag.DurationVar(&cfg.StreamTimeout, "stream-timeout", cfg.StreamTimeout, "Stream timeout")
+	flag.DurationVar(&cfg.StreamHeartbeatInterval, "stream-heartbeat-interval", cfg.StreamHeartbeatInterval, "Stream heartbeat")
+
 	flag.Parse()
 
-	// File load (YAML or JSON)
+	switch strings.ToLower(*logLevelStr) {
+	case "debug":
+		cfg.LogLevel = util.LogLevelDebug
+	case "warn", "warning":
+		cfg.LogLevel = util.LogLevelWarn
+	case "error":
+		cfg.LogLevel = util.LogLevelError
+	default:
+		cfg.LogLevel = util.LogLevelInfo
+	}
+
+	if env := os.Getenv("CONFIG_PATH"); env != "" && *configPath == "" {
+		*configPath = env
+	}
+
 	if *configPath != "" {
 		data, err := os.ReadFile(*configPath)
 		if err != nil {
-			return nil, err
+			if os.IsNotExist(err) {
+				util.Info("Config file %s not found, using flag defaults", *configPath)
+				return cfg, nil
+			}
+			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
 		}
-
 		if strings.HasSuffix(*configPath, ".json") {
 			if err := json.Unmarshal(data, cfg); err != nil {
 				return nil, err
@@ -121,38 +158,47 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 
-	if logLevelStr != nil {
-		switch strings.ToLower(*logLevelStr) {
-		case "debug":
-			cfg.LogLevel = util.LogLevelDebug
-		case "info":
-			cfg.LogLevel = util.LogLevelInfo
-		case "warn", "warning":
-			cfg.LogLevel = util.LogLevelWarn
-		case "error":
-			cfg.LogLevel = util.LogLevelError
-		default:
-			cfg.LogLevel = util.LogLevelInfo
-		}
-	}
+	overrideEnvInt(&cfg.BrokerPort, "BROKER_PORT")
+	overrideEnvInt(&cfg.HealthCheckPort, "HEALTH_CHECK_PORT")
+
+	overrideEnvBool(&cfg.EnableExporter, "ENABLE_EXPORTER")
+	overrideEnvInt(&cfg.ExporterPort, "EXPORTER_PORT")
+
+	overrideEnvInt(&cfg.DiskFlushBatchSize, "DISK_FLUSH_BATCH")
+	overrideEnvInt(&cfg.LingerMS, "LINGER_MS")
+
+	overrideEnvInt(&cfg.ConsumerSessionTimeoutMS, "CONSUMER_SESSION_TIMEOUT")
+	overrideEnvInt(&cfg.ConsumerHeartbeatCheckMS, "CONSUMER_HEARTBEAT_CHECK")
+
+	overrideEnvBool(&cfg.EnableGzip, "ENABLE_GZIP")
 
 	cfg.Normalize()
 	util.SetLevel(cfg.LogLevel)
 
 	if cfg.UseTLS {
 		if cfg.TLSCertPath == "" || cfg.TLSKeyPath == "" {
-			cfg.UseTLS = false
-			return nil, fmt.Errorf("TLS enabled but certificate or key path is empty")
+			return nil, fmt.Errorf("TLS enabled but missing cert/key path")
 		}
 		cert, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
 		if err != nil {
-			cfg.UseTLS = false
-			return nil, fmt.Errorf("failed to load TLS certificate: %w", err)
+			return nil, fmt.Errorf("failed to load TLS cert: %w", err)
 		}
 		cfg.TLSCert = cert
 	}
 
 	return cfg, nil
+}
+
+func overrideEnvInt(target *int, key string) {
+	if v := os.Getenv(key); v != "" {
+		*target = util.ParseInt(v, *target)
+	}
+}
+
+func overrideEnvBool(target *bool, key string) {
+	if v := os.Getenv(key); v != "" {
+		*target = util.ParseBool(v, *target)
+	}
 }
 
 func (cfg *Config) Normalize() {
@@ -173,7 +219,6 @@ func (cfg *Config) Normalize() {
 		cfg.CleanupInterval = 300
 	}
 
-	// DiskHandler
 	if cfg.DiskFlushBatchSize <= 0 {
 		cfg.DiskFlushBatchSize = 50
 	}
@@ -193,7 +238,6 @@ func (cfg *Config) Normalize() {
 		cfg.SegmentRollTimeMS = 0
 	}
 
-	// partition/topic
 	if cfg.PartitionChannelBufSize <= 0 {
 		cfg.PartitionChannelBufSize = 10000
 	}
@@ -201,15 +245,8 @@ func (cfg *Config) Normalize() {
 		cfg.ConsumerChannelBufSize = 1000
 	}
 
-	// log-level
-	if cfg.LogLevel == 0 {
-		cfg.LogLevel = util.LogLevelInfo
-	}
-
-	// static consumer groups
 	for i := range cfg.StaticConsumerGroups {
 		g := &cfg.StaticConsumerGroups[i]
-
 		if strings.TrimSpace(g.Name) == "" {
 			g.Name = "default-group"
 		}
@@ -222,9 +259,9 @@ func (cfg *Config) Normalize() {
 		if g.TopicPartitions == nil {
 			g.TopicPartitions = map[string]int{}
 		}
-		for _, topic := range g.Topics {
-			if g.TopicPartitions[topic] <= 0 {
-				g.TopicPartitions[topic] = 1
+		for _, t := range g.Topics {
+			if g.TopicPartitions[t] <= 0 {
+				g.TopicPartitions[t] = 1
 			}
 		}
 	}
@@ -236,10 +273,16 @@ func (cfg *Config) Normalize() {
 		cfg.ConsumerHeartbeatCheckMS = 5000
 	}
 	if cfg.ConsumerHeartbeatCheckMS >= cfg.ConsumerSessionTimeoutMS {
-		fmt.Fprintf(os.Stderr,
-			"warning: ConsumerHeartbeatCheckMS (%d ms) >= ConsumerSessionTimeoutMS (%d ms), adjusting heartbeat to half of session timeout\n",
-			cfg.ConsumerHeartbeatCheckMS, cfg.ConsumerSessionTimeoutMS,
-		)
 		cfg.ConsumerHeartbeatCheckMS = cfg.ConsumerSessionTimeoutMS / 2
+	}
+
+	if cfg.MaxStreamConnections <= 0 {
+		cfg.MaxStreamConnections = 1000
+	}
+	if cfg.StreamTimeout <= 0 {
+		cfg.StreamTimeout = 30 * time.Minute
+	}
+	if cfg.StreamHeartbeatInterval <= 0 {
+		cfg.StreamHeartbeatInterval = 30 * time.Second
 	}
 }
