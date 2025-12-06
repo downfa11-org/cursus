@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/tls"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -132,6 +133,13 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 			continue
 		}
 
+		if strings.HasPrefix(strings.ToUpper(payload), "JOIN_GROUP") ||
+			strings.HasPrefix(strings.ToUpper(payload), "SYNC_GROUP") {
+			resp := cmdHandler.HandleCommand(payload, ctx)
+			writeResponse(conn, resp)
+			continue
+		}
+
 		var resp string
 		if isCommand(payload) {
 			resp = cmdHandler.HandleCommand(payload, ctx)
@@ -140,17 +148,20 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 					if err := cmdHandler.HandleStreamCommand(conn, payload, ctx); err != nil {
 						writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
 					}
+					return
 				} else {
 					if _, err := cmdHandler.HandleConsumeCommand(conn, payload, ctx); err != nil {
 						writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
 					}
 				}
-				return
 			}
 			if resp != "" {
 				writeResponse(conn, resp)
+				continue
 			}
-		} else if isBatchMessage(data) {
+		}
+
+		if isBatchMessage(data) {
 			batch, err := util.DecodeBatchMessages(data)
 			if err != nil {
 				util.Error("Batch message decoding failed: %v", err)
@@ -158,56 +169,66 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 				continue
 			}
 
-			acks := batch.Acks
-			if acks == 1 {
-				if err := tm.PublishBatchSync(batch.Topic, batch.Messages); err != nil {
-					writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
-					continue
-				}
-				writeResponse(conn, fmt.Sprintf("OK:processed=%d", len(batch.Messages)))
-			} else {
-				var published int
-				for _, m := range batch.Messages {
-					msg := types.Message{Payload: m.Payload, Key: m.Key}
-					if err := tm.Publish(batch.Topic, msg); err != nil {
-						util.Warn("Failed to publish message in batch: %v", err)
-						continue
-					}
-					published++
-				}
-				writeResponse(conn, fmt.Sprintf("OK:processed=%d", published))
+			if err := tm.PublishBatchSync(batch.Topic, batch.Messages); err != nil {
+				writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
+				continue
+
 			}
+
+			var lastOffset uint64
+			var seqStart, seqEnd uint64
+			var producerID string
+			var producerEpoch int64
+
+			if len(batch.Messages) > 0 {
+				lastOffset = batch.Messages[len(batch.Messages)-1].Offset
+				seqStart = batch.Messages[0].SeqNum
+				seqEnd = batch.Messages[len(batch.Messages)-1].SeqNum
+				producerID = batch.Messages[0].ProducerID
+				producerEpoch = batch.Messages[0].Epoch
+			}
+
+			ackResp := types.AckResponse{
+				Status:        "OK",
+				LastOffset:    lastOffset,
+				ProducerID:    producerID,
+				ProducerEpoch: producerEpoch,
+				SeqStart:      seqStart,
+				SeqEnd:        seqEnd,
+			}
+
+			ackBytes, _ := json.Marshal(ackResp)
+			writeResponse(conn, string(ackBytes))
 			continue
-		} else {
-			if topicName == "" || payload == "" {
-				rawInput := strings.TrimSpace(string(data))
-				util.Debug("[%s] Received unrecognized input: %s", conn.RemoteAddr().String(), rawInput)
-				writeResponse(conn, "ERROR: malformed input - missing topic or payload")
-				return
-			}
+		}
 
-			acks, message := extractAcksAndMessage(payload)
-			msg := types.Message{Payload: message}
-			util.Info("Publishing message to: ID=%d, Key=%s, Payload=%s", msg.ID, msg.Key, strings.ReplaceAll(msg.Payload, "\n", " "))
+		if topicName == "" || payload == "" {
+			rawInput := strings.TrimSpace(string(data))
+			util.Debug("[%s] Received unrecognized input: %s", conn.RemoteAddr().String(), rawInput)
+			writeResponse(conn, "ERROR: malformed input - missing topic or payload")
+			return
+		}
 
-			switch acks {
-			case "0":
-				if err := tm.Publish(topicName, msg); err != nil {
-					writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
-					continue
-				}
-				writeResponse(conn, "OK")
-			case "1":
-				if err := tm.PublishWithAck(topicName, msg); err != nil {
-					writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
-					continue
-				}
-				writeResponse(conn, "OK")
-			case "-1":
-				writeResponse(conn, "ERROR: acks=-1(all) not implemented")
-			default:
-				writeResponse(conn, fmt.Sprintf("ERROR: invalid acks: %s", acks))
+		acks, message := extractAcksAndMessage(payload)
+		msg := types.Message{Payload: message}
+		util.Info("Publishing message to: ID=%d, Key=%s, Payload=%s", msg.ID, msg.Key, strings.ReplaceAll(msg.Payload, "\n", " "))
+
+		switch acks {
+		case "0":
+			if err := tm.Publish(topicName, msg); err != nil {
+				writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
+				continue
 			}
+			writeResponse(conn, "OK")
+		case "1":
+			if err := tm.PublishWithAck(topicName, msg); err != nil {
+				writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
+				continue
+			}
+		case "-1":
+			writeResponse(conn, "ERROR: acks=-1(all) not implemented")
+		default:
+			writeResponse(conn, fmt.Sprintf("ERROR: invalid acks: %s", acks))
 		}
 	}
 }
@@ -269,7 +290,7 @@ func extractAcksAndMessage(payload string) (acks, message string) {
 func isCommand(s string) bool {
 	keywords := []string{"CREATE", "DELETE", "LIST", "PUBLISH", "CONSUME", "STREAM", "HELP",
 		"HEARTBEAT", "JOIN_GROUP", "LEAVE_GROUP", "COMMIT_OFFSET", "REGISTER_GROUP",
-		"GROUP_STATUS", "FETCH_OFFSET", "LIST_GROUPS"}
+		"GROUP_STATUS", "FETCH_OFFSET", "LIST_GROUPS", "SYNC_GROUP"}
 	for _, k := range keywords {
 		if strings.HasPrefix(strings.ToUpper(s), k) {
 			return true
