@@ -108,15 +108,7 @@ func (tm *TopicManager) PublishBatchSync(topicName string, messages []types.Mess
 
 	t := tm.GetTopic(topicName)
 	if t == nil {
-		if tm.cfg.AutoCreateTopics {
-			tm.CreateTopic(topicName, 4)
-			t = tm.GetTopic(topicName)
-			if t == nil {
-				return fmt.Errorf("topic '%s' creation failed", topicName)
-			}
-		} else {
-			return fmt.Errorf("topic '%s' does not exist", topicName)
-		}
+		return fmt.Errorf("topic '%s' does not exist", topicName)
 	}
 
 	partitioned := make(map[int][]types.Message)
@@ -184,17 +176,7 @@ func (tm *TopicManager) publishInternal(topicName string, msg types.Message, req
 
 	t := tm.GetTopic(topicName)
 	if t == nil {
-		if tm.cfg.AutoCreateTopics {
-			util.Debug("Topic '%s' not found, checking auto-create", topicName)
-			tm.CreateTopic(topicName, 4)
-			t = tm.GetTopic(topicName)
-		} else {
-			return fmt.Errorf("topic '%s' does not exist", topicName)
-		}
-	}
-
-	if t == nil {
-		return fmt.Errorf("topic '%s' does not exist and auto-creation failed", topicName)
+		return fmt.Errorf("topic '%s' does not exist", topicName)
 	}
 
 	if requireAck {
