@@ -41,11 +41,9 @@ func main() {
 	for _, gcfg := range cfg.StaticConsumerGroups {
 		for _, topicName := range gcfg.Topics {
 			t := tm.GetTopic(topicName)
-			if t == nil && cfg.AutoCreateTopics {
-				tm.CreateTopic(topicName, 4)
-				t = tm.GetTopic(topicName)
-			}
-			if t != nil {
+			if t == nil {
+				util.Error("⚠️ Topic %q is not exist: %v", topicName, err)
+			} else {
 				if _, err := tm.RegisterConsumerGroup(topicName, gcfg.Name, gcfg.ConsumerCount); err != nil {
 					util.Error("⚠️ Failed to register static consumer group %q on topic %q: %v", gcfg.Name, topicName, err)
 				}
