@@ -1,8 +1,10 @@
 package controller
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net"
 	"strconv"
 	"strings"
@@ -89,6 +91,23 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	}
 	ctx.ConsumerGroup = groupName
 
+	if genStr := args["gen"]; genStr != "" {
+		if generation, err := strconv.ParseInt(genStr, 10, 64); err == nil {
+			ctx.Generation = int(generation)
+		}
+	}
+
+	if memberID := args["member"]; memberID != "" {
+		ctx.MemberID = memberID
+	}
+
+	maxMessages := DefaultMaxPollRecords
+	if batchStr := args["batch"]; batchStr != "" {
+		if batch, err := strconv.Atoi(batchStr); err == nil && batch > 0 && batch <= DefaultMaxPollRecords {
+			maxMessages = batch
+		}
+	}
+
 	autoOffsetReset := args["autoOffsetReset"]
 	if autoOffsetReset == "" {
 		autoOffsetReset = "earliest"
@@ -106,46 +125,65 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		return 0, fmt.Errorf("failed to get disk handler: %w", err)
 	}
 
-	startTime := time.Now()
-
 	actualOffset, err := ch.resolveOffset(topicName, partition, requestedOffset, groupName, autoOffsetReset)
 	if err != nil {
 		return 0, err
 	}
 
-	maxMessages := DefaultMaxPollRecords
-	messages, err := dh.ReadMessages(actualOffset, maxMessages)
+	if !ch.ValidateOwnership(ctx.ConsumerGroup, ctx.MemberID, ctx.Generation, partition) {
+		return 0, fmt.Errorf("not partition owner or generation mismatch")
+	}
+
+	currentOffset := actualOffset
+	streamedCount := 0
+
+	messages, err := dh.ReadMessages(currentOffset, maxMessages)
 	if err != nil {
 		util.Error("Failed to read messages: %v", err)
-		return 0, fmt.Errorf("failed to read messages from disk: %w", err)
+		return streamedCount, err
 	}
 
-	util.Debug("Read %d messages from disk", len(messages))
+	if len(messages) == 0 {
+		util.Debug("No new messages at offset %d, returning 0 messages.", currentOffset)
+		return 0, nil
+	}
 
-	streamedCount := 0
-	lastOffset := actualOffset
+	seqStart := messages[0].SeqNum
+	seqEnd := messages[len(messages)-1].SeqNum
+	var lastOffset uint64
+
 	for _, msg := range messages {
-		msgBytes := []byte(msg.Payload)
-		if err := util.WriteWithLength(conn, msgBytes); err != nil {
-			return streamedCount, fmt.Errorf("failed to stream message: %w", err)
+		offsetBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(offsetBytes, msg.Offset)
+
+		if _, err := conn.Write(offsetBytes); err != nil {
+			return streamedCount, err
 		}
+
+		if err := util.WriteWithLength(conn, []byte(msg.Payload)); err != nil {
+			return streamedCount, err
+		}
+		lastOffset = msg.Offset
 		streamedCount++
-		lastOffset++
+		currentOffset = msg.Offset + 1
 	}
 
-	if streamedCount > 0 && ch.Coordinator != nil {
-		if err := ch.Coordinator.CommitOffset(ctx.ConsumerGroup, topicName, partition, lastOffset); err != nil {
-			util.Warn("Failed to commit offset to OffsetManager for group '%s': %v", ctx.ConsumerGroup, err)
-		} else {
-			util.Debug("Successfully committed offset %d to OffsetManager for group '%s', topic '%s', partition %d",
-				lastOffset, ctx.ConsumerGroup, topicName, partition)
+	ackResp := types.AckResponse{
+		Status:     "OK",
+		LastOffset: lastOffset,
+		SeqStart:   seqStart,
+		SeqEnd:     seqEnd,
+	}
+	ackBytes, _ := json.Marshal(ackResp)
+	if err := util.WriteWithLength(conn, ackBytes); err != nil {
+		return streamedCount, err
+	}
+
+	if ch.Coordinator != nil {
+		if err := ch.Coordinator.CommitOffset(ctx.ConsumerGroup, topicName, partition, currentOffset); err != nil {
+			util.Warn("Failed to commit offset: %v", err)
 		}
-
 	}
-
-	duration := time.Since(startTime)
-	util.Debug("Streamed %d messages from topic '%s' partition %d in %v",
-		streamedCount, topicName, partition, duration)
 
 	return streamedCount, nil
 }
@@ -177,9 +215,23 @@ func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx 
 	}
 	ctx.ConsumerGroup = groupName
 
+	if genStr := args["gen"]; genStr != "" {
+		if generation, err := strconv.ParseInt(genStr, 10, 64); err == nil {
+			ctx.Generation = int(generation)
+		}
+	}
+
+	if memberID := args["member"]; memberID != "" {
+		ctx.MemberID = memberID
+	}
+
 	actualOffset, err := ch.resolveOffset(topicName, partition, 0, groupName, args["autoOffsetReset"])
 	if err != nil {
 		return err
+	}
+
+	if !ch.ValidateOwnership(ctx.ConsumerGroup, ctx.MemberID, ctx.Generation, partition) {
+		return fmt.Errorf("not partition owner or generation mismatch")
 	}
 
 	streamKey := fmt.Sprintf("%s:%d:%s", topicName, partition, groupName)
@@ -189,6 +241,29 @@ func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx 
 		return fmt.Errorf("failed to add stream: %w", err)
 	}
 	defer ch.StreamManager.RemoveStream(streamKey)
+
+	dh, err := ch.DiskManager.GetHandler(topicName, partition)
+	if err != nil {
+		return fmt.Errorf("failed to get disk handler: %w", err)
+	}
+
+	messages, err := dh.ReadMessages(actualOffset, 100)
+	if err != nil {
+		return fmt.Errorf("failed to read initial messages: %w", err)
+	}
+
+	for _, msg := range messages {
+		offsetBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(offsetBytes, msg.Offset)
+
+		if _, err := streamConn.Conn().Write(offsetBytes); err != nil {
+			return err
+		}
+
+		if err := util.WriteWithLength(streamConn.Conn(), []byte(msg.Payload)); err != nil {
+			return err
+		}
+	}
 
 	return ch.streamLoop(streamConn)
 }
@@ -238,14 +313,38 @@ func (ch *CommandHandler) streamLoop(stream *stream.StreamConnection) error {
 					tickCount, len(messages), stream.Offset(), stream.Topic(), stream.Partition())
 			}
 
+			seqStart := messages[0].SeqNum
+			seqEnd := messages[len(messages)-1].SeqNum
+			var lastOffset uint64
+
 			for _, msg := range messages {
+				offsetBytes := make([]byte, 8)
+				binary.BigEndian.PutUint64(offsetBytes, msg.Offset)
+				if _, err := stream.Conn().Write(offsetBytes); err != nil {
+					return err
+				}
+
 				if err := util.WriteWithLength(stream.Conn(), []byte(msg.Payload)); err != nil {
 					util.Debug("Connection closed while streaming message for topic '%s' partition %d",
 						stream.Topic(), stream.Partition())
 					return err
 				}
+
+				lastOffset = msg.Offset
 				stream.SetOffset(stream.Offset() + 1)
 				stream.SetLastActive(time.Now())
+			}
+
+			ackResp := types.AckResponse{
+				Status:     "OK",
+				LastOffset: lastOffset,
+				SeqStart:   seqStart,
+				SeqEnd:     seqEnd,
+			}
+
+			ackBytes, _ := json.Marshal(ackResp)
+			if err := util.WriteWithLength(stream.Conn(), ackBytes); err != nil {
+				return err
 			}
 
 			if time.Since(lastCommitTime) > commitInterval && ch.Coordinator != nil {
@@ -298,9 +397,10 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
   LIST                                                     - list all topics         
   PUBLISH topic=<name> acks=<0|1> message=<text> [producerId=<id> seqNum=<N> epoch=<N>] - publish message      
   CONSUME topic=<name> partition=<N> offset=<N> group=<name> [autoOffsetReset=<earliest|latest>] - consume messages      
-  JOIN_GROUP topic=<name> group=<name> consumer=<id>                    - join consumer group      
-  LEAVE_GROUP group=<name> consumer=<id>                   - leave consumer group      
-  HEARTBEAT topic=<name> group=<name> consumer=<id>                     - send heartbeat      
+  JOIN_GROUP topic=<name> group=<name> member=<id>                    - join consumer group
+  SYNC_GROUP topic=<name> group=<name> member=<id> generation=<N>      - sync group assignments              
+  LEAVE_GROUP group=<name> member=<id>                   - leave consumer group      
+  HEARTBEAT topic=<name> group=<name> member=<id>                     - send heartbeat      
   COMMIT_OFFSET topic=<name> partition=<N> group=<name> offset=<N>     - commit offset      
   FETCH_OFFSET topic=<name> partition=<N> group=<name>    - fetch committed offset      
   REGISTER_GROUP topic=<name> group=<name>                - register consumer group      
@@ -364,6 +464,7 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "PUBLISH "):
 		args := parseKeyValueArgs(cmd[8:])
+		var err error
 
 		topicName, ok := args["topic"]
 		if !ok || topicName == "" {
@@ -377,6 +478,30 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 			break
 		}
 
+		producerID, ok := args["producerId"]
+		if !ok || producerID == "" {
+			resp = "ERROR: missing producerID parameter"
+			break
+		}
+
+		var seqNum uint64
+		if seqNumStr, ok := args["seqNum"]; ok {
+			seqNum, err = strconv.ParseUint(seqNumStr, 10, 64)
+			if err != nil {
+				resp = fmt.Sprintf("ERROR: invalid seqNum: %v", err)
+				break
+			}
+		}
+
+		var epoch int64
+		if epochStr, ok := args["epoch"]; ok {
+			epoch, err = strconv.ParseInt(epochStr, 10, 64)
+			if err != nil {
+				resp = fmt.Sprintf("ERROR: invalid epoch: %v", err)
+				break
+			}
+		}
+
 		t := tm.GetTopic(topicName)
 		if t == nil {
 			resp = fmt.Sprintf("ERROR: topic '%s' does not exist", topicName)
@@ -384,35 +509,14 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 		}
 
 		msg := types.Message{
-			ID:      util.GenerateID(message),
-			Payload: message,
-			Key:     message,
+			ID:         util.GenerateID(message),
+			Payload:    message,
+			ProducerID: producerID,
+			SeqNum:     seqNum,
+			Epoch:      epoch,
 		}
 
-		// Idempotence
-		if producerID, ok := args["producerId"]; ok {
-			msg.ProducerID = producerID
-			if seqNumStr, ok := args["seqNum"]; ok {
-				seqNum, err := strconv.ParseUint(seqNumStr, 10, 64)
-				if err != nil {
-					resp = fmt.Sprintf("ERROR: invalid seqNum: %v", err)
-					break
-				}
-				msg.SeqNum = seqNum
-			}
-			if epochStr, ok := args["epoch"]; ok {
-				epoch, err := strconv.ParseInt(epochStr, 10, 64)
-				if err != nil {
-					resp = fmt.Sprintf("ERROR: invalid epoch: %v", err)
-					break
-				}
-				msg.Epoch = epoch
-			}
-		}
-
-		acks := args["acks"]
-		var err error
-		if acks == "1" {
+		if args["acks"] == "1" {
 			err = tm.PublishWithAck(topicName, msg) // sync
 		} else {
 			err = tm.Publish(topicName, msg) // async
@@ -423,11 +527,17 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 			break
 		}
 
-		if acks == "1" {
-			resp = fmt.Sprintf("✅ Published to '%s' (acks=1)", topicName)
-		} else {
-			resp = fmt.Sprintf("📤 Published to '%s'", topicName)
+		ackResp := types.AckResponse{
+			Status:        "OK",
+			LastOffset:    msg.Offset,
+			ProducerEpoch: epoch,
+			ProducerID:    producerID,
+			SeqStart:      seqNum,
+			SeqEnd:        seqNum,
 		}
+
+		respBytes, _ := json.Marshal(ackResp)
+		return string(respBytes)
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "REGISTER_GROUP "):
 		args := parseKeyValueArgs(cmd[15:])
@@ -475,9 +585,9 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 			break
 		}
 
-		consumerID, ok := args["consumer"]
+		consumerID, ok := args["member"]
 		if !ok || consumerID == "" {
-			resp = "ERROR: JOIN_GROUP requires consumer parameter"
+			resp = "ERROR: JOIN_GROUP requires member parameter"
 			break
 		}
 
@@ -485,6 +595,9 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 			resp = "ERROR: coordinator not available"
 			break
 		}
+
+		randSuffix := fmt.Sprintf("%04d", rand.Intn(10000))
+		consumerID = fmt.Sprintf("%s-%s", consumerID, randSuffix)
 
 		assignments, err := ch.Coordinator.AddConsumer(groupName, consumerID)
 		if err != nil {
@@ -515,7 +628,46 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 			}
 		}
 
-		resp = fmt.Sprintf("✅ Joined group '%s' with partitions: %v", groupName, assignments)
+		ctx.MemberID = consumerID
+		ctx.Generation = ch.Coordinator.GetGeneration(groupName)
+
+		util.Debug("✅ Joined group '%s' member '%s' generation '%s' with partitions: %v", groupName, ctx.MemberID, ctx.Generation, assignments)
+		resp = fmt.Sprintf("OK generation=%d member=%s assignments=[%v]", ctx.Generation, ctx.MemberID, assignments)
+
+	case strings.HasPrefix(strings.ToUpper(cmd), "SYNC_GROUP "):
+		args := parseKeyValueArgs(cmd[11:])
+
+		topicName, ok := args["topic"]
+		if !ok || topicName == "" {
+			resp = "ERROR: SYNC_GROUP requires topic parameter"
+			break
+		}
+
+		groupName, ok := args["group"]
+		if !ok || groupName == "" {
+			resp = "ERROR: SYNC_GROUP requires group parameter"
+			break
+		}
+
+		memberID, ok := args["member"]
+		if !ok || memberID == "" {
+			resp = "ERROR: SYNC_GROUP requires member parameter"
+			break
+		}
+
+		if ch.Coordinator == nil {
+			resp = "ERROR: coordinator not available"
+			break
+		}
+
+		// Get assignments for this member
+		assignments := ch.Coordinator.GetAssignments(groupName)[memberID]
+		if assignments == nil {
+			resp = "ERROR: member not found in group"
+			break
+		}
+
+		resp = fmt.Sprintf("OK assignments=[%s]", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(assignments)), " "), "[]"))
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "LEAVE_GROUP "):
 		args := parseKeyValueArgs(cmd[12:])
@@ -532,9 +684,9 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 			break
 		}
 
-		consumerID, ok := args["consumer"]
+		consumerID, ok := args["member"]
 		if !ok || consumerID == "" {
-			resp = "ERROR: LEAVE_GROUP requires consumer parameter"
+			resp = "ERROR: LEAVE_GROUP requires member parameter"
 			break
 		}
 
@@ -628,9 +780,9 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 			break
 		}
 
-		consumerID, ok := args["consumer"]
+		consumerID, ok := args["member"]
 		if !ok || consumerID == "" {
-			resp = "ERROR: HEARTBEAT requires consumer parameter"
+			resp = "ERROR: HEARTBEAT requires member parameter"
 			break
 		}
 
@@ -770,4 +922,32 @@ func (ch *CommandHandler) resolveOffset(
 	}
 
 	return actualOffset, nil
+}
+
+func (ch *CommandHandler) ValidateOwnership(groupName, memberID string, generation int, partition int) bool {
+	if ch.Coordinator == nil {
+		return false
+	}
+
+	group := ch.Coordinator.GetGroup(groupName)
+	if group == nil {
+		return false
+	}
+
+	member := group.Members[memberID]
+	if member == nil {
+		return false
+	}
+
+	if group.Generation != generation {
+		return false
+	}
+
+	for _, assigned := range member.Assignments {
+		if assigned == partition {
+			return true
+		}
+	}
+
+	return false
 }
