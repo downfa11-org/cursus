@@ -351,3 +351,54 @@ func (c *Coordinator) updateOffsetPartitionCount() {
 		util.Info("Updated offset topic partitions to %d for %d groups", newCount, groupCount)
 	}
 }
+
+func (c *Coordinator) ValidateAndCommit(groupName, topic string, partition int, offset uint64, generation int, memberID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	group := c.groups[groupName] // *GroupMetadata
+	if group == nil {
+		return fmt.Errorf("group not found")
+	}
+
+	member := group.Members[memberID]
+	if member == nil {
+		return fmt.Errorf("member not found")
+	}
+
+	if group.Generation != generation {
+		return fmt.Errorf("generation mismatch")
+	}
+
+	if !contains(member.Assignments, partition) {
+		return fmt.Errorf("not partition owner")
+	}
+
+	return c.CommitOffset(groupName, topic, partition, offset)
+}
+
+func (c *Coordinator) GetGroup(groupName string) *GroupMetadata {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.groups[groupName]
+}
+
+func (c *Coordinator) GetGeneration(groupName string) int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if group := c.groups[groupName]; group != nil {
+		return group.Generation
+	}
+	return 0
+}
+
+func contains(slice []int, item int) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
