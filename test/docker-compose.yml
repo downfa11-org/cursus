@@ -1,65 +1,64 @@
-version: "3.9"  
-services:  
-  broker:    
-    build:    
-      context: ..    
+services:
+  broker:
+    build:
+      context: ..
       dockerfile: Dockerfile
-    container_name: broker    
-    command: ./broker    
-    volumes:    
-      - ./config.yaml:/root/config.yaml    
-    environment:    
-      - CONFIG_PATH=/root/config.yaml    
-    ports:    
-      - "9000:9000"    
-      - "9100:9100"    
-      - "9080:9080"    
-    stdin_open: true    
-    tty: true    
-    networks:    
-      - test_network  
-    healthcheck:    
-      test: ["CMD", "curl", "-f", "http://localhost:9080/health"]    
-      interval: 2s    
-      timeout: 1s    
-      retries: 3    
-    
-  publisher:    
-    build:    
-      context: ./publisher    
-      dockerfile: Dockerfile    
-    container_name: broker-publisher    
-    depends_on:    
-      broker:    
-        condition: service_healthy    
-    volumes:    
-      - ./publisher/config.yaml:/config.yaml       
-    command: ["./publisher", "-config", "/config.yaml"]    
-    networks:    
-      - test_network  
-    
-  consumer:    
-    build:    
-      context: ./consumer    
-      dockerfile: Dockerfile    
-    container_name: broker-consumer    
-    depends_on:    
-      broker:    
-        condition: service_healthy  
+    container_name: broker
+    command: ./broker
+    volumes:
+      - ./config.yaml:/root/config.yaml
+    environment:
+      - CONFIG_PATH=/root/config.yaml
+    ports:
+      - "9000:9000"
+      - "9100:9100"
+      - "9080:9080"
+    stdin_open: true
+    tty: true
+    networks:
+      - test_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9080/health"]
+      interval: 2s
+      timeout: 1s
+      retries: 3
+
+  publisher:
+    build:
+      context: ./publisher
+      dockerfile: Dockerfile
+    container_name: broker-publisher
+    depends_on:
+      broker:
+        condition: service_healthy
+    volumes:
+      - ./publisher/config.yaml:/config.yaml
+    command: ["./publisher", "-config", "/config.yaml"]
+    networks:
+      - test_network
+
+  consumer:
+    build:
+      context: ./consumer
+      dockerfile: Dockerfile
+    container_name: broker-consumer
+    depends_on:
+      broker:
+        condition: service_healthy
       publisher:
         condition: service_started
-    volumes:    
-      - ./consumer/config.yaml:/config.yaml    
-    environment:    
-      - BROKER_ADDR=broker:9000    
-    command: ["./consumer", "-config", "/config.yaml"]    
-    networks:    
-      - test_network  
+    volumes:
+      - ./consumer/config.yaml:/config.yaml
+    environment:
+      - BROKER_ADDR=broker:9000
+    command: ["./consumer", "-config", "/config.yaml"]
+    networks:
+      - test_network
   
-networks:  
-  test_network:  
+networks:
+  test_network:
     name: test_network
-    driver: bridge  
-  
-volumes:  
+    driver: bridge
+
+volumes:
   broker-data:
