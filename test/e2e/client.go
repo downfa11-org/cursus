@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"strings"
 	"sync"
@@ -296,7 +295,7 @@ func (bc *BrokerClient) RegisterConsumerGroup(topic, groupName string) error {
 	}
 	defer func() {
 		if err := conn.SetReadDeadline(time.Time{}); err != nil {
-			log.Printf("failed to reset read deadline: %v", err)
+			util.Warn("failed to reset read deadline: %v", err)
 		}
 	}()
 
@@ -341,8 +340,17 @@ func (bc *BrokerClient) SendHeartbeat() error {
 		return fmt.Errorf("connection closed")
 	}
 
-	heartbeatCmd := fmt.Sprintf("HEARTBEAT topic=%s group=%s consumer=%s", topic, consumerGroup, consumerID)
+	heartbeatCmd := fmt.Sprintf("HEARTBEAT topic=%s group=%s member=%s", topic, consumerGroup, consumerID)
 	cmdBytes := util.EncodeMessage("", heartbeatCmd)
+
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return fmt.Errorf("set read deadline: %w", err)
+	}
+	defer func() {
+		if err := conn.SetReadDeadline(time.Time{}); err != nil {
+			util.Warn("failed to reset read deadline: %v", err)
+		}
+	}()
 
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
 		return fmt.Errorf("send heartbeat: %w", err)
