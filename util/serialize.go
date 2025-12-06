@@ -3,11 +3,9 @@ package util
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"net"
-	"strconv"
 
 	"github.com/downfa11-org/go-broker/pkg/types"
 )
@@ -64,7 +62,7 @@ func ReadWithLength(conn net.Conn) ([]byte, error) {
 	return buf, nil
 }
 
-func EncodeBatchMessages(topic string, partition int, msgs []types.Message, acks string) ([]byte, error) {
+func EncodeBatchMessages(topic string, partition int, msgs []types.Message) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.Write([]byte{0xBA, 0x7C})
 
@@ -89,18 +87,6 @@ func EncodeBatchMessages(topic string, partition int, msgs []types.Message, acks
 		return nil, err
 	}
 
-	// acks
-	acksBytes := []byte(acks)
-	if len(acksBytes) > 255 {
-		acksBytes = acksBytes[:255]
-	}
-	if err := write(uint8(len(acksBytes))); err != nil {
-		return nil, err
-	}
-	if _, err := buf.Write(acksBytes); err != nil {
-		return nil, fmt.Errorf("write acks failed: %w", err)
-	}
-
 	// batch start/end seqNum
 	var batchStart, batchEnd uint64
 	if len(msgs) > 0 {
@@ -122,6 +108,22 @@ func EncodeBatchMessages(topic string, partition int, msgs []types.Message, acks
 		if err := write(m.SeqNum); err != nil {
 			return nil, err
 		}
+
+		// producerID
+		producerIDBytes := []byte(m.ProducerID)
+		if err := write(uint16(len(producerIDBytes))); err != nil {
+			return nil, err
+		}
+		if _, err := buf.Write(producerIDBytes); err != nil {
+			return nil, err
+		}
+
+		// epoch
+		if err := write(m.Epoch); err != nil {
+			return nil, err
+		}
+
+		// payload
 		payloadBytes := []byte(m.Payload)
 		if err := write(uint32(len(payloadBytes))); err != nil {
 			return nil, err
@@ -144,7 +146,7 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 	offset := 0
 	read := func(size int) ([]byte, error) {
 		if offset+size > len(data) {
-			return nil, errors.New("data too short")
+			return nil, fmt.Errorf("data too short, %q", string(data[offset:]))
 		}
 		b := data[offset : offset+size]
 		offset += size
@@ -169,25 +171,6 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 		return nil, err
 	}
 	partition := int(binary.BigEndian.Uint32(partBytes))
-
-	// Acks
-	acksLenBytes, err := read(1)
-	if err != nil {
-		return nil, err
-	}
-	acksLen := int(acksLenBytes[0])
-	acksBytes, err := read(acksLen)
-	if err != nil {
-		return nil, err
-	}
-	acksStr := string(acksBytes)
-	acks, err := strconv.Atoi(acksStr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid acks string: %s", acksStr)
-	}
-	if acks != -1 && acks != 0 && acks != 1 {
-		return nil, fmt.Errorf("invalid acks value: %d", acks)
-	}
 
 	// Batch start/end
 	batchStartBytes, err := read(8)
@@ -217,6 +200,26 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 		}
 		seq := binary.BigEndian.Uint64(seqBytes)
 
+		// producerID
+		producerIDLenBytes, err := read(2)
+		if err != nil {
+			return nil, err
+		}
+		producerIDLen := int(binary.BigEndian.Uint16(producerIDLenBytes))
+		producerIDBytes, err := read(producerIDLen)
+
+		if err != nil {
+			return nil, err
+		}
+
+		// epoch
+		epochBytes, err := read(8)
+		if err != nil {
+			return nil, err
+		}
+		epoch := int64(binary.BigEndian.Uint64(epochBytes))
+
+		// payload
 		payloadLenBytes, err := read(4)
 		if err != nil {
 			return nil, err
@@ -228,8 +231,10 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 			return nil, err
 		}
 		msgs = append(msgs, types.Message{
-			SeqNum:  seq,
-			Payload: string(payloadBytes),
+			SeqNum:     seq,
+			ProducerID: string(producerIDBytes),
+			Epoch:      epoch,
+			Payload:    string(payloadBytes),
 		})
 	}
 
@@ -238,7 +243,6 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 		Partition:  partition,
 		BatchStart: batchStart,
 		BatchEnd:   batchEnd,
-		Acks:       acks,
 		Messages:   msgs,
 	}, nil
 }
