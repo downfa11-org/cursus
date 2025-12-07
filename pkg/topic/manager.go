@@ -2,7 +2,6 @@ package topic
 
 import (
 	"fmt"
-	"math/rand"
 	"sync"
 	"time"
 
@@ -158,19 +157,18 @@ func (tm *TopicManager) publishInternal(topicName string, msg types.Message, req
 
 	start := time.Now()
 
+	var dedupKey string
 	// Idempotence (try to exactly-once)
 	if msg.ProducerID != "" && msg.SeqNum > 0 {
-		dedupKey := fmt.Sprintf("%s-%s-%d", topicName, msg.ProducerID, msg.SeqNum)
-		msg.ID = util.GenerateID(dedupKey)
+		dedupKey = fmt.Sprintf("%s-%s-%d", topicName, msg.ProducerID, msg.SeqNum)
 	} else {
 		// at-least once
-		idSource := fmt.Sprintf("%s-%d-%d", msg.Payload, time.Now().UnixNano(), rand.Int63())
-		msg.ID = util.GenerateID(idSource)
+		dedupKey = fmt.Sprintf("%s-%s", topicName, msg.Payload)
 	}
 
 	now := time.Now()
-	if _, loaded := tm.dedupMap.LoadOrStore(msg.ID, now); loaded {
-		util.Info("Duplicate message detected: ProducerID=%s, MessageID:%s, SeqNum=%d", msg.ProducerID, msg.ID, msg.SeqNum)
+	if _, loaded := tm.dedupMap.LoadOrStore(dedupKey, now); loaded {
+		util.Info("Duplicate message detected: ProducerID=%s, SeqNum=%d", msg.ProducerID, msg.SeqNum)
 		return nil
 	}
 
@@ -182,7 +180,7 @@ func (tm *TopicManager) publishInternal(topicName string, msg types.Message, req
 	if requireAck {
 		if err := t.PublishSync(msg); err != nil {
 			// Allow safe retry with same ProducerID+SeqNum
-			tm.dedupMap.Delete(msg.ID)
+			tm.dedupMap.Delete(dedupKey)
 			return fmt.Errorf("sync publish failed: %w", err)
 		}
 	} else {
