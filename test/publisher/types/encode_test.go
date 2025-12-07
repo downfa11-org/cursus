@@ -21,12 +21,9 @@ func TestEncodeBatchMessages(t *testing.T) {
 	if len(data) < 2 || data[0] != 0xBA || data[1] != 0x7C {
 		t.Errorf("Invalid batch header, got %x", data[:2])
 	}
-	lastSeq := uint64(2)
 	if !bytes.Contains(data, []byte("msg2")) {
 		t.Errorf("Encoded batch missing last message payload")
 	}
-
-	_ = lastSeq
 }
 
 func TestCompressDecompress(t *testing.T) {

@@ -198,7 +198,7 @@ func (bc *BrokerClient) ConsumeMessages(topic string, partition int, consumerGro
 	}
 	defer func() {
 		if err := conn.SetReadDeadline(time.Time{}); err != nil {
-			util.Error("failed to reset read deadline: %v", err)
+			util.Warn("failed to reset read deadline: %v", err)
 		}
 	}()
 
@@ -251,7 +251,7 @@ func (bc *BrokerClient) GetConsumerGroupStatus(groupID string) (*ConsumerGroupSt
 	}
 	defer func() {
 		if err := conn.SetReadDeadline(time.Time{}); err != nil {
-			util.Error("failed to reset read deadline: %v", err)
+			util.Warn("failed to reset read deadline: %v", err)
 		}
 	}()
 

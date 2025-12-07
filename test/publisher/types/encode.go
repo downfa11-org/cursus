@@ -22,6 +22,9 @@ func EncodeBatchMessages(topic string, partition int, msgs []Message) ([]byte, e
 
 	// topic
 	topicBytes := []byte(topic)
+	if len(topicBytes) > 0xFFFF {
+		return nil, fmt.Errorf("topic too long: %d bytes", len(topicBytes))
+	}
 	if err := write(uint16(len(topicBytes))); err != nil {
 		return nil, err
 	}
@@ -64,6 +67,9 @@ func EncodeBatchMessages(topic string, partition int, msgs []Message) ([]byte, e
 
 		// producerID
 		producerIDBytes := []byte(m.ProducerID)
+		if len(producerIDBytes) > 0xFFFF {
+			return nil, fmt.Errorf("producerID too long: %d bytes", len(producerIDBytes))
+		}
 		if err := write(uint16(len(producerIDBytes))); err != nil {
 			return nil, err
 		}
@@ -73,6 +79,9 @@ func EncodeBatchMessages(topic string, partition int, msgs []Message) ([]byte, e
 
 		// key
 		keyBytes := []byte(m.Key)
+		if len(keyBytes) > 0xFFFF {
+			return nil, fmt.Errorf("key too long: %d bytes", len(keyBytes))
+		}
 		if err := write(uint16(len(keyBytes))); err != nil {
 			return nil, err
 		}
@@ -87,6 +96,9 @@ func EncodeBatchMessages(topic string, partition int, msgs []Message) ([]byte, e
 
 		// payload
 		payloadBytes := []byte(m.Payload)
+		if len(payloadBytes) > 0xFFFFFFFF {
+			return nil, fmt.Errorf("payload too large: %d bytes", len(payloadBytes))
+		}
 		if err := write(uint32(len(payloadBytes))); err != nil {
 			return nil, err
 		}

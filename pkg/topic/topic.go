@@ -266,8 +266,8 @@ func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
 			if err := appender.AppendMessageSync(string(serialized)); err != nil {
 				return fmt.Errorf("disk write failed for partition %d: %w", p.id, err)
 			}
-			p.NotifyNewMessage()
 		}
+		p.NotifyNewMessage()
 	} else {
 		return fmt.Errorf("disk handler does not support sync write")
 	}
@@ -355,6 +355,7 @@ func (t *Topic) NewMessageSignal(partition int) <-chan struct{} {
 	defer t.mu.RUnlock()
 
 	if partition < 0 || partition >= len(t.Partitions) {
+		util.Warn("NewMessageSignal called with invalid partition %d for topic '%s'", partition, t.Name)
 		return nil
 	}
 	return t.Partitions[partition].newMessageCh

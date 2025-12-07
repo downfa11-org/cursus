@@ -32,7 +32,7 @@ func TestMessageStruct(t *testing.T) {
 		t.Fatalf("Failed to unmarshal Message: %v", err)
 	}
 
-	if decoded.SeqNum != msg.SeqNum || decoded.Payload != msg.Payload {
+	if decoded != msg {
 		t.Errorf("Decoded Message mismatch: got %+v, want %+v", decoded, msg)
 	}
 }

@@ -28,7 +28,7 @@ func TestGenerateMessage(t *testing.T) {
 		if tt.size <= 0 && got != tt.want {
 			t.Errorf("GenerateMessage(%d, %d) = %q; want %q", tt.size, tt.seqNum, got, tt.want)
 		}
-		if len(got) != max(tt.size, len(got)) {
+		if tt.size > 0 && len(got) < tt.size {
 			t.Errorf("GenerateMessage(%d, %d) length = %d; want >= %d", tt.size, tt.seqNum, len(got), tt.size)
 		}
 	}
@@ -53,12 +53,4 @@ func TestPrintBenchmarkSummaryFixed(t *testing.T) {
 	if !strings.Contains(got, "Publish Message Throughput") {
 		t.Errorf("Output missing 'Publish Message Throughput': %s", got)
 	}
-}
-
-// helper
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

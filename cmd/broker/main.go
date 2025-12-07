@@ -42,7 +42,7 @@ func main() {
 		for _, topicName := range gcfg.Topics {
 			t := tm.GetTopic(topicName)
 			if t == nil {
-				util.Error("⚠️ Topic %q is not exist: %v", topicName, err)
+				util.Error("⚠️ Topic %q does not exist; skipping static consumer group registration", topicName)
 			} else {
 				if _, err := tm.RegisterConsumerGroup(topicName, gcfg.Name, gcfg.ConsumerCount); err != nil {
 					util.Error("⚠️ Failed to register static consumer group %q on topic %q: %v", gcfg.Name, topicName, err)
