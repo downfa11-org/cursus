@@ -153,6 +153,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 					if _, err := cmdHandler.HandleConsumeCommand(conn, payload, ctx); err != nil {
 						writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
 					}
+					continue
 				}
 			}
 			if resp != "" {
@@ -211,7 +212,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 
 		acks, message := extractAcksAndMessage(payload)
 		msg := types.Message{Payload: message}
-		util.Info("Publishing message to: ID=%d, Key=%s, Payload=%s", msg.ID, msg.Key, strings.ReplaceAll(msg.Payload, "\n", " "))
+		util.Info("Publishing message: Key=%s, Payload=%s", msg.Key, strings.ReplaceAll(msg.Payload, "\n", " "))
 
 		switch acks {
 		case "0":
