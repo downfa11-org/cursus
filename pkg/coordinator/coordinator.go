@@ -26,7 +26,7 @@ type Coordinator struct {
 }
 
 type OffsetPublisher interface {
-	Publish(topic string, msg types.Message) error
+	Publish(topic string, msg *types.Message) error
 	CreateTopic(topic string, partitionCount int)
 }
 
@@ -310,7 +310,7 @@ func (c *Coordinator) CommitOffset(group, topic string, partition int, offset ui
 		return fmt.Errorf("failed to marshal offset commit: %w", err)
 	}
 
-	if err := c.offsetPublisher.Publish(c.offsetTopic, types.Message{
+	if err := c.offsetPublisher.Publish(c.offsetTopic, &types.Message{
 		Payload: string(payload),
 		Key:     fmt.Sprintf("%s-%s-%d", group, topic, partition),
 	}); err != nil {
@@ -354,26 +354,30 @@ func (c *Coordinator) updateOffsetPartitionCount() {
 
 func (c *Coordinator) ValidateAndCommit(groupName, topic string, partition int, offset uint64, generation int, memberID string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	group := c.groups[groupName] // *GroupMetadata
 	if group == nil {
+		c.mu.Unlock()
 		return fmt.Errorf("group not found")
 	}
 
 	member := group.Members[memberID]
 	if member == nil {
+		c.mu.Unlock()
 		return fmt.Errorf("member not found")
 	}
 
 	if group.Generation != generation {
+		c.mu.Unlock()
 		return fmt.Errorf("generation mismatch")
 	}
 
 	if !contains(member.Assignments, partition) {
+		c.mu.Unlock()
 		return fmt.Errorf("not partition owner")
 	}
 
+	c.mu.Unlock()
 	return c.CommitOffset(groupName, topic, partition, offset)
 }
 

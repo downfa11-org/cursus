@@ -91,9 +91,12 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	ctx.ConsumerGroup = groupName
 
 	if genStr := args["gen"]; genStr != "" {
-		if generation, err := strconv.ParseInt(genStr, 10, 64); err == nil {
-			ctx.Generation = int(generation)
+		generation, err := strconv.ParseInt(genStr, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid gen parameter: %w", err)
 		}
+		ctx.Generation = int(generation)
+
 	}
 
 	memberID, ok := args["member"]
@@ -215,9 +218,12 @@ func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx 
 	ctx.ConsumerGroup = groupName
 
 	if genStr := args["gen"]; genStr != "" {
-		if generation, err := strconv.ParseInt(genStr, 10, 64); err == nil {
-			ctx.Generation = int(generation)
+		generation, err := strconv.ParseInt(genStr, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid gen parameter: %w", err)
 		}
+		ctx.Generation = int(generation)
+
 	}
 
 	if memberID := args["member"]; memberID != "" {
@@ -341,7 +347,10 @@ func (ch *CommandHandler) streamLoop(stream *stream.StreamConnection) error {
 				SeqEnd:     seqEnd,
 			}
 
-			ackBytes, _ := json.Marshal(ackResp)
+			ackBytes, err := json.Marshal(ackResp)
+			if err != nil {
+				return err
+			}
 			if err := util.WriteWithLength(stream.Conn(), ackBytes); err != nil {
 				return err
 			}
@@ -503,7 +512,7 @@ EXIT - exit`
 			break
 		}
 
-		msg := types.Message{
+		msg := &types.Message{
 			Payload:    message,
 			ProducerID: producerID,
 			SeqNum:     seqNum,
@@ -619,7 +628,7 @@ EXIT - exit`
 		ctx.MemberID = consumerID
 		ctx.Generation = ch.Coordinator.GetGeneration(groupName)
 
-		util.Debug("✅ Joined group '%s' member '%s' generation '%s' with partitions: %v", groupName, ctx.MemberID, ctx.Generation, assignments)
+		util.Debug("✅ Joined group '%s' member '%s' generation '%d' with partitions: %v", groupName, ctx.MemberID, ctx.Generation, assignments)
 		resp = fmt.Sprintf("OK generation=%d member=%s assignments=%v", ctx.Generation, ctx.MemberID, assignments)
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "SYNC_GROUP "):

@@ -76,6 +76,9 @@ func EncodeBatchMessages(topic string, partition int, msgs []types.Message) ([]b
 
 	// topic
 	topicBytes := []byte(topic)
+	if len(topicBytes) > 0xFFFF {
+		return nil, fmt.Errorf("topic too long: %d bytes", len(topicBytes))
+	}
 	if err := write(uint16(len(topicBytes))); err != nil {
 		return nil, err
 	}
@@ -118,6 +121,9 @@ func EncodeBatchMessages(topic string, partition int, msgs []types.Message) ([]b
 
 		// producerID
 		producerIDBytes := []byte(m.ProducerID)
+		if len(producerIDBytes) > 0xFFFF {
+			return nil, fmt.Errorf("producerID too long: %d bytes", len(producerIDBytes))
+		}
 		if err := write(uint16(len(producerIDBytes))); err != nil {
 			return nil, err
 		}
@@ -127,6 +133,9 @@ func EncodeBatchMessages(topic string, partition int, msgs []types.Message) ([]b
 
 		// key
 		keyBytes := []byte(m.Key)
+		if len(keyBytes) > 0xFFFF {
+			return nil, fmt.Errorf("key too long: %d bytes", len(keyBytes))
+		}
 		if err := write(uint16(len(keyBytes))); err != nil {
 			return nil, err
 		}
@@ -141,6 +150,9 @@ func EncodeBatchMessages(topic string, partition int, msgs []types.Message) ([]b
 
 		// payload
 		payloadBytes := []byte(m.Payload)
+		if len(payloadBytes) > 0xFFFFFFFF {
+			return nil, fmt.Errorf("payload too large: %d bytes", len(payloadBytes))
+		}
 		if err := write(uint32(len(payloadBytes))); err != nil {
 			return nil, err
 		}
@@ -334,27 +346,62 @@ func DeserializeMessage(data []byte) (types.Message, error) {
 	var msg types.Message
 	offset := 0
 
+	if len(data) < 2 {
+		return msg, fmt.Errorf("data too short for producer length")
+	}
+
 	// ProducerID
 	producerLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
 	offset += 2
+
+	if offset+producerLen > len(data) {
+		return msg, fmt.Errorf("data too short for producer ID")
+	}
+
 	msg.ProducerID = string(data[offset : offset+producerLen])
 	offset += producerLen
+
+	if offset+8 > len(data) {
+		return msg, fmt.Errorf("data too short for sequence number")
+	}
 
 	// SeqNum (8 bytes)
 	msg.SeqNum = binary.BigEndian.Uint64(data[offset : offset+8])
 	offset += 8
 
+	if offset+4 > len(data) {
+		return msg, fmt.Errorf("data too short for payload length")
+	}
+
 	// Payload
 	payloadLen := int(binary.BigEndian.Uint32(data[offset : offset+4]))
 	offset += 4
+
+	if offset+payloadLen > len(data) {
+		return msg, fmt.Errorf("data too short for payload")
+	}
+
 	msg.Payload = string(data[offset : offset+payloadLen])
 	offset += payloadLen
+
+	if offset+2 > len(data) {
+		return msg, fmt.Errorf("data too short for key length")
+	}
 
 	// Key
 	keyLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
 	offset += 2
+
+	if offset+keyLen > len(data) {
+		return msg, fmt.Errorf("data too short for key")
+	}
+
 	msg.Key = string(data[offset : offset+keyLen])
 	offset += keyLen
+
+	if offset+8 > len(data) {
+		return msg, fmt.Errorf("data too short for epoch")
+	}
 
 	// Epoch (8 bytes)
 	msg.Epoch = int64(binary.BigEndian.Uint64(data[offset : offset+8]))

@@ -226,7 +226,7 @@ func (cfg *Config) Normalize() {
 		cfg.ChannelBufferSize = 1024
 	}
 	if cfg.DiskWriteTimeoutMS <= 0 {
-		cfg.DiskWriteTimeoutMS = 5
+		cfg.DiskWriteTimeoutMS = 10
 	}
 	if cfg.SegmentSize < 1024 {
 		cfg.SegmentSize = 1 << 20

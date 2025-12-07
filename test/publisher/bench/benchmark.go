@@ -65,5 +65,5 @@ func PrintBenchmarkSummaryFixedTo(w io.Writer, partitionStats []PartitionStat, s
 }
 
 func PrintBenchmarkSummaryFixed(partitionStats []PartitionStat, sentMessages int, totalDuration time.Duration) {
-	PrintBenchmarkSummaryFixedTo(io.Writer(os.Stdout), partitionStats, sentMessages, totalDuration)
+	PrintBenchmarkSummaryFixedTo(os.Stdout, partitionStats, sentMessages, totalDuration)
 }

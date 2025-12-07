@@ -90,12 +90,12 @@ func (tm *TopicManager) GetTopic(name string) *Topic {
 }
 
 // Async (acks=0)
-func (tm *TopicManager) Publish(topicName string, msg types.Message) error {
+func (tm *TopicManager) Publish(topicName string, msg *types.Message) error {
 	return tm.publishInternal(topicName, msg, false)
 }
 
 // Sync (acks=1)
-func (tm *TopicManager) PublishWithAck(topicName string, msg types.Message) error {
+func (tm *TopicManager) PublishWithAck(topicName string, msg *types.Message) error {
 	return tm.publishInternal(topicName, msg, true)
 }
 
@@ -151,7 +151,7 @@ func (tm *TopicManager) PublishBatchSync(topicName string, messages []types.Mess
 	return nil
 }
 
-func (tm *TopicManager) publishInternal(topicName string, msg types.Message, requireAck bool) error {
+func (tm *TopicManager) publishInternal(topicName string, msg *types.Message, requireAck bool) error {
 	util.Debug("Starting publish. Topic: %s, RequireAck: %v, ProducerID: %s, SeqNum: %d",
 		topicName, requireAck, msg.ProducerID, msg.SeqNum)
 
@@ -178,13 +178,13 @@ func (tm *TopicManager) publishInternal(topicName string, msg types.Message, req
 	}
 
 	if requireAck {
-		if err := t.PublishSync(msg); err != nil {
+		if err := t.PublishSync(*msg); err != nil {
 			// Allow safe retry with same ProducerID+SeqNum
 			tm.dedupMap.Delete(dedupKey)
 			return fmt.Errorf("sync publish failed: %w", err)
 		}
 	} else {
-		t.Publish(msg)
+		t.Publish(*msg)
 	}
 
 	elapsed := time.Since(start).Seconds()

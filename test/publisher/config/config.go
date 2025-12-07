@@ -43,7 +43,7 @@ type PublisherConfig struct {
 	MessageSize     int    `yaml:"benchmark_message_size" json:"benchmark_message_size"`
 	NumMessages     int    `yaml:"num_messages" json:"num_messages"`
 
-	FlushTimeoutMS int `yaml:"flush_timeout_ms" json:"flus_timeout_ms"`
+	FlushTimeoutMS int `yaml:"flush_timeout_ms" json:"flush_timeout_ms"`
 }
 
 func LoadPublisherConfig() (*PublisherConfig, error) {
@@ -86,9 +86,9 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 		if err != nil {
 			if os.IsNotExist(err) {
 				log.Printf("Config file %s not found, using flag defaults", *configPath)
-				return cfg, nil
+			} else {
+				return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
 			}
-			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
 		} else {
 			if strings.HasSuffix(*configPath, ".json") {
 				if err := json.Unmarshal(data, cfg); err != nil {

@@ -198,7 +198,12 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 				SeqEnd:        seqEnd,
 			}
 
-			ackBytes, _ := json.Marshal(ackResp)
+			ackBytes, err := json.Marshal(ackResp)
+			if err != nil {
+				util.Error("Failed to marshal AckResponse: %v", err)
+				writeResponse(conn, "ERROR: internal marshal error")
+				continue
+			}
 			writeResponse(conn, string(ackBytes))
 			continue
 		}
@@ -211,8 +216,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 		}
 
 		acks, message := extractAcksAndMessage(payload)
-		msg := types.Message{Payload: message}
-		util.Info("Publishing message: Key=%s, Payload=%s", msg.Key, strings.ReplaceAll(msg.Payload, "\n", " "))
+		msg := &types.Message{Payload: message}
 
 		switch acks {
 		case "0":
@@ -226,6 +230,7 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 				writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
 				continue
 			}
+			writeResponse(conn, "OK")
 		case "-1":
 			writeResponse(conn, "ERROR: acks=-1(all) not implemented")
 		default:

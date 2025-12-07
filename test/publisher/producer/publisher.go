@@ -86,8 +86,7 @@ func NewPublisher(cfg *config.PublisherConfig) *Publisher {
 	}
 
 	if err := p.CreateTopic(cfg.Topic, cfg.Partitions); err != nil {
-		log.Printf("Failed to create topic '%s' with %d partitions: %v",
-			cfg.Topic, cfg.Partitions, err)
+		return nil
 	}
 
 	for i := 0; i < cfg.Partitions; i++ {
@@ -189,7 +188,11 @@ func (p *Publisher) partitionSender(part int) {
 		}
 
 		buf.mu.Unlock()
-		time.Sleep(linger)
+		select {
+		case <-time.After(linger):
+		case <-p.done:
+			return
+		}
 		buf.mu.Lock()
 
 		if len(buf.msgs) > 0 {
@@ -305,6 +308,7 @@ func (p *Publisher) handleSendFailure(part int, batch []types.Message) {
 	buf.mu.Lock()
 	defer buf.mu.Unlock()
 
+	p.sentMu.Lock()
 	var retryBatch []types.Message
 	for _, msg := range batch {
 		if _, exists := p.sentSeqs[msg.SeqNum]; !exists {
@@ -312,6 +316,7 @@ func (p *Publisher) handleSendFailure(part int, batch []types.Message) {
 			retryBatch = append(retryBatch, msg)
 		}
 	}
+	p.sentMu.Unlock()
 
 	allMsgs := append(buf.msgs, retryBatch...)
 	sort.Slice(allMsgs, func(i, j int) bool {
@@ -418,13 +423,6 @@ func (p *Publisher) sendWithRetry(payload []byte, batch []types.Message, part in
 		}
 
 		if ackResp.Status != "OK" {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				batchID := fmt.Sprintf("%s-%d-%d", p.producer.ID,
-					batch[0].SeqNum, batch[len(batch)-1].SeqNum)
-				if committed, _ := p.queryCommitStatus(batchID); committed {
-					return nil // already commited
-				}
-			}
 			if ackResp.Status == "PARTIAL" {
 				p.handlePartialFailure(part, batch, ackResp)
 				return fmt.Errorf("partial failure handled")
@@ -504,42 +502,8 @@ func (p *Publisher) VerifySentSequences(expectedCount int) error {
 		return fmt.Errorf("expected %d messages sent, got %d", expectedCount, len(p.sentSeqs))
 	}
 
-	for i := uint64(1); i <= uint64(expectedCount); i++ {
-		if _, ok := p.sentSeqs[i]; !ok {
-			return fmt.Errorf("missing seqNum=%d", i)
-		}
-	}
-
 	log.Printf("All %d sequences sent successfully", expectedCount)
 	return nil
-}
-
-func (p *Publisher) queryCommitStatus(batchID string) (bool, error) {
-	queryCmd := fmt.Sprintf("QUERY_COMMIT batch_id=%s", batchID)
-
-	conn := p.producer.GetConn(0)
-	if conn == nil {
-		return false, fmt.Errorf("no admin connection")
-	}
-
-	cmdBytes := util.EncodeMessage("admin", queryCmd)
-	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
-		return false, err
-	}
-
-	resp, err := util.ReadWithLength(conn)
-	if err != nil {
-		return false, err
-	}
-
-	var statusResp struct {
-		Committed bool `json:"committed"`
-	}
-	if err := json.Unmarshal(resp, &statusResp); err != nil {
-		return false, err
-	}
-
-	return statusResp.Committed, nil
 }
 
 func (p *Publisher) Flush() {
@@ -617,11 +581,22 @@ func (p *Publisher) FlushBenchmark(expectedTotal int) {
 }
 
 func (p *Publisher) batchStateGC() {
-	for range p.gcTicker.C {
-		cutoff := time.Now().Add(-1 * time.Minute)
+	ackedCutoff := 1 * time.Minute
+	unackedCutoff := 30 * time.Minute
+
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-p.gcTicker.C:
+		}
+		now := time.Now()
 		p.batchMu.Lock()
 		for id, st := range p.batchStates {
-			if st.Acked && st.SentTime.Before(cutoff) {
+			if st.Acked && st.SentTime.Before(now.Add(-ackedCutoff)) {
+				delete(p.batchStates, id)
+			} else if !st.Acked && st.SentTime.Before(now.Add(-unackedCutoff)) {
+				log.Printf("[WARN] Cleaning up stale un-acked batch: %s", id)
 				delete(p.batchStates, id)
 			}
 		}

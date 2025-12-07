@@ -30,8 +30,8 @@ type ProducerClient struct {
 }
 
 func (pc *ProducerClient) ReserveSeqRange(partition int, count int) (uint64, uint64) {
-	start := pc.globalSeqNum.Add(uint64(count)) - uint64(count-1)
-	end := start + uint64(count-1)
+	end := pc.globalSeqNum.Add(uint64(count))
+	start := end - uint64(count) + 1
 	return start, end
 }
 
@@ -45,7 +45,9 @@ func NewProducerClient(partitions int) *ProducerClient {
 		Epoch:   time.Now().UnixNano(),
 		seqNums: make([]atomic.Uint64, partitions),
 	}
-	pc.loadState()
+	if err := pc.loadState(); err != nil {
+		fmt.Printf("Warning: failed to load producer state: %v\n", err)
+	}
 	return pc
 }
 
@@ -88,7 +90,11 @@ func (pc *ProducerClient) SaveState() error {
 		GlobalSeqNum: pc.globalSeqNum.Load(),
 	}
 
-	data, _ := json.MarshalIndent(state, "", "  ")
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal state: %w", err)
+	}
+
 	tmpFile := "producer_state.json.tmp"
 	f, err := os.Create(tmpFile)
 	if err != nil {
@@ -112,7 +118,7 @@ func (pc *ProducerClient) SaveState() error {
 }
 
 func (pc *ProducerClient) NextSeqNum(partition int) uint64 {
-	return pc.globalSeqNum.Add(1)
+	return pc.seqNums[partition].Add(1)
 }
 
 func (pc *ProducerClient) ConnectPartition(idx int, addr string, useTLS bool, certPath, keyPath string) error {
@@ -141,6 +147,10 @@ func (pc *ProducerClient) connectPartitionLocked(idx int, addr string, useTLS bo
 		if err != nil {
 			return fmt.Errorf("TCP dial to %s failed: %w", addr, err)
 		}
+	}
+
+	if idx < 0 {
+		return fmt.Errorf("invalid partition index: %d", idx)
 	}
 
 	if len(pc.conns) <= idx {
