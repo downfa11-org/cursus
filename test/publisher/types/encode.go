@@ -52,6 +52,12 @@ func EncodeBatchMessages(topic string, partition int, msgs []Message) ([]byte, e
 	}
 
 	for _, m := range msgs {
+		// offset
+		if err := write(m.Offset); err != nil {
+			return nil, err
+		}
+
+		// seqNum
 		if err := write(m.SeqNum); err != nil {
 			return nil, err
 		}
@@ -62,6 +68,15 @@ func EncodeBatchMessages(topic string, partition int, msgs []Message) ([]byte, e
 			return nil, err
 		}
 		if _, err := buf.Write(producerIDBytes); err != nil {
+			return nil, err
+		}
+
+		// key
+		keyBytes := []byte(m.Key)
+		if err := write(uint16(len(keyBytes))); err != nil {
+			return nil, err
+		}
+		if _, err := buf.Write(keyBytes); err != nil {
 			return nil, err
 		}
 

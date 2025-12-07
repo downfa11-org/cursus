@@ -1,13 +1,13 @@
 package types
 
 type Message struct {
-	ID         uint64
+	Offset     uint64
 	ProducerID string
 	SeqNum     uint64
 	Payload    string
-	Offset     uint64
-	Key        string
+	Key        string // optional: partition routing key
 	Epoch      int64
+
 	RetryCount int
 	Retry      bool
 }

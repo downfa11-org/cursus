@@ -9,18 +9,16 @@ import (
 
 func TestMessageStruct(t *testing.T) {
 	msg := types.Message{
-		ID:         123,
 		ProducerID: "producer-1",
 		SeqNum:     42,
 		Payload:    "hello",
-		Offset:     100,
 		Key:        "key1",
 		Epoch:      987654321,
 		RetryCount: 2,
 		Retry:      true,
 	}
 
-	if msg.ID != 123 || msg.SeqNum != 42 || msg.Payload != "hello" {
+	if msg.SeqNum != 42 || msg.Payload != "hello" {
 		t.Errorf("Message struct fields not set correctly")
 	}
 
