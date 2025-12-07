@@ -210,7 +210,11 @@ func (p *Partition) Enqueue(msg types.Message) {
 
 	if appender, ok := p.dh.(DiskAppender); ok {
 		util.Debug("Calling AppendMessage for disk persistence [partition-%d]", p.id)
-		serialized := util.SerializeMessage(msg)
+		serialized, err := util.SerializeMessage(msg)
+		if err != nil {
+			util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
+			return
+		}
 		appender.AppendMessage(string(serialized))
 		p.NotifyNewMessage()
 	} else {
@@ -228,7 +232,11 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 	}
 
 	if appender, ok := p.dh.(interface{ AppendMessageSync(string) error }); ok {
-		serialized := util.SerializeMessage(msg)
+		serialized, err := util.SerializeMessage(msg)
+		if err != nil {
+			util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
+			return err
+		}
 		if err := appender.AppendMessageSync(string(serialized)); err != nil {
 			return fmt.Errorf("disk write failed: %w", err)
 		}
@@ -250,7 +258,11 @@ func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
 
 	if appender, ok := p.dh.(interface{ AppendMessageSync(string) error }); ok {
 		for _, msg := range msgs {
-			serialized := util.SerializeMessage(msg)
+			serialized, err := util.SerializeMessage(msg)
+			if err != nil {
+				util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
+				return err
+			}
 			if err := appender.AppendMessageSync(string(serialized)); err != nil {
 				return fmt.Errorf("disk write failed for partition %d: %w", p.id, err)
 			}
