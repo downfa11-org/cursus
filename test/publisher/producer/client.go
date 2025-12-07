@@ -34,8 +34,8 @@ func (pc *ProducerClient) ReserveSeqRange(partition int, count int) (uint64, uin
 		panic(fmt.Sprintf("invalid count for ReserveSeqRange: %d", count))
 	}
 
-	end := pc.globalSeqNum.Add(uint64(count))
-	start := end - uint64(count) + 1
+	start := pc.globalSeqNum.Add(uint64(count)) - uint64(count-1)
+	end := start + uint64(count-1)
 	return start, end
 }
 
@@ -128,7 +128,7 @@ func (pc *ProducerClient) NextSeqNum(partition int) uint64 {
 	if partition < 0 || partition >= len(pc.seqNums) {
 		panic(fmt.Sprintf("invalid partition index in NextSeqNum: %d", partition))
 	}
-	return pc.seqNums[partition].Add(1)
+	return pc.globalSeqNum.Add(1)
 }
 
 func (pc *ProducerClient) ConnectPartition(idx int, addr string, useTLS bool, certPath, keyPath string) error {

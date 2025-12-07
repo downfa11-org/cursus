@@ -194,11 +194,7 @@ func (p *Publisher) partitionSender(part int) {
 		}
 
 		buf.mu.Unlock()
-		select {
-		case <-time.After(linger):
-		case <-p.done:
-			return
-		}
+		time.Sleep(linger)
 		buf.mu.Lock()
 
 		if len(buf.msgs) > 0 {
@@ -582,22 +578,11 @@ func (p *Publisher) FlushBenchmark(expectedTotal int) {
 }
 
 func (p *Publisher) batchStateGC() {
-	ackedCutoff := 1 * time.Minute
-	unackedCutoff := 30 * time.Minute
-
-	for {
-		select {
-		case <-p.done:
-			return
-		case <-p.gcTicker.C:
-		}
-		now := time.Now()
+	for range p.gcTicker.C {
+		cutoff := time.Now().Add(-1 * time.Minute)
 		p.batchMu.Lock()
 		for id, st := range p.batchStates {
-			if st.Acked && st.SentTime.Before(now.Add(-ackedCutoff)) {
-				delete(p.batchStates, id)
-			} else if !st.Acked && st.SentTime.Before(now.Add(-unackedCutoff)) {
-				log.Printf("[WARN] Cleaning up stale un-acked batch: %s", id)
+			if st.Acked && st.SentTime.Before(cutoff) {
 				delete(p.batchStates, id)
 			}
 		}

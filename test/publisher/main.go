@@ -28,7 +28,10 @@ func main() {
 		log.Printf("Configuration:\n%s", string(data))
 	}
 
-	pub := producer.NewPublisher(cfg)
+	pub, err := producer.NewPublisher(cfg)
+	if err != nil {
+		log.Printf("Failed to create publisher: %v", err)
+	}
 	defer pub.Close()
 
 	total := cfg.NumMessages
