@@ -1,10 +1,11 @@
 package controller
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"net"
 	"strconv"
 	"strings"
@@ -594,7 +595,8 @@ EXIT - exit`
 			break
 		}
 
-		randSuffix := fmt.Sprintf("%04d", rand.Intn(10000))
+		n, _ := rand.Int(rand.Reader, big.NewInt(10000))
+		randSuffix := fmt.Sprintf("%04d", n.Int64())
 		consumerID = fmt.Sprintf("%s-%s", consumerID, randSuffix)
 
 		assignments, err := ch.Coordinator.AddConsumer(groupName, consumerID)
@@ -909,7 +911,7 @@ func (ch *CommandHandler) resolveOffset(
 
 func (ch *CommandHandler) ValidateOwnership(groupName, memberID string, generation int, partition int) bool {
 	if ch.Coordinator == nil {
-		util.Debug("failed to to validate ownership: Coordinator is nil.")
+		util.Debug("failed to validate ownership: Coordinator is nil.")
 		return false
 	}
 

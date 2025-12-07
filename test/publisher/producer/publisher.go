@@ -70,7 +70,7 @@ type Publisher struct {
 	bmTotalCount map[int]int
 }
 
-func NewPublisher(cfg *config.PublisherConfig) *Publisher {
+func NewPublisher(cfg *config.PublisherConfig) (*Publisher, error) {
 	p := &Publisher{
 		config:       cfg,
 		producer:     NewProducerClient(cfg.Partitions),
@@ -86,20 +86,26 @@ func NewPublisher(cfg *config.PublisherConfig) *Publisher {
 	}
 
 	if err := p.CreateTopic(cfg.Topic, cfg.Partitions); err != nil {
-		return nil
+		return nil, fmt.Errorf("failed to create topic '%s': %w", cfg.Topic, err)
 	}
 
+	connectedCount := 0
 	for i := 0; i < cfg.Partitions; i++ {
 		p.buffers[i] = newPartitionBuffer()
 		if err := p.producer.ConnectPartition(i, cfg.BrokerAddr, cfg.UseTLS, cfg.TLSCertPath, cfg.TLSKeyPath); err != nil {
 			log.Printf("Failed to connect partition %d: %v", i, err)
+		} else {
+			connectedCount++
 		}
 		p.sendersWG.Add(1)
 		go p.partitionSender(i)
 	}
+	if connectedCount == 0 {
+		return nil, fmt.Errorf("failed to connect to any partition")
+	}
 
 	go p.batchStateGC()
-	return p
+	return p, nil
 }
 
 func (p *Publisher) nextPartition() int {

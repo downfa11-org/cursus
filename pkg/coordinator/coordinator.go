@@ -382,6 +382,9 @@ func (c *Coordinator) ValidateAndCommit(groupName, topic string, partition int, 
 }
 
 func (c *Coordinator) ValidateOwnershipAtomic(groupName, memberID string, generation int, partition int) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	group := c.GetGroup(groupName)
 	if group == nil {
 		util.Debug("failed to validate ownership for partition %d: Group '%s' not found.", partition, groupName)

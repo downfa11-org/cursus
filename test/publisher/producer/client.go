@@ -163,10 +163,6 @@ func (pc *ProducerClient) connectPartitionLocked(idx int, addr string, useTLS bo
 		}
 	}
 
-	if idx < 0 {
-		return fmt.Errorf("invalid partition index: %d", idx)
-	}
-
 	if len(pc.conns) <= idx {
 		tmp := make([]net.Conn, idx+1)
 		copy(tmp, pc.conns)

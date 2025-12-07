@@ -80,6 +80,7 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 	flag.IntVar(&cfg.MessageSize, "benchmark_message_size", 100, "Message size in bytes (benchmark mode only)")
 
 	configPath := flag.String("config", "/config.yaml", "Path to YAML/JSON config file")
+	flag.Parse()
 
 	if *configPath != "" {
 		data, err := os.ReadFile(*configPath)
@@ -101,8 +102,6 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 			}
 		}
 	}
-
-	flag.Parse()
 
 	if cfg.MaxRetries < 0 {
 		cfg.MaxRetries = 0
