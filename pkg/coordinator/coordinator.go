@@ -415,7 +415,6 @@ func (c *Coordinator) ValidateOwnershipAtomic(groupName, memberID string, genera
 		return false
 	}
 
-	util.Debug("success to validate ownership for partition %d (Member: %s, Gen: %d).", partition, memberID, generation)
 	return true
 }
 

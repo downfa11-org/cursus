@@ -53,7 +53,7 @@ func (ch *CommandHandler) logCommandResult(cmd, response string) {
 		status = "FAILURE"
 	}
 	cleanResponse := strings.ReplaceAll(response, "\n", " ")
-	util.Debug("%s - [%s] to Response [%s]", status, cmd, cleanResponse)
+	util.Debug("status: '%s', command: '%s' to Response '%s'", status, cmd, cleanResponse)
 }
 
 // HandleConsumeCommand is responsible for parsing the CONSUME command and streaming messages.
@@ -156,8 +156,6 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		util.Error("Failed to read messages: %v", err)
 		return streamedCount, err
 	}
-
-	util.Debug("disk read message: %v", messages)
 
 	if len(messages) == 0 && waitTimeout > 0 {
 		startTime := time.Now()
