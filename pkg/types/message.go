@@ -1,21 +1,23 @@
 package types
 
+import "fmt"
+
 // Message represents a single message
 type Message struct {
-	ID         uint64
+	Offset     uint64
 	ProducerID string
 	SeqNum     uint64
 	Payload    string
-	Offset     uint64
 	Key        string // optional: partition routing key
 	Epoch      int64
+
 	RetryCount int
 	Retry      bool
-	Value      []byte
 }
 
 func (m Message) String() string {
-	return m.Payload
+	return fmt.Sprintf("Message { ID: %s-%d, Payload:%s, Offset:%d, Key:%s, Epoch:%d, RetryCount:%d }",
+		m.ProducerID, m.SeqNum, m.Payload, m.Offset, m.Key, m.Epoch, m.RetryCount)
 }
 
 type Batch struct {
