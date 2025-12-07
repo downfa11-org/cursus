@@ -1,0 +1,13 @@
+{{- if .Values.monitoring.enabled }}  
+apiVersion: monitoring.coreos.com/v1  
+kind: ServiceMonitor  
+metadata:  
+  name: {{ include "go-broker.fullname" . }}  
+spec:  
+  selector:  
+    matchLabels:  
+      app.kubernetes.io/name: {{ include "go-broker.name" . }}  
+  endpoints:  
+    - port: metrics  
+      interval: 30s  
+{{- end }}

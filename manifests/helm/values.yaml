@@ -1,0 +1,59 @@
+replicaCount: 1  
+  
+image:  
+  repository: go-broker  
+  pullPolicy: IfNotPresent  
+  tag: "latest"  
+  
+service:  
+  type: ClusterIP  
+  port: 9000  
+  healthPort: 9080  
+  metricsPort: 9100  
+  
+persistence:  
+  enabled: true  
+  logDir:  
+    path: /root/broker-logs  
+    size: 10Gi  
+  config:  
+    path: /root/config.yaml  
+  
+tls:  
+  enabled: false  
+  certPath: /root/tls/cert.pem  
+  keyPath: /root/tls/key.pem  
+  secretName: ""  
+  
+performance:  
+  diskFlushBatchSize: 500  
+  lingerMS: 100  
+  channelBufferSize: 1024  
+  partitionChannelBufSize: 10000  
+  consumerChannelBufSize: 1000  
+  segmentSize: 1048576  
+  
+logLevel: "info"  
+  
+monitoring:  
+  enabled: false  
+  
+resources:  
+  limits:  
+    cpu: 500m  
+    memory: 512Mi  
+  requests:  
+    cpu: 250m  
+    memory: 256Mi  
+  
+autoscaling:  
+  enabled: false  
+  
+serviceAccount:  
+  create: true  
+  name: ""  
+  
+securityContext:  
+  runAsNonRoot: false  
+  runAsUser: 0  
+  fsGroup: 0
