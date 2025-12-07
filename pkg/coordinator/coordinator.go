@@ -26,7 +26,7 @@ type Coordinator struct {
 }
 
 type OffsetPublisher interface {
-	Publish(topic string, msg types.Message) error
+	Publish(topic string, msg *types.Message) error
 	CreateTopic(topic string, partitionCount int)
 }
 
@@ -310,7 +310,7 @@ func (c *Coordinator) CommitOffset(group, topic string, partition int, offset ui
 		return fmt.Errorf("failed to marshal offset commit: %w", err)
 	}
 
-	if err := c.offsetPublisher.Publish(c.offsetTopic, types.Message{
+	if err := c.offsetPublisher.Publish(c.offsetTopic, &types.Message{
 		Payload: string(payload),
 		Key:     fmt.Sprintf("%s-%s-%d", group, topic, partition),
 	}); err != nil {
@@ -350,4 +350,94 @@ func (c *Coordinator) updateOffsetPartitionCount() {
 		c.offsetPublisher.CreateTopic(c.offsetTopic, newCount)
 		util.Info("Updated offset topic partitions to %d for %d groups", newCount, groupCount)
 	}
+}
+
+func (c *Coordinator) ValidateAndCommit(groupName, topic string, partition int, offset uint64, generation int, memberID string) error {
+	c.mu.Lock()
+
+	group := c.groups[groupName] // *GroupMetadata
+	if group == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("group not found")
+	}
+
+	member := group.Members[memberID]
+	if member == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("member not found")
+	}
+
+	if group.Generation != generation {
+		c.mu.Unlock()
+		return fmt.Errorf("generation mismatch")
+	}
+
+	if !contains(member.Assignments, partition) {
+		c.mu.Unlock()
+		return fmt.Errorf("not partition owner")
+	}
+
+	c.mu.Unlock()
+	return c.CommitOffset(groupName, topic, partition, offset)
+}
+
+func (c *Coordinator) ValidateOwnershipAtomic(groupName, memberID string, generation int, partition int) bool {
+	group := c.GetGroup(groupName)
+	if group == nil {
+		util.Debug("failed to validate ownership for partition %d: Group '%s' not found.", partition, groupName)
+		return false
+	}
+
+	member := group.Members[memberID]
+	if member == nil {
+		util.Debug("failed to validate ownership for partition %d: Member '%s' not found in group '%s'.", partition, memberID, groupName)
+		return false
+	}
+
+	if group.Generation != generation {
+		util.Debug("failed to validate ownership  for partition %d: Generation mismatch. Group Gen: %d, Request Gen: %d.", partition, group.Generation, generation)
+		return false
+	}
+
+	isAssigned := false
+	for _, assigned := range member.Assignments {
+		if assigned == partition {
+			isAssigned = true
+			break
+		}
+	}
+
+	if !isAssigned {
+		util.Debug("failed to validate ownership for partition %d: Partition not assigned to member '%s'. Assignments: %v", partition, memberID, member.Assignments)
+		return false
+	}
+
+	util.Debug("success to validate ownership for partition %d (Member: %s, Gen: %d).", partition, memberID, generation)
+	return true
+}
+
+func (c *Coordinator) GetGroup(groupName string) *GroupMetadata {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.groups[groupName]
+}
+
+func (c *Coordinator) GetGeneration(groupName string) int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if group := c.groups[groupName]; group != nil {
+		return group.Generation
+	}
+	return 0
+}
+
+func contains(slice []int, item int) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }

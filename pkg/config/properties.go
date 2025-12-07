@@ -42,7 +42,6 @@ type Config struct {
 	ConsumerHeartbeatCheckMS int `yaml:"consumer_heartbeat_check_ms" json:"consumer.heartbeat.check.ms"`
 
 	CleanupInterval      int                   `yaml:"cleanup_interval" json:"cleanup.interval"`
-	AutoCreateTopics     bool                  `yaml:"auto_create_topics" json:"auto.create.topics"`
 	StaticConsumerGroups []ConsumerGroupConfig `yaml:"static_consumer_groups" json:"static_consumer_groups"`
 
 	MaxStreamConnections    int           `yaml:"max_stream_connections" json:"max.stream.connections"`
@@ -68,7 +67,7 @@ func defaultConfig() *Config {
 		DiskFlushBatchSize:       50,
 		LingerMS:                 50,
 		ChannelBufferSize:        1024,
-		DiskWriteTimeoutMS:       5,
+		DiskWriteTimeoutMS:       10,
 		SegmentSize:              1 << 20,
 		SegmentRollTimeMS:        0,
 		PartitionChannelBufSize:  10000,
@@ -76,7 +75,6 @@ func defaultConfig() *Config {
 		ConsumerSessionTimeoutMS: 30000,
 		ConsumerHeartbeatCheckMS: 5000,
 		CleanupInterval:          300,
-		AutoCreateTopics:         true,
 		MaxStreamConnections:     1000,
 		StreamTimeout:            30 * time.Minute,
 		StreamHeartbeatInterval:  30 * time.Second,
@@ -97,7 +95,6 @@ func LoadConfig() (*Config, error) {
 	logLevelStr := flag.String("log-level", "info", "Log level")
 
 	flag.IntVar(&cfg.CleanupInterval, "cleanup-interval", cfg.CleanupInterval, "Cleanup seconds")
-	flag.BoolVar(&cfg.AutoCreateTopics, "auto-create-topics", cfg.AutoCreateTopics, "Auto-create topics")
 
 	flag.IntVar(&cfg.DiskFlushBatchSize, "disk-flush-batch", cfg.DiskFlushBatchSize, "Disk flush batch")
 	flag.IntVar(&cfg.LingerMS, "linger-ms", cfg.LingerMS, "Linger ms")
@@ -229,7 +226,7 @@ func (cfg *Config) Normalize() {
 		cfg.ChannelBufferSize = 1024
 	}
 	if cfg.DiskWriteTimeoutMS <= 0 {
-		cfg.DiskWriteTimeoutMS = 5
+		cfg.DiskWriteTimeoutMS = 10
 	}
 	if cfg.SegmentSize < 1024 {
 		cfg.SegmentSize = 1 << 20

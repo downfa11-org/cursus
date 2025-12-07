@@ -33,6 +33,7 @@ type Partition struct {
 	dh            interface{}
 	closed        bool
 	streamManager *stream.StreamManager
+	newMessageCh  chan struct{}
 }
 
 type DiskAppender interface {
@@ -66,6 +67,7 @@ func NewPartition(id int, topic string, dh interface{}, sm *stream.StreamManager
 		topic:         topic,
 		dh:            dh,
 		streamManager: sm,
+		newMessageCh:  make(chan struct{}, 1),
 	}
 
 	return p
@@ -208,7 +210,13 @@ func (p *Partition) Enqueue(msg types.Message) {
 
 	if appender, ok := p.dh.(DiskAppender); ok {
 		util.Debug("Calling AppendMessage for disk persistence [partition-%d]", p.id)
-		appender.AppendMessage(msg.Payload)
+		serialized, err := util.SerializeMessage(msg)
+		if err != nil {
+			util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
+			return
+		}
+		appender.AppendMessage(string(serialized))
+		p.NotifyNewMessage()
 	} else {
 		util.Warn("⚠️ DiskHandler does not implement AppendMessage [partition-%d]\n", p.id)
 	}
@@ -224,9 +232,15 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 	}
 
 	if appender, ok := p.dh.(interface{ AppendMessageSync(string) error }); ok {
-		if err := appender.AppendMessageSync(msg.Payload); err != nil {
+		serialized, err := util.SerializeMessage(msg)
+		if err != nil {
+			util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
+			return err
+		}
+		if err := appender.AppendMessageSync(string(serialized)); err != nil {
 			return fmt.Errorf("disk write failed: %w", err)
 		}
+		p.NotifyNewMessage()
 	} else {
 		return fmt.Errorf("disk handler does not support sync write")
 	}
@@ -244,10 +258,16 @@ func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
 
 	if appender, ok := p.dh.(interface{ AppendMessageSync(string) error }); ok {
 		for _, msg := range msgs {
-			if err := appender.AppendMessageSync(msg.Payload); err != nil {
+			serialized, err := util.SerializeMessage(msg)
+			if err != nil {
+				util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
+				return err
+			}
+			if err := appender.AppendMessageSync(string(serialized)); err != nil {
 				return fmt.Errorf("disk write failed for partition %d: %w", p.id, err)
 			}
 		}
+		p.NotifyNewMessage()
 	} else {
 		return fmt.Errorf("disk handler does not support sync write")
 	}
@@ -277,6 +297,13 @@ func (p *Partition) broadcastToStreams(msg types.Message) {
 			stream.IncrementOffset()
 			stream.SetLastActive(time.Now())
 		}
+	}
+}
+
+func (p *Partition) NotifyNewMessage() {
+	select {
+	case p.newMessageCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -321,6 +348,17 @@ func (t *Topic) CommitOffset(groupName string, partition int, offset uint64) err
 	}
 	group.CommittedOffsets[partition] = offset
 	return nil
+}
+
+func (t *Topic) NewMessageSignal(partition int) <-chan struct{} {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if partition < 0 || partition >= len(t.Partitions) {
+		util.Warn("NewMessageSignal called with invalid partition %d for topic '%s'", partition, t.Name)
+		return nil
+	}
+	return t.Partitions[partition].newMessageCh
 }
 
 // Close shuts down the partition.

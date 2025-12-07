@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strconv"
 
 	"github.com/downfa11-org/go-broker/pkg/types"
 )
@@ -64,7 +63,7 @@ func ReadWithLength(conn net.Conn) ([]byte, error) {
 	return buf, nil
 }
 
-func EncodeBatchMessages(topic string, partition int, msgs []types.Message, acks string) ([]byte, error) {
+func EncodeBatchMessages(topic string, partition int, msgs []types.Message) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.Write([]byte{0xBA, 0x7C})
 
@@ -77,6 +76,9 @@ func EncodeBatchMessages(topic string, partition int, msgs []types.Message, acks
 
 	// topic
 	topicBytes := []byte(topic)
+	if len(topicBytes) > 0xFFFF {
+		return nil, fmt.Errorf("topic too long: %d bytes", len(topicBytes))
+	}
 	if err := write(uint16(len(topicBytes))); err != nil {
 		return nil, err
 	}
@@ -87,18 +89,6 @@ func EncodeBatchMessages(topic string, partition int, msgs []types.Message, acks
 	// partition
 	if err := write(int32(partition)); err != nil {
 		return nil, err
-	}
-
-	// acks
-	acksBytes := []byte(acks)
-	if len(acksBytes) > 255 {
-		acksBytes = acksBytes[:255]
-	}
-	if err := write(uint8(len(acksBytes))); err != nil {
-		return nil, err
-	}
-	if _, err := buf.Write(acksBytes); err != nil {
-		return nil, fmt.Errorf("write acks failed: %w", err)
 	}
 
 	// batch start/end seqNum
@@ -119,10 +109,50 @@ func EncodeBatchMessages(topic string, partition int, msgs []types.Message, acks
 	}
 
 	for _, m := range msgs {
+		// offset
+		if err := write(m.Offset); err != nil {
+			return nil, err
+		}
+
+		// seqNum
 		if err := write(m.SeqNum); err != nil {
 			return nil, err
 		}
+
+		// producerID
+		producerIDBytes := []byte(m.ProducerID)
+		if len(producerIDBytes) > 0xFFFF {
+			return nil, fmt.Errorf("producerID too long: %d bytes", len(producerIDBytes))
+		}
+		if err := write(uint16(len(producerIDBytes))); err != nil {
+			return nil, err
+		}
+		if _, err := buf.Write(producerIDBytes); err != nil {
+			return nil, err
+		}
+
+		// key
+		keyBytes := []byte(m.Key)
+		if len(keyBytes) > 0xFFFF {
+			return nil, fmt.Errorf("key too long: %d bytes", len(keyBytes))
+		}
+		if err := write(uint16(len(keyBytes))); err != nil {
+			return nil, err
+		}
+		if _, err := buf.Write(keyBytes); err != nil {
+			return nil, err
+		}
+
+		// epoch
+		if err := write(m.Epoch); err != nil {
+			return nil, err
+		}
+
+		// payload
 		payloadBytes := []byte(m.Payload)
+		if len(payloadBytes) > 0xFFFFFFFF {
+			return nil, fmt.Errorf("payload too large: %d bytes", len(payloadBytes))
+		}
 		if err := write(uint32(len(payloadBytes))); err != nil {
 			return nil, err
 		}
@@ -151,7 +181,7 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 		return b, nil
 	}
 
-	// Topic
+	// topic
 	topicLenBytes, err := read(2)
 	if err != nil {
 		return nil, err
@@ -163,33 +193,14 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 	}
 	topic := string(topicBytes)
 
-	// Partition
+	// partition
 	partBytes, err := read(4)
 	if err != nil {
 		return nil, err
 	}
 	partition := int(binary.BigEndian.Uint32(partBytes))
 
-	// Acks
-	acksLenBytes, err := read(1)
-	if err != nil {
-		return nil, err
-	}
-	acksLen := int(acksLenBytes[0])
-	acksBytes, err := read(acksLen)
-	if err != nil {
-		return nil, err
-	}
-	acksStr := string(acksBytes)
-	acks, err := strconv.Atoi(acksStr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid acks string: %s", acksStr)
-	}
-	if acks != -1 && acks != 0 && acks != 1 {
-		return nil, fmt.Errorf("invalid acks value: %d", acks)
-	}
-
-	// Batch start/end
+	// batch start/end
 	batchStartBytes, err := read(8)
 	if err != nil {
 		return nil, err
@@ -202,7 +213,7 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 	}
 	batchEnd := binary.BigEndian.Uint64(batchEndBytes)
 
-	// Num messages
+	// num messages
 	numMsgsBytes, err := read(4)
 	if err != nil {
 		return nil, err
@@ -210,26 +221,69 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 	numMsgs := int(binary.BigEndian.Uint32(numMsgsBytes))
 
 	msgs := make([]types.Message, 0, numMsgs)
+
 	for i := 0; i < numMsgs; i++ {
+		// offset
+		offsetBytes, err := read(8)
+		if err != nil {
+			return nil, err
+		}
+		currentOffset := binary.BigEndian.Uint64(offsetBytes)
+
+		// seqNum (8 bytes)
 		seqBytes, err := read(8)
 		if err != nil {
 			return nil, err
 		}
 		seq := binary.BigEndian.Uint64(seqBytes)
 
+		// producerID
+		producerIDLenBytes, err := read(2)
+		if err != nil {
+			return nil, err
+		}
+		producerIDLen := int(binary.BigEndian.Uint16(producerIDLenBytes))
+		producerIDBytes, err := read(producerIDLen)
+		if err != nil {
+			return nil, err
+		}
+
+		// key
+		keyLenBytes, err := read(2)
+		if err != nil {
+			return nil, err
+		}
+		keyLen := int(binary.BigEndian.Uint16(keyLenBytes))
+		keyBytes, err := read(keyLen)
+		if err != nil {
+			return nil, err
+		}
+
+		// epoch (8 bytes)
+		epochBytes, err := read(8)
+		if err != nil {
+			return nil, err
+		}
+		epoch := int64(binary.BigEndian.Uint64(epochBytes))
+
+		// payload
 		payloadLenBytes, err := read(4)
 		if err != nil {
 			return nil, err
 		}
 		payloadLen := int(binary.BigEndian.Uint32(payloadLenBytes))
-
 		payloadBytes, err := read(payloadLen)
 		if err != nil {
 			return nil, err
 		}
+
 		msgs = append(msgs, types.Message{
-			SeqNum:  seq,
-			Payload: string(payloadBytes),
+			Offset:     currentOffset,
+			SeqNum:     seq,
+			ProducerID: string(producerIDBytes),
+			Key:        string(keyBytes),
+			Epoch:      epoch,
+			Payload:    string(payloadBytes),
 		})
 	}
 
@@ -238,7 +292,119 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 		Partition:  partition,
 		BatchStart: batchStart,
 		BatchEnd:   batchEnd,
-		Acks:       acks,
 		Messages:   msgs,
 	}, nil
+}
+
+// serializeMessage converts types.Message to serialized bytes
+func SerializeMessage(msg types.Message) ([]byte, error) {
+	var buf bytes.Buffer
+	var err error
+
+	// ProducerID (length + string)
+	producerBytes := []byte(msg.ProducerID)
+	if err = binary.Write(&buf, binary.BigEndian, uint16(len(producerBytes))); err != nil {
+		return nil, fmt.Errorf("write producer length: %w", err)
+	}
+	if _, err = buf.Write(producerBytes); err != nil {
+		return nil, fmt.Errorf("write producer bytes: %w", err)
+	}
+
+	// SeqNum (8 bytes)
+	if err = binary.Write(&buf, binary.BigEndian, msg.SeqNum); err != nil {
+		return nil, fmt.Errorf("write sequence number: %w", err)
+	}
+
+	// Payload (length + string)
+	payloadBytes := []byte(msg.Payload)
+	if err = binary.Write(&buf, binary.BigEndian, uint32(len(payloadBytes))); err != nil {
+		return nil, fmt.Errorf("write payload length: %w", err)
+	}
+	if _, err = buf.Write(payloadBytes); err != nil {
+		return nil, fmt.Errorf("write payload bytes: %w", err)
+	}
+
+	// Key (length + string)
+	keyBytes := []byte(msg.Key)
+	if err = binary.Write(&buf, binary.BigEndian, uint16(len(keyBytes))); err != nil {
+		return nil, fmt.Errorf("write key length: %w", err)
+	}
+	if _, err = buf.Write(keyBytes); err != nil {
+		return nil, fmt.Errorf("write key bytes: %w", err)
+	}
+
+	// Epoch (8 bytes)
+	if err = binary.Write(&buf, binary.BigEndian, msg.Epoch); err != nil {
+		return nil, fmt.Errorf("write epoch: %w", err)
+	}
+
+	return buf.Bytes(), nil
+}
+
+// deserializeMessage converts bytes back to types.Message
+func DeserializeMessage(data []byte) (types.Message, error) {
+	var msg types.Message
+	offset := 0
+
+	if len(data) < 2 {
+		return msg, fmt.Errorf("data too short for producer length")
+	}
+
+	// ProducerID
+	producerLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+
+	if offset+producerLen > len(data) {
+		return msg, fmt.Errorf("data too short for producer ID")
+	}
+
+	msg.ProducerID = string(data[offset : offset+producerLen])
+	offset += producerLen
+
+	if offset+8 > len(data) {
+		return msg, fmt.Errorf("data too short for sequence number")
+	}
+
+	// SeqNum (8 bytes)
+	msg.SeqNum = binary.BigEndian.Uint64(data[offset : offset+8])
+	offset += 8
+
+	if offset+4 > len(data) {
+		return msg, fmt.Errorf("data too short for payload length")
+	}
+
+	// Payload
+	payloadLen := int(binary.BigEndian.Uint32(data[offset : offset+4]))
+	offset += 4
+
+	if offset+payloadLen > len(data) {
+		return msg, fmt.Errorf("data too short for payload")
+	}
+
+	msg.Payload = string(data[offset : offset+payloadLen])
+	offset += payloadLen
+
+	if offset+2 > len(data) {
+		return msg, fmt.Errorf("data too short for key length")
+	}
+
+	// Key
+	keyLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+
+	if offset+keyLen > len(data) {
+		return msg, fmt.Errorf("data too short for key")
+	}
+
+	msg.Key = string(data[offset : offset+keyLen])
+	offset += keyLen
+
+	if offset+8 > len(data) {
+		return msg, fmt.Errorf("data too short for epoch")
+	}
+
+	// Epoch (8 bytes)
+	msg.Epoch = int64(binary.BigEndian.Uint64(data[offset : offset+8]))
+
+	return msg, nil
 }

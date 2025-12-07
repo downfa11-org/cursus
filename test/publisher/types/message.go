@@ -1,8 +1,5 @@
 package types
 
-import "fmt"
-
-// Message represents a single message
 type Message struct {
 	Offset     uint64
 	ProducerID string
@@ -13,25 +10,6 @@ type Message struct {
 
 	RetryCount int
 	Retry      bool
-}
-
-func (m Message) String() string {
-	return fmt.Sprintf("Message { ID: %s-%d, Payload:%s, Offset:%d, Key:%s, Epoch:%d, RetryCount:%d }",
-		m.ProducerID, m.SeqNum, m.Payload, m.Offset, m.Key, m.Epoch, m.RetryCount)
-}
-
-type Batch struct {
-	Topic      string
-	Partition  int
-	BatchStart uint64
-	BatchEnd   uint64
-	Messages   []Message
-}
-
-// AppendResult represents the result of appending a message to storage
-type AppendResult struct {
-	SegmentIndex int
-	Offset       int
 }
 
 type AckResponse struct {
