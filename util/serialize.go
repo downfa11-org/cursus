@@ -3,6 +3,7 @@ package util
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -105,6 +106,12 @@ func EncodeBatchMessages(topic string, partition int, msgs []types.Message) ([]b
 	}
 
 	for _, m := range msgs {
+		// offset
+		if err := write(m.Offset); err != nil {
+			return nil, err
+		}
+
+		// seqNum
 		if err := write(m.SeqNum); err != nil {
 			return nil, err
 		}
@@ -115,6 +122,15 @@ func EncodeBatchMessages(topic string, partition int, msgs []types.Message) ([]b
 			return nil, err
 		}
 		if _, err := buf.Write(producerIDBytes); err != nil {
+			return nil, err
+		}
+
+		// key
+		keyBytes := []byte(m.Key)
+		if err := write(uint16(len(keyBytes))); err != nil {
+			return nil, err
+		}
+		if _, err := buf.Write(keyBytes); err != nil {
 			return nil, err
 		}
 
@@ -146,14 +162,14 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 	offset := 0
 	read := func(size int) ([]byte, error) {
 		if offset+size > len(data) {
-			return nil, fmt.Errorf("data too short, %q", string(data[offset:]))
+			return nil, errors.New("data too short")
 		}
 		b := data[offset : offset+size]
 		offset += size
 		return b, nil
 	}
 
-	// Topic
+	// topic
 	topicLenBytes, err := read(2)
 	if err != nil {
 		return nil, err
@@ -165,14 +181,14 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 	}
 	topic := string(topicBytes)
 
-	// Partition
+	// partition
 	partBytes, err := read(4)
 	if err != nil {
 		return nil, err
 	}
 	partition := int(binary.BigEndian.Uint32(partBytes))
 
-	// Batch start/end
+	// batch start/end
 	batchStartBytes, err := read(8)
 	if err != nil {
 		return nil, err
@@ -185,7 +201,7 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 	}
 	batchEnd := binary.BigEndian.Uint64(batchEndBytes)
 
-	// Num messages
+	// num messages
 	numMsgsBytes, err := read(4)
 	if err != nil {
 		return nil, err
@@ -193,7 +209,16 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 	numMsgs := int(binary.BigEndian.Uint32(numMsgsBytes))
 
 	msgs := make([]types.Message, 0, numMsgs)
+
 	for i := 0; i < numMsgs; i++ {
+		// offset
+		offsetBytes, err := read(8)
+		if err != nil {
+			return nil, err
+		}
+		currentOffset := binary.BigEndian.Uint64(offsetBytes)
+
+		// seqNum (8 bytes)
 		seqBytes, err := read(8)
 		if err != nil {
 			return nil, err
@@ -207,12 +232,22 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 		}
 		producerIDLen := int(binary.BigEndian.Uint16(producerIDLenBytes))
 		producerIDBytes, err := read(producerIDLen)
-
 		if err != nil {
 			return nil, err
 		}
 
-		// epoch
+		// key
+		keyLenBytes, err := read(2)
+		if err != nil {
+			return nil, err
+		}
+		keyLen := int(binary.BigEndian.Uint16(keyLenBytes))
+		keyBytes, err := read(keyLen)
+		if err != nil {
+			return nil, err
+		}
+
+		// epoch (8 bytes)
 		epochBytes, err := read(8)
 		if err != nil {
 			return nil, err
@@ -225,14 +260,16 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 			return nil, err
 		}
 		payloadLen := int(binary.BigEndian.Uint32(payloadLenBytes))
-
 		payloadBytes, err := read(payloadLen)
 		if err != nil {
 			return nil, err
 		}
+
 		msgs = append(msgs, types.Message{
+			Offset:     currentOffset,
 			SeqNum:     seq,
 			ProducerID: string(producerIDBytes),
+			Key:        string(keyBytes),
 			Epoch:      epoch,
 			Payload:    string(payloadBytes),
 		})
@@ -245,4 +282,65 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 		BatchEnd:   batchEnd,
 		Messages:   msgs,
 	}, nil
+}
+
+// serializeMessage converts types.Message to serialized bytes
+func SerializeMessage(msg types.Message) []byte {
+	var buf bytes.Buffer
+
+	// ProducerID (length + string)
+	producerBytes := []byte(msg.ProducerID)
+	binary.Write(&buf, binary.BigEndian, uint16(len(producerBytes)))
+	buf.Write(producerBytes)
+
+	// SeqNum (8 bytes)
+	binary.Write(&buf, binary.BigEndian, msg.SeqNum)
+
+	// Payload (length + string)
+	payloadBytes := []byte(msg.Payload)
+	binary.Write(&buf, binary.BigEndian, uint32(len(payloadBytes)))
+	buf.Write(payloadBytes)
+
+	// Key (length + string)
+	keyBytes := []byte(msg.Key)
+	binary.Write(&buf, binary.BigEndian, uint16(len(keyBytes)))
+	buf.Write(keyBytes)
+
+	// Epoch (8 bytes)
+	binary.Write(&buf, binary.BigEndian, msg.Epoch)
+
+	return buf.Bytes()
+}
+
+// deserializeMessage converts bytes back to types.Message
+func DeserializeMessage(data []byte) (types.Message, error) {
+	var msg types.Message
+	offset := 0
+
+	// ProducerID
+	producerLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+	msg.ProducerID = string(data[offset : offset+producerLen])
+	offset += producerLen
+
+	// SeqNum (8 bytes)
+	msg.SeqNum = binary.BigEndian.Uint64(data[offset : offset+8])
+	offset += 8
+
+	// Payload
+	payloadLen := int(binary.BigEndian.Uint32(data[offset : offset+4]))
+	offset += 4
+	msg.Payload = string(data[offset : offset+payloadLen])
+	offset += payloadLen
+
+	// Key
+	keyLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+	msg.Key = string(data[offset : offset+keyLen])
+	offset += keyLen
+
+	// Epoch (8 bytes)
+	msg.Epoch = int64(binary.BigEndian.Uint64(data[offset : offset+8]))
+
+	return msg, nil
 }

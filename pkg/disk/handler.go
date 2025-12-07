@@ -284,10 +284,13 @@ func (dh *DiskHandler) readMessagesFromSegment(reader *mmap.ReaderAt, startOffse
 		pos += int(msgLen)
 
 		if currentMsgIndex >= startOffset {
-			messages = append(messages, types.Message{
-				Payload: string(data),
-				Offset:  segmentStartOffset + currentMsgIndex,
-			})
+			msg, err := util.DeserializeMessage(data)
+			if err != nil {
+				util.Error("deserialize message failed: %v", err)
+				continue
+			}
+			msg.Offset = segmentStartOffset + currentMsgIndex
+			messages = append(messages, msg)
 		}
 		currentMsgIndex++
 	}
