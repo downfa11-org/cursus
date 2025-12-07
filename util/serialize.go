@@ -285,31 +285,48 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 }
 
 // serializeMessage converts types.Message to serialized bytes
-func SerializeMessage(msg types.Message) []byte {
+func SerializeMessage(msg types.Message) ([]byte, error) {
 	var buf bytes.Buffer
+	var err error
 
 	// ProducerID (length + string)
 	producerBytes := []byte(msg.ProducerID)
-	binary.Write(&buf, binary.BigEndian, uint16(len(producerBytes)))
-	buf.Write(producerBytes)
+	if err = binary.Write(&buf, binary.BigEndian, uint16(len(producerBytes))); err != nil {
+		return nil, fmt.Errorf("write producer length: %w", err)
+	}
+	if _, err = buf.Write(producerBytes); err != nil {
+		return nil, fmt.Errorf("write producer bytes: %w", err)
+	}
 
 	// SeqNum (8 bytes)
-	binary.Write(&buf, binary.BigEndian, msg.SeqNum)
+	if err = binary.Write(&buf, binary.BigEndian, msg.SeqNum); err != nil {
+		return nil, fmt.Errorf("write sequence number: %w", err)
+	}
 
 	// Payload (length + string)
 	payloadBytes := []byte(msg.Payload)
-	binary.Write(&buf, binary.BigEndian, uint32(len(payloadBytes)))
-	buf.Write(payloadBytes)
+	if err = binary.Write(&buf, binary.BigEndian, uint32(len(payloadBytes))); err != nil {
+		return nil, fmt.Errorf("write payload length: %w", err)
+	}
+	if _, err = buf.Write(payloadBytes); err != nil {
+		return nil, fmt.Errorf("write payload bytes: %w", err)
+	}
 
 	// Key (length + string)
 	keyBytes := []byte(msg.Key)
-	binary.Write(&buf, binary.BigEndian, uint16(len(keyBytes)))
-	buf.Write(keyBytes)
+	if err = binary.Write(&buf, binary.BigEndian, uint16(len(keyBytes))); err != nil {
+		return nil, fmt.Errorf("write key length: %w", err)
+	}
+	if _, err = buf.Write(keyBytes); err != nil {
+		return nil, fmt.Errorf("write key bytes: %w", err)
+	}
 
 	// Epoch (8 bytes)
-	binary.Write(&buf, binary.BigEndian, msg.Epoch)
+	if err = binary.Write(&buf, binary.BigEndian, msg.Epoch); err != nil {
+		return nil, fmt.Errorf("write epoch: %w", err)
+	}
 
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
 
 // deserializeMessage converts bytes back to types.Message
