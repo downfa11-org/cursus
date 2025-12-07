@@ -913,36 +913,5 @@ func (ch *CommandHandler) ValidateOwnership(groupName, memberID string, generati
 		return false
 	}
 
-	group := ch.Coordinator.GetGroup(groupName)
-	if group == nil {
-		util.Debug("failed to validate ownership for partition %d: Group '%s' not found.", partition, groupName)
-		return false
-	}
-
-	member := group.Members[memberID]
-	if member == nil {
-		util.Debug("failed to validate ownership for partition %d: Member '%s' not found in group '%s'.", partition, memberID, groupName)
-		return false
-	}
-
-	if group.Generation != generation {
-		util.Debug("failed to validate ownership  for partition %d: Generation mismatch. Group Gen: %d, Request Gen: %d.", partition, group.Generation, generation)
-		return false
-	}
-
-	isAssigned := false
-	for _, assigned := range member.Assignments {
-		if assigned == partition {
-			isAssigned = true
-			break
-		}
-	}
-
-	if !isAssigned {
-		util.Debug("failed to validate ownership for partition %d: Partition not assigned to member '%s'. Assignments: %v", partition, memberID, member.Assignments)
-		return false
-	}
-
-	util.Debug("success to validate ownership for partition %d (Member: %s, Gen: %d).", partition, memberID, generation)
-	return true
+	return ch.Coordinator.ValidateOwnershipAtomic(groupName, memberID, generation, partition)
 }

@@ -381,6 +381,41 @@ func (c *Coordinator) ValidateAndCommit(groupName, topic string, partition int, 
 	return c.CommitOffset(groupName, topic, partition, offset)
 }
 
+func (c *Coordinator) ValidateOwnershipAtomic(groupName, memberID string, generation int, partition int) bool {
+	group := c.GetGroup(groupName)
+	if group == nil {
+		util.Debug("failed to validate ownership for partition %d: Group '%s' not found.", partition, groupName)
+		return false
+	}
+
+	member := group.Members[memberID]
+	if member == nil {
+		util.Debug("failed to validate ownership for partition %d: Member '%s' not found in group '%s'.", partition, memberID, groupName)
+		return false
+	}
+
+	if group.Generation != generation {
+		util.Debug("failed to validate ownership  for partition %d: Generation mismatch. Group Gen: %d, Request Gen: %d.", partition, group.Generation, generation)
+		return false
+	}
+
+	isAssigned := false
+	for _, assigned := range member.Assignments {
+		if assigned == partition {
+			isAssigned = true
+			break
+		}
+	}
+
+	if !isAssigned {
+		util.Debug("failed to validate ownership for partition %d: Partition not assigned to member '%s'. Assignments: %v", partition, memberID, member.Assignments)
+		return false
+	}
+
+	util.Debug("success to validate ownership for partition %d (Member: %s, Gen: %d).", partition, memberID, generation)
+	return true
+}
+
 func (c *Coordinator) GetGroup(groupName string) *GroupMetadata {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

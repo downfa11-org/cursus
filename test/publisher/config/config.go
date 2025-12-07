@@ -18,7 +18,7 @@ type PublisherConfig struct {
 	AckTimeoutMS   int    `yaml:"ack_timeout_ms" json:"ack_timeout_ms"`
 
 	Topic            string `yaml:"topic" json:"topic"`
-	AutoCreateTopics bool   `yaml:"auto_create_topics" json:"auto.create.topics"`
+	AutoCreateTopics bool   `yaml:"auto_create_topics" json:"auto_create_topics"`
 	Partitions       int    `yaml:"partitions" json:"partitions"`
 
 	PublishDelayMS      int `yaml:"publish_delay_ms" json:"publish_delay_ms"`

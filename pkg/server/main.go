@@ -170,6 +170,11 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 				continue
 			}
 
+			if len(batch.Messages) == 0 {
+				writeResponse(conn, "ERROR: empty batch")
+				continue
+			}
+
 			if err := tm.PublishBatchSync(batch.Topic, batch.Messages); err != nil {
 				writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
 				continue

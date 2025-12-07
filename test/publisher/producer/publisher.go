@@ -417,11 +417,6 @@ func (p *Publisher) sendWithRetry(payload []byte, batch []types.Message, part in
 			continue
 		}
 
-		if ackResp.ProducerEpoch != p.producer.Epoch {
-			log.Printf("Epoch mismatch: expected %d, got %d", p.producer.Epoch, ackResp.ProducerEpoch)
-			return fmt.Errorf("epoch changed, discarding batch")
-		}
-
 		if ackResp.Status != "OK" {
 			if ackResp.Status == "PARTIAL" {
 				p.handlePartialFailure(part, batch, ackResp)

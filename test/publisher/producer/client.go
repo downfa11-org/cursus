@@ -30,12 +30,19 @@ type ProducerClient struct {
 }
 
 func (pc *ProducerClient) ReserveSeqRange(partition int, count int) (uint64, uint64) {
+	if count <= 0 {
+		panic(fmt.Sprintf("invalid count for ReserveSeqRange: %d", count))
+	}
+
 	end := pc.globalSeqNum.Add(uint64(count))
 	start := end - uint64(count) + 1
 	return start, end
 }
 
 func (pc *ProducerClient) CommitSeqRange(partition int, endSeq uint64) {
+	if partition < 0 || partition >= len(pc.seqNums) {
+		panic(fmt.Sprintf("invalid partition index in CommitSeqRange: %d", partition))
+	}
 	pc.seqNums[partition].Store(endSeq)
 }
 
@@ -118,6 +125,9 @@ func (pc *ProducerClient) SaveState() error {
 }
 
 func (pc *ProducerClient) NextSeqNum(partition int) uint64 {
+	if partition < 0 || partition >= len(pc.seqNums) {
+		panic(fmt.Sprintf("invalid partition index in NextSeqNum: %d", partition))
+	}
 	return pc.seqNums[partition].Add(1)
 }
 
@@ -129,6 +139,10 @@ func (pc *ProducerClient) ConnectPartition(idx int, addr string, useTLS bool, ce
 }
 
 func (pc *ProducerClient) connectPartitionLocked(idx int, addr string, useTLS bool, certPath, keyPath string) error {
+	if idx < 0 {
+		return fmt.Errorf("invalid partition index: %d", idx)
+	}
+
 	var conn net.Conn
 	var err error
 
@@ -177,7 +191,7 @@ func (pc *ProducerClient) ReconnectPartition(idx int, addr string, useTLS bool, 
 func (pc *ProducerClient) GetConn(part int) net.Conn {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
-	if part < len(pc.conns) {
+	if part >= 0 && part < len(pc.conns) {
 		return pc.conns[part]
 	}
 	return nil
