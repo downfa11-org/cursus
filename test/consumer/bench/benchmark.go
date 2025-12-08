@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const sep = "========================================"
+
 type ConsumerMetrics struct {
 	MsgCount        int64
 	ProcessedCount  int64
@@ -63,23 +65,26 @@ func (m *ConsumerMetrics) PrintSummaryTo(w io.Writer) {
 	tps := float64(total) / duration.Seconds()
 	processedTps := float64(processed) / duration.Seconds()
 
-	fmt.Fprintln(w, "=== CONSUMER BENCHMARK SUMMARY ===")
-	fmt.Fprintf(w, "Total messages consumed: %d\n", total)
-	fmt.Fprintf(w, "Actually processed messages: %d\n", processed)
-	fmt.Fprintf(w, "Duplicate messages filtered: %d\n", total-processed)
-	fmt.Fprintf(w, "Consume elapsed time: %v\n", duration)
-	fmt.Fprintf(w, "Consume Throughput: %.2f msg/s\n", tps)
-	fmt.Fprintf(w, "Processed Throughput: %.2f msg/s\n", processedTps)
+	fmt.Fprint(w, "\r\n")
+	fmt.Fprintln(w, sep)
+	fmt.Fprintln(w, "BENCHMARK SUMMARY")
+	fmt.Fprintf(w, "%-28s : %d\n", "Total messages consumed", total)
+	fmt.Fprintf(w, "%-28s : %d\n", "Actually processed messages", processed)
+	fmt.Fprintf(w, "%-28s : %d\n", "Duplicate messages filtered", total-processed)
+	fmt.Fprintf(w, "%-28s : %v\n", "Consume elapsed time", duration)
+	fmt.Fprintf(w, "%-28s : %.2f msg/s\n", "Consume Throughput", tps)
+	fmt.Fprintf(w, "%-28s : %.2f msg/s\n", "Processed Throughput", processedTps)
+	fmt.Fprint(w, "\r\n")
 
 	fmt.Fprintln(w, "--- Partition Message Counts ---")
 	for pid, count := range m.PartitionCounts {
 		if count != nil {
-			fmt.Fprintf(w, "Partition [%d]: %d messages\n", pid, atomic.LoadInt64(count))
+			fmt.Fprintf(w, "Partition [%-3d] : %-3d messages\n", pid, atomic.LoadInt64(count))
 		}
 	}
-	fmt.Fprintln(w, "==================================")
+	fmt.Fprintln(w, sep)
 }
 
 func (m *ConsumerMetrics) PrintSummary() {
-	m.PrintSummaryTo(io.Writer(os.Stdout))
+	m.PrintSummaryTo(os.Stdout)
 }

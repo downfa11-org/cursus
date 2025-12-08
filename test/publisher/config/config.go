@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 
+	"github.com/downfa11-org/go-broker/util"
 	"gopkg.in/yaml.v3"
 )
 
@@ -44,6 +44,8 @@ type PublisherConfig struct {
 	NumMessages     int    `yaml:"num_messages" json:"num_messages"`
 
 	FlushTimeoutMS int `yaml:"flush_timeout_ms" json:"flush_timeout_ms"`
+
+	LogLevel util.LogLevel `yaml:"log_level" json:"log_level"`
 }
 
 func LoadPublisherConfig() (*PublisherConfig, error) {
@@ -80,24 +82,37 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 	flag.IntVar(&cfg.MessageSize, "benchmark_message_size", 100, "Message size in bytes (benchmark mode only)")
 
 	configPath := flag.String("config", "/config.yaml", "Path to YAML/JSON config file")
+	logLevelStr := flag.String("log-level", "info", "Log level")
+
 	flag.Parse()
+
+	switch strings.ToLower(*logLevelStr) {
+	case "debug":
+		cfg.LogLevel = util.LogLevelDebug
+	case "warn", "warning":
+		cfg.LogLevel = util.LogLevelWarn
+	case "error":
+		cfg.LogLevel = util.LogLevelError
+	default:
+		cfg.LogLevel = util.LogLevelInfo
+	}
 
 	if *configPath != "" {
 		data, err := os.ReadFile(*configPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				log.Printf("Config file %s not found, using flag defaults", *configPath)
+				util.Error("Config file %s not found, using flag defaults", *configPath)
 			} else {
 				return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
 			}
 		} else {
 			if strings.HasSuffix(*configPath, ".json") {
 				if err := json.Unmarshal(data, cfg); err != nil {
-					log.Printf("[WARN] Failed to parse JSON config: %v", err)
+					util.Warn("Failed to parse JSON config: %v", err)
 				}
 			} else {
 				if err := yaml.Unmarshal(data, cfg); err != nil {
-					log.Printf("[WARN] Failed to parse YAML config: %v", err)
+					util.Warn("Failed to parse YAML config: %v", err)
 				}
 			}
 		}
@@ -146,7 +161,7 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 		cfg.Acks = "-1"
 	}
 	if cfg.EnableIdempotence && cfg.Acks == "0" {
-		log.Printf("[WARN] Idempotence requires acks >= 1, setting acks=1")
+		util.Warn("Idempotence requires acks >= 1, setting acks=1")
 		cfg.Acks = "1"
 	}
 	if strings.TrimSpace(cfg.Topic) == "" {
@@ -173,5 +188,6 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 		}
 	}
 
+	util.SetLevel(cfg.LogLevel)
 	return cfg, nil
 }

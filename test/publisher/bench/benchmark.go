@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const sep = "========================================"
+
 type PartitionStat struct {
 	PartitionID int
 	BatchCount  int
@@ -42,26 +44,22 @@ func PrintBenchmarkSummaryFixedTo(w io.Writer, partitionStats []PartitionStat, s
 	batchesPerSec := float64(totalBatches) / seconds
 	messagesPerSec := float64(sentMessages) / seconds
 
-	fmt.Fprintln(w, "=== BENCHMARK SUMMARY ===")
-	fmt.Fprintf(w, "Partitions                 : %d\n", len(partitionStats))
-	fmt.Fprintf(w, "Total Batches              : %d\n", totalBatches)
-	fmt.Fprintf(w, "Total messages published   : %d\n", sentMessages)
-	fmt.Fprintf(w, "Publish elapsed Time       : %.3fs\n", totalDuration.Seconds())
-	fmt.Fprintf(w, "Publish Batch Throughput   : %.2f batches/s\n", batchesPerSec)
-	fmt.Fprintf(w, "Publish Message Throughput : %.2f msg/s\n", messagesPerSec)
-	fmt.Fprintln(w)
+	fmt.Fprint(w, "\r\n")
+	fmt.Fprintln(w, sep)
+	fmt.Fprintln(w, "BENCHMARK SUMMARY")
+	fmt.Fprintf(w, "%-28s : %d\n", "Partitions", len(partitionStats))
+	fmt.Fprintf(w, "%-28s : %d\n", "Total Batches", totalBatches)
+	fmt.Fprintf(w, "%-28s : %d\n", "Total messages published", sentMessages)
+	fmt.Fprintf(w, "%-28s : %.3fs\n", "Publish elapsed Time", totalDuration.Seconds())
+	fmt.Fprintf(w, "%-28s : %.2f batches/s\n", "Publish Batch Throughput", batchesPerSec)
+	fmt.Fprintf(w, "%-28s : %.2f msg/s\n", "Publish Message Throughput", messagesPerSec)
+	fmt.Fprint(w, "\r\n")
 
 	fmt.Fprintln(w, "Partition Breakdown:")
 	for _, ps := range partitionStats {
-		fmt.Fprintf(
-			w,
-			"  #%d  batches=%d  avg_batch=%.3fms\n",
-			ps.PartitionID,
-			ps.BatchCount,
-			float64(ps.AvgDuration.Microseconds())/1000.0,
-		)
+		fmt.Fprintf(w, "  #%-3d  batches=%-5d  avg_batch=%.3fms\n", ps.PartitionID, ps.BatchCount, float64(ps.AvgDuration.Microseconds())/1000.0)
 	}
-	fmt.Fprintln(w, "========================================")
+	fmt.Fprintln(w, sep)
 }
 
 func PrintBenchmarkSummaryFixed(partitionStats []PartitionStat, sentMessages int, totalDuration time.Duration) {

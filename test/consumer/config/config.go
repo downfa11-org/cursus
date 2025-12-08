@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/downfa11-org/go-broker/util"
 	"gopkg.in/yaml.v3"
 )
 
@@ -45,6 +45,8 @@ type ConsumerConfig struct {
 	AutoCommitInterval time.Duration `yaml:"auto_commit_interval" json:"auto_commit_interval"`
 
 	EnableGzip bool `yaml:"enable_gzip" json:"enable_gzip"`
+
+	LogLevel util.LogLevel `yaml:"log_level" json:"log_level"`
 }
 
 func LoadConfig() (*ConsumerConfig, error) {
@@ -68,13 +70,26 @@ func LoadConfig() (*ConsumerConfig, error) {
 	flag.IntVar(&cfg.NumMessages, "num-messages", 10, "Number of messages to publish")
 
 	configPath := flag.String("config", "/config.yaml", "Path to YAML/JSON config file")
+	logLevelStr := flag.String("log-level", "info", "Log level")
+
 	flag.Parse()
+
+	switch strings.ToLower(*logLevelStr) {
+	case "debug":
+		cfg.LogLevel = util.LogLevelDebug
+	case "warn", "warning":
+		cfg.LogLevel = util.LogLevelWarn
+	case "error":
+		cfg.LogLevel = util.LogLevelError
+	default:
+		cfg.LogLevel = util.LogLevelInfo
+	}
 
 	if *configPath != "" {
 		data, err := os.ReadFile(*configPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				log.Printf("Config file %s not found, using flag defaults", *configPath)
+				util.Fatal("Config file %s not found, using flag defaults", *configPath)
 				return cfg, nil
 			}
 			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
@@ -137,5 +152,6 @@ func LoadConfig() (*ConsumerConfig, error) {
 		}
 	}
 
+	util.SetLevel(cfg.LogLevel)
 	return cfg, nil
 }

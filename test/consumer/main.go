@@ -10,6 +10,7 @@ import (
 	"github.com/downfa11-org/go-broker/consumer/config"
 	"github.com/downfa11-org/go-broker/consumer/handler"
 	"github.com/downfa11-org/go-broker/consumer/subscriber"
+	"github.com/downfa11-org/go-broker/util"
 )
 
 func main() {
@@ -20,9 +21,9 @@ func main() {
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		log.Printf("Failed to marshal config: %v", err)
+		util.Error("Failed to marshal config: %v", err)
 	} else {
-		log.Printf("Configuration:\n%s", string(data))
+		util.Info("Configuration:\n%s", string(data))
 	}
 
 	c, err := subscriber.NewConsumer(*cfg)
@@ -42,6 +43,6 @@ func main() {
 	<-sigCh
 
 	if err := c.Close(); err != nil {
-		log.Printf("Error closing consumer: %v", err)
+		util.Error("Error closing consumer: %v", err)
 	}
 }

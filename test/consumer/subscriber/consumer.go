@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"strconv"
@@ -88,7 +87,7 @@ func (c *Consumer) Start() error {
 		}
 	}
 
-	log.Printf("✅ Successfully joined topic '%s' for group '%s' with %d partitions: %v (generation=%d, member=%s)",
+	util.Info("✅ Successfully joined topic '%s' for group '%s' with %d partitions: %v (generation=%d, member=%s)",
 		c.config.Topic, c.config.GroupID, len(assignments), assignments, gen, mid)
 
 	c.partitionConsumers = make(map[int]*PartitionConsumer)
@@ -124,7 +123,7 @@ func (c *Consumer) heartbeatLoop() {
 			// send heartbeat with generation and memberID
 			conn, err := c.client.Connect(c.config.BrokerAddr)
 			if err != nil {
-				log.Printf("heartbeat connect failed: %v", err)
+				util.Error("heartbeat connect failed: %v", err)
 				continue
 			}
 
@@ -132,7 +131,7 @@ func (c *Consumer) heartbeatLoop() {
 				c.config.Topic, c.config.GroupID, c.memberID, c.generation)
 
 			if err := util.WriteWithLength(conn, util.EncodeMessage("", hb)); err != nil {
-				log.Printf("heartbeat send failed: %v", err)
+				util.Error("heartbeat send failed: %v", err)
 				conn.Close()
 				continue
 			}
@@ -140,13 +139,13 @@ func (c *Consumer) heartbeatLoop() {
 			resp, err := util.ReadWithLength(conn)
 			conn.Close()
 			if err != nil {
-				log.Printf("heartbeat response failed: %v", err)
+				util.Error("heartbeat response failed: %v", err)
 				continue
 			}
 
 			respStr := string(resp)
 			if strings.Contains(respStr, "REBALANCE_REQUIRED") || strings.Contains(respStr, "GEN_MISMATCH") {
-				log.Printf("heartbeat indicated rebalance/mismatch: %s", respStr)
+				util.Warn("heartbeat indicated rebalance/mismatch: %s", respStr)
 				c.handleRebalanceSignal()
 				return
 			}
@@ -172,7 +171,7 @@ func (c *Consumer) handleRebalanceSignal() {
 
 		gen, mid, assignments, err := c.joinGroup()
 		if err != nil {
-			log.Printf("Rebalance join failed: %v", err)
+			util.Error("Rebalance join failed: %v", err)
 			return
 		}
 
@@ -202,7 +201,7 @@ func (c *Consumer) startConsuming() {
 
 	c.mu.Lock()
 	for pid := range c.partitionConsumers {
-		log.Printf("Starting consumer for partition %d", pid)
+		util.Info("Starting consumer for partition %d", pid)
 	}
 	c.mu.Unlock()
 
@@ -279,7 +278,6 @@ func (c *Consumer) startCommitLoop() {
 }
 
 func (c *Consumer) joinGroup() (generation int64, memberID string, assignments []int, err error) {
-	log.Println("Joining group")
 	if c.memberID != "" {
 		c.mu.RLock()
 		assignments = make([]int, 0, len(c.partitionConsumers))
@@ -313,7 +311,7 @@ func (c *Consumer) joinGroup() (generation int64, memberID string, assignments [
 		return 0, "", nil, fmt.Errorf("broker error: %s", respStr)
 	}
 
-	log.Printf("join-group: %s\n", respStr)
+	util.Info("join-group: %s\n", respStr)
 	// "OK generation=123 member=consumer-abc-1242 waiting"
 	var gen int64 = 0
 	var mid string
@@ -348,7 +346,7 @@ func (c *Consumer) joinGroup() (generation int64, memberID string, assignments [
 				if err == nil {
 					assigned = append(assigned, pid)
 				} else {
-					log.Printf("⚠️ Error parsing partition ID '%s': %v", p, err)
+					util.Error("⚠️ Error parsing partition ID '%s': %v", p, err)
 				}
 			}
 		}
@@ -380,7 +378,7 @@ func (c *Consumer) syncGroup(generation int64, memberID string) ([]int, error) {
 		return nil, fmt.Errorf("broker error: %s", respStr)
 	}
 
-	log.Printf("sync-group: %s\n", respStr)
+	util.Info("sync-group: %s\n", respStr)
 
 	var assigned []int
 	if strings.Contains(respStr, "[") && strings.Contains(respStr, "]") {
@@ -425,7 +423,7 @@ func (c *Consumer) startStreaming() error {
 				}
 
 				if err := pc.ensureConnection(); err != nil {
-					log.Printf("Partition [%d] streaming connection failed, retrying: %v", pid, err)
+					util.Warn("Partition [%d] streaming connection failed, retrying: %v", pid, err)
 					time.Sleep(retryDelay)
 					continue
 				}
@@ -441,7 +439,7 @@ func (c *Consumer) startStreaming() error {
 				streamCmd := fmt.Sprintf("STREAM topic=%s partition=%d group=%s gen=%d member=%s",
 					c.config.Topic, pid, c.config.GroupID, c.generation, c.memberID)
 				if err := util.WriteWithLength(conn, util.EncodeMessage("", streamCmd)); err != nil {
-					log.Printf("Partition [%d] STREAM command send failed: %v", pid, err)
+					util.Error("Partition [%d] STREAM command send failed: %v", pid, err)
 					pc.mu.Lock()
 					pc.conn.Close()
 					pc.conn = nil
@@ -464,7 +462,7 @@ func (c *Consumer) startStreaming() error {
 						if ne, ok := err.(net.Error); ok && ne.Timeout() {
 							break
 						}
-						log.Printf("Partition [%d] read stream offset error: %v", pid, err)
+						util.Error("Partition [%d] read stream offset error: %v", pid, err)
 						pc.mu.Lock()
 						pc.conn.Close()
 						pc.conn = nil
@@ -480,7 +478,7 @@ func (c *Consumer) startStreaming() error {
 						if len(msgBytes) == 0 {
 							break
 						}
-						log.Printf("Partition [%d] read streamed message error: %v", pid, err)
+						util.Error("Partition [%d] read streamed message error: %v", pid, err)
 						pc.mu.Lock()
 						pc.conn.Close()
 						pc.conn = nil
@@ -499,7 +497,7 @@ func (c *Consumer) startStreaming() error {
 
 				if len(msgs) > 0 {
 					if err := pc.consumer.processBatchSync(msgs, pc.partitionID); err != nil {
-						log.Printf("Partition [%d] batch processing error: %v", pid, err)
+						util.Error("Partition [%d] batch processing error: %v", pid, err)
 					}
 
 					pc.mu.Lock()
@@ -520,7 +518,7 @@ func (c *Consumer) startStreaming() error {
 								return
 							}
 							if err := c.directCommit(pid, newOffset); err != nil {
-								log.Printf("Partition [%d] direct commit failed: %v", pid, err)
+								util.Error("Partition [%d] direct commit failed: %v", pid, err)
 							}
 						}()
 					}
@@ -609,7 +607,7 @@ func (c *Consumer) directCommit(partition int, offset uint64) error {
 		}
 		return fmt.Errorf("direct commit error: %s", respStr)
 	} else {
-		log.Printf("✅ COMMIT_SUCCESS [P%d, O%d]", partition, offset)
+		util.Debug("✅ COMMIT_SUCCESS [P%d, O%d]", partition, offset)
 	}
 
 	return nil

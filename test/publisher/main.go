@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,6 +11,7 @@ import (
 	"github.com/downfa11-org/go-broker/publisher/bench"
 	"github.com/downfa11-org/go-broker/publisher/config"
 	"github.com/downfa11-org/go-broker/publisher/producer"
+	"github.com/downfa11-org/go-broker/util"
 )
 
 func main() {
@@ -23,14 +23,14 @@ func main() {
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		log.Printf("Failed to marshal config: %v", err)
+		util.Error("Failed to marshal config: %v", err)
 	} else {
-		log.Printf("Configuration:\n%s", string(data))
+		util.Info("Configuration:\n%s", string(data))
 	}
 
 	pub, err := producer.NewPublisher(cfg)
 	if err != nil {
-		log.Printf("Failed to create publisher: %v", err)
+		util.Error("Failed to create publisher: %v", err)
 	}
 	defer pub.Close()
 
@@ -58,7 +58,7 @@ func main() {
 
 		for _, m := range batch {
 			if _, err := pub.PublishMessage(m); err != nil {
-				log.Printf("[ERROR] publish failed: %v", err)
+				util.Error("[ERROR] publish failed: %v", err)
 			}
 		}
 
@@ -67,8 +67,6 @@ func main() {
 		}
 	}
 
-	log.Println("All messages queued, flushing...")
-
 	if !cfg.EnableBenchmark {
 		pub.Flush()
 	} else {
@@ -76,7 +74,7 @@ func main() {
 		duration := time.Since(start)
 
 		if err := pub.VerifySentSequences(total); err != nil {
-			log.Printf("verify: %v", err)
+			util.Info("verify: %v", err)
 		}
 
 		partitionStats := make([]bench.PartitionStat, 0, pub.GetPartitionCount())

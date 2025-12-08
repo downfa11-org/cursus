@@ -2,11 +2,11 @@ package handler
 
 import (
 	"hash/fnv"
-	"log"
 	"sync"
 	"sync/atomic"
 
 	"github.com/downfa11-org/go-broker/consumer/types"
+	"github.com/downfa11-org/go-broker/util"
 )
 
 type BatchHandler interface {
@@ -86,7 +86,7 @@ func (h *MemoryIdempotentHandler) processMessage(msg types.Message) error {
 		payloadStr = payloadStr[:maxPrintLen] + "..."
 	}
 
-	log.Printf("Processing message Payload: '%s'", payloadStr)
+	util.Info("Processing message Payload: '%s'", payloadStr)
 	return nil
 }
 

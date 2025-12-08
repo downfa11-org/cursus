@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"strings"
 	"sync"
@@ -51,7 +50,7 @@ func (pc *PartitionConsumer) ensureConnection() error {
 		if err == nil {
 			return nil
 		}
-		log.Printf("Partition [%d] connect retry %d failed: %v", pc.partitionID, i+1, err)
+		util.Error("Partition [%d] connect retry %d failed: %v", pc.partitionID, i+1, err)
 		duration := time.Duration(pc.consumer.config.ConnectRetryBackoffMS) * time.Millisecond
 		time.Sleep(duration)
 	}
@@ -60,7 +59,7 @@ func (pc *PartitionConsumer) ensureConnection() error {
 
 func (pc *PartitionConsumer) pollAndProcess() {
 	if err := pc.ensureConnection(); err != nil {
-		log.Printf("Partition [%d] cannot poll: %v", pc.partitionID, err)
+		util.Warn("Partition [%d] cannot poll: %v", pc.partitionID, err)
 		return
 	}
 
@@ -75,19 +74,19 @@ func (pc *PartitionConsumer) pollAndProcess() {
 		pc.consumer.config.Topic, pc.partitionID, currentOffset, pc.consumer.config.GroupID, generation, memberID)
 
 	if err := util.WriteWithLength(conn, util.EncodeMessage(pc.consumer.config.Topic, consumeCmd)); err != nil {
-		log.Printf("Partition [%d] send command failed: %v", pc.partitionID, err)
+		util.Error("Partition [%d] send command failed: %v", pc.partitionID, err)
 		return
 	}
 
 	batchData, err := util.ReadWithLength(conn)
 	if err != nil {
-		log.Printf("Partition [%d] read batch error: %v", pc.partitionID, err)
+		util.Error("Partition [%d] read batch error: %v", pc.partitionID, err)
 		return
 	}
 
 	batch, err := types.DecodeBatchMessages(batchData)
 	if err != nil {
-		log.Printf("Partition [%d] decode batch error: %v", pc.partitionID, err)
+		util.Error("Partition [%d] decode batch error: %v", pc.partitionID, err)
 		return
 	}
 
@@ -98,18 +97,18 @@ func (pc *PartitionConsumer) pollAndProcess() {
 	if len(batch.Messages) > 0 {
 		// first := batch.Messages[0], last := batch.Messages[len(batch.Messages)-1]
 		if err := pc.consumer.processBatchSync(batch.Messages, pc.partitionID); err != nil {
-			log.Printf("Partition [%d] batch processing error: %v", pc.partitionID, err)
+			util.Error("Partition [%d] batch processing error: %v", pc.partitionID, err)
 		}
 		pc.updateOffsetAndCommit(batch.Messages)
 	}
 }
 
 func (pc *PartitionConsumer) printConsumedMessage(batch *types.Batch) {
-	log.Printf("📥 Partition [%d] Batch Received: Topic='%s', TotalMessages=%d",
+	util.Info("📥 Partition [%d] Batch Received: Topic='%s', TotalMessages=%d",
 		pc.partitionID, batch.Topic, len(batch.Messages))
 
 	if len(batch.Messages) > 0 {
-		log.Printf("   ├─ Message Details (First 5 messages):")
+		util.Info("   ├─ Message Details (First 5 messages):")
 
 		limit := 5
 		if len(batch.Messages) < limit {
@@ -124,14 +123,17 @@ func (pc *PartitionConsumer) printConsumedMessage(batch *types.Batch) {
 				payload = payload[:50] + "..."
 			}
 
-			log.Printf("   │  └─ Msg %d: Key=%s, Payload='%s'",
-				i, msg.Key, payload)
+			if msg.Key == "" {
+				util.Info("   │  └─ Msg %d: Payload='%s'", i, payload)
+			} else {
+				util.Info("   │  └─ Msg %d: Key=%s, Payload='%s'", i, msg.Key, payload)
+			}
 		}
 
 		if len(batch.Messages) > 5 {
-			log.Printf("   └─ ... and %d more messages.", len(batch.Messages)-5)
+			util.Info("   └─ ... and %d more messages.", len(batch.Messages)-5)
 		} else {
-			log.Printf("   └─ All messages listed above.")
+			util.Info("   └─ All messages listed above.")
 		}
 	}
 }
@@ -162,19 +164,19 @@ func (pc *PartitionConsumer) commitOffsetAt(offset uint64) {
 				return
 			}
 			if err := pc.consumer.directCommit(pc.partitionID, offset); err != nil {
-				log.Printf("Partition [%d] direct commit failed: %v", pc.partitionID, err)
+				util.Error("Partition [%d] direct commit failed: %v", pc.partitionID, err)
 				if strings.Contains(err.Error(), "GEN_MISMATCH") {
-					log.Printf("Generation mismatch detected, waiting for commitWorker to handle")
+					util.Warn("Generation mismatch detected, waiting for commitWorker to handle")
 					return
 				}
-				log.Printf("Direct commit failed, retrying async commit")
+				util.Error("Direct commit failed, retrying async commit")
 				select {
 				case pc.consumer.commitCh <- commitEntry{
 					partition: pc.partitionID,
 					offset:    offset,
 				}:
 				default:
-					log.Printf("Async commit also failed for partition [%d]", pc.partitionID)
+					util.Error("Async commit also failed for partition [%d]", pc.partitionID)
 				}
 			}
 		}()
@@ -188,7 +190,7 @@ func (pc *PartitionConsumer) commitOffset() {
 
 	conn, err := pc.consumer.client.Connect(pc.consumer.config.BrokerAddr)
 	if err != nil {
-		log.Printf("Partition [%d] commit connect failed: %v", pc.partitionID, err)
+		util.Error("Partition [%d] commit connect failed: %v", pc.partitionID, err)
 		return
 	}
 	defer conn.Close()
@@ -196,18 +198,18 @@ func (pc *PartitionConsumer) commitOffset() {
 	commitCmd := fmt.Sprintf("COMMIT_OFFSET topic=%s partition=%d group=%s offset=%d",
 		pc.consumer.config.Topic, pc.partitionID, pc.consumer.config.GroupID, currentOffset)
 	if err := util.WriteWithLength(conn, util.EncodeMessage(pc.consumer.config.Topic, commitCmd)); err != nil {
-		log.Printf("Partition [%d] commit send failed: %v", pc.partitionID, err)
+		util.Error("Partition [%d] commit send failed: %v", pc.partitionID, err)
 		return
 	}
 
 	resp, err := util.ReadWithLength(conn)
 	if err != nil {
-		log.Printf("Partition [%d] commit response failed: %v", pc.partitionID, err)
+		util.Error("Partition [%d] commit response failed: %v", pc.partitionID, err)
 		return
 	}
 
 	if strings.Contains(string(resp), "ERROR:") {
-		log.Printf("Partition [%d] commit error: %s", pc.partitionID, string(resp))
+		util.Error("Partition [%d] commit error: %s", pc.partitionID, string(resp))
 	}
 
 	pc.consumer.mu.Lock()

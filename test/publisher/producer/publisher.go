@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"sort"
 	"strings"
@@ -93,7 +92,7 @@ func NewPublisher(cfg *config.PublisherConfig) (*Publisher, error) {
 	for i := 0; i < cfg.Partitions; i++ {
 		p.buffers[i] = newPartitionBuffer()
 		if err := p.producer.ConnectPartition(i, cfg.BrokerAddr, cfg.UseTLS, cfg.TLSCertPath, cfg.TLSKeyPath); err != nil {
-			log.Printf("Failed to connect partition %d: %v", i, err)
+			util.Error("Failed to connect partition %d: %v", i, err)
 		} else {
 			connectedCount++
 		}
@@ -198,7 +197,7 @@ func (p *Publisher) partitionSender(part int) {
 		buf.mu.Lock()
 
 		if len(buf.msgs) > 0 {
-			log.Printf("[DEBUG] Linger timeout. Sending partial batch from partition %d (size=%d)", part, len(buf.msgs))
+			util.Debug("Linger timeout. Sending partial batch from partition %d (size=%d)", part, len(buf.msgs))
 			batch := p.extractAny(buf)
 			buf.mu.Unlock()
 			go p.sendBatch(part, batch)
@@ -227,7 +226,7 @@ func (p *Publisher) extract(buf *partitionBuffer) []types.Message {
 
 func (p *Publisher) extractAny(buf *partitionBuffer) []types.Message {
 	if len(buf.msgs) == 0 {
-		log.Printf("extractAny: buffer empty")
+		util.Warn("extractAny: buffer empty")
 		return nil
 	}
 
@@ -252,9 +251,10 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 		batchEnd = batch[len(batch)-1].SeqNum
 	}
 
-	batchID := fmt.Sprintf("%s-%d-%d-%d", p.producer.ID, p.producer.Epoch, batchStart, batchEnd)
-
-	log.Printf("Sending batch %s: partition=%d, messages=%d, seqRange=%d-%d", batchID, part, len(batch), batchStart, batchEnd)
+	shortID := p.producer.ID[:8]
+	shortEpoch := p.producer.Epoch % 1000
+	batchID := fmt.Sprintf("%s-%03d-%d-%d", shortID, shortEpoch, batchStart, batchEnd)
+	util.Info("Sending batch %s: partition=%d, messages=%d, seqRange=%d-%d", batchID, part, len(batch), batchStart, batchEnd)
 
 	p.batchMu.Lock()
 	p.batchStates[batchID] = &BatchState{
@@ -269,14 +269,14 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 
 	data, err := types.EncodeBatchMessages(p.config.Topic, part, batch)
 	if err != nil {
-		log.Printf("[ERROR] encode batch failed: %v", err)
+		util.Error("encode batch failed: %v", err)
 		p.handleSendFailure(part, batch)
 		return
 	}
 
 	payload, err := types.CompressMessage(data, p.config.EnableGzip)
 	if err != nil {
-		log.Printf("[ERROR] compress batch failed: %v", err)
+		util.Error("compress batch failed: %v", err)
 		p.handleSendFailure(part, batch)
 		return
 	}
@@ -286,7 +286,7 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 	payload = append(lenBuf, payload...)
 
 	if err := p.sendWithRetry(payload, batch, part, batchID); err != nil {
-		log.Printf("[ERROR] send failed: %v", err)
+		util.Error("send failed: %v", err)
 		atomic.AddInt32(&p.inFlight[part], -1)
 		p.handleSendFailure(part, batch)
 		return
@@ -439,7 +439,7 @@ func (p *Publisher) markBatchAckedByID(batchID string) {
 
 	state, ok := p.batchStates[batchID]
 	if !ok {
-		log.Printf("[WARN] Batch State %s not found. Already processed or GCed.", batchID)
+		util.Debug("Batch State %s not found. Already processed or GCed.", batchID)
 		return
 	}
 
@@ -478,13 +478,13 @@ func (p *Publisher) parseAckResponse(resp []byte) (*types.AckResponse, error) {
 
 	if ackResp.ProducerID == "" {
 		ackStr, _ := json.Marshal(ackResp)
-		log.Printf("producerID mismatch: expected %d, got %d, ack=%s", p.producer.Epoch, ackResp.ProducerEpoch, ackStr)
+		util.Warn("producerID mismatch: expected %d, got %d, ack=%s", p.producer.Epoch, ackResp.ProducerEpoch, ackStr)
 		return nil, fmt.Errorf("incomplete ack response: missing required fields")
 	}
 
 	if ackResp.ProducerEpoch != p.producer.Epoch {
 		ackStr, _ := json.Marshal(ackResp)
-		log.Printf("epoch mismatch: expected %d, got %d, ack=%s", p.producer.Epoch, ackResp.ProducerEpoch, ackStr)
+		util.Warn("epoch mismatch: expected %d, got %d, ack=%s", p.producer.Epoch, ackResp.ProducerEpoch, ackStr)
 		return nil, fmt.Errorf("epoch mismatch: expected %d, got %d", p.producer.Epoch, ackResp.ProducerEpoch)
 	}
 
@@ -499,7 +499,7 @@ func (p *Publisher) VerifySentSequences(expectedCount int) error {
 		return fmt.Errorf("expected %d messages sent, got %d", expectedCount, len(p.sentSeqs))
 	}
 
-	log.Printf("All %d sequences sent successfully", expectedCount)
+	util.Info("All %d sequences sent successfully", expectedCount)
 	return nil
 }
 
@@ -527,14 +527,14 @@ func (p *Publisher) Flush() {
 		}
 
 		if allClear {
-			log.Printf("Flush completed - all pending batches sent")
+			util.Info("Flush completed - all pending batches sent")
 			return
 		}
 
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	log.Printf("[WARN] Flush timeout after %v", timeout)
+	util.Warn("Flush timeout after %v", timeout)
 }
 
 func (p *Publisher) FlushBenchmark(expectedTotal int) {
@@ -567,14 +567,14 @@ func (p *Publisher) FlushBenchmark(expectedTotal int) {
 				p.batchMu.Unlock()
 
 				if isBatchStatesEmpty {
-					log.Printf("Flush completed - all expected messages (%d) have been acknowledged. (Elapsed: %.3fs)", expectedTotal, time.Since(deadline.Add(-timeout)).Seconds())
+					util.Info("Flush completed - all expected messages (%d) have been acknowledged. (Elapsed: %.3fs)", expectedTotal, time.Since(deadline.Add(-timeout)).Seconds())
 					return
 				}
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	log.Printf("[WARN] Flush timeout after %v. Only %d/%d messages acknowledged.", timeout, p.GetSentMessageCount(), expectedTotal)
+	util.Warn("Flush timeout after %v. Only %d/%d messages acknowledged.", timeout, p.GetSentMessageCount(), expectedTotal)
 }
 
 func (p *Publisher) batchStateGC() {
