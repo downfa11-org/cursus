@@ -57,7 +57,7 @@ func PrintBenchmarkSummaryFixedTo(w io.Writer, partitionStats []PartitionStat, s
 
 	fmt.Fprintln(w, "Partition Breakdown:")
 	for _, ps := range partitionStats {
-		fmt.Fprintf(w, "  #%-3d  batches=%-5d  avg_batch=%.3fms\n", ps.PartitionID, ps.BatchCount, float64(ps.AvgDuration.Microseconds())/1000.0)
+		fmt.Fprintf(w, "  #%d  batches=%d  avg_batch=%.3fms\n", ps.PartitionID, ps.BatchCount, float64(ps.AvgDuration.Microseconds())/1000.0)
 	}
 	fmt.Fprintln(w, sep)
 }

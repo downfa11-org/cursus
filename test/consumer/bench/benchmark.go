@@ -79,7 +79,7 @@ func (m *ConsumerMetrics) PrintSummaryTo(w io.Writer) {
 	fmt.Fprintln(w, "--- Partition Message Counts ---")
 	for pid, count := range m.PartitionCounts {
 		if count != nil {
-			fmt.Fprintf(w, "Partition [%-3d] : %-3d messages\n", pid, atomic.LoadInt64(count))
+			fmt.Fprintf(w, "Partition [%d] : %d messages\n", pid, atomic.LoadInt64(count))
 		}
 	}
 	fmt.Fprintln(w, sep)
