@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/coordinator"
@@ -25,6 +26,16 @@ func main() {
 	} else {
 		util.Info("Configuration:\n%s", string(data))
 	}
+
+	fmt.Print(`
+          ______                  __               __
+         / ____/___              / /_  _________  / /_____  _____
+        / / __/ __ \   ______   / __ \/ ___/ __ \/ //_/ _ \/ ___/
+       / /_/ / /_/ /  /_____/  / /_/ / /  / /_/ / ,< /  __/ /
+       \____/\____/           /_.___/_/   \____/_/|_|\___/_/
+
+                                                        version.0.1.0
+`)
 
 	util.Info("🚀 Starting broker on port %d\n", cfg.BrokerPort)
 	util.Info("📊 Exporter: %v\n", cfg.EnableExporter)
