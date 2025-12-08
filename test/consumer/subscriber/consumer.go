@@ -621,6 +621,18 @@ func (c *Consumer) Close() error {
 	}
 	c.closed = true
 
+	if c.memberID != "" {
+		conn, err := c.client.Connect(c.config.BrokerAddr)
+		if err == nil {
+			defer conn.Close()
+			leaveCmd := fmt.Sprintf("LEAVE_GROUP topic=%s group=%s consumer=%s",
+				c.config.Topic, c.config.GroupID, c.memberID)
+			if err := util.WriteWithLength(conn, util.EncodeMessage("", leaveCmd)); err == nil {
+				util.ReadWithLength(conn)
+			}
+		}
+	}
+
 	close(c.doneCh)
 	c.sessionCancel()
 

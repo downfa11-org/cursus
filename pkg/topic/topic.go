@@ -164,9 +164,7 @@ func (t *Topic) PublishSync(msg types.Message) error {
 
 	util.Debug("Calling Partition[%d].EnqueueSync", idx)
 	p := t.Partitions[idx]
-	err := p.EnqueueSync(msg)
-	util.Debug("EnqueueSync completed with error: %v", err)
-	return err
+	return p.EnqueueSync(msg)
 }
 
 func (t *Topic) PublishBatchSync(msgs []types.Message) error {
