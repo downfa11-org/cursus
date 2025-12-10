@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/disk"
+	"github.com/downfa11-org/go-broker/util"
 	"github.com/hashicorp/raft"
 )
 
@@ -158,7 +159,10 @@ func (s *BrokerFSMSnapshot) Persist(sink raft.SnapshotSink) error {
 
 	err := json.NewEncoder(sink).Encode(state)
 	if err != nil {
-		sink.Cancel()
+		cancelErr := sink.Cancel()
+		if cancelErr != nil {
+			util.Error("Failed to cancel snapshot after encoding error: %v", cancelErr)
+		}
 		return err
 	}
 	return sink.Close()
