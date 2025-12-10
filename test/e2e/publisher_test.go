@@ -52,6 +52,8 @@ func TestExactlyOnceSemantics(t *testing.T) {
 		CreateTopic().
 		PublishMessages().
 		RetryPublishMessages().
+		JoinGroup().
+		SyncGroup().
 		ConsumeMessages().
 		Then().
 		Expect(MessagesConsumed(10))
@@ -71,6 +73,8 @@ func TestIdempotentProducer(t *testing.T) {
 		PublishMessages().
 		SimulateNetworkFailure().
 		RetryPublishMessages().
+		JoinGroup().
+		SyncGroup().
 		ConsumeMessages().
 		Then().
 		Expect(MessagesConsumed(5))

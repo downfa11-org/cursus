@@ -18,6 +18,8 @@ func TestConsumerGroupJoin(t *testing.T) {
 		StartBroker().
 		CreateTopic().
 		PublishMessages().
+		JoinGroup().
+		SyncGroup().
 		ConsumeMessages().
 		Then().
 		Expect(MessagesConsumed(10))
@@ -36,6 +38,8 @@ func TestWithDefaultConsumerGroup(t *testing.T) {
 		StartBroker().
 		CreateTopic().
 		PublishMessages().
+		JoinGroup().
+		SyncGroup().
 		ConsumeMessages().
 		Then().
 		Expect(MessagesConsumed(10))
@@ -54,6 +58,8 @@ func TestWithCustomConsumerGroup(t *testing.T) {
 		StartBroker().
 		CreateTopic().
 		PublishMessages().
+		JoinGroup().
+		SyncGroup().
 		ConsumeMessages().
 		Then().
 		Expect(MessagesConsumed(10))
@@ -75,6 +81,8 @@ func TestDefaultGroupOffsetSharing(t *testing.T) {
 		StartBroker().
 		CreateTopic().
 		PublishMessages().
+		JoinGroup().
+		SyncGroup().
 		ConsumeMessages().
 		Then().
 		Expect(MessagesConsumed(10))
@@ -87,6 +95,8 @@ func TestDefaultGroupOffsetSharing(t *testing.T) {
 		WithPartitions(1).
 		WithConsumerGroup(sharedGroup).
 		When().
+		JoinGroup().
+		SyncGroup().
 		ConsumeMessages().
 		Then().
 		Expect(MessagesConsumed(0))
@@ -104,7 +114,10 @@ func TestConsumerOffsetCommit(t *testing.T) {
 		StartBroker().
 		CreateTopic().
 		PublishMessages().
+		JoinGroup().
+		SyncGroup().
 		ConsumeMessages().
+		CommitOffset(0, 10).
 		Then().
 		Expect(OffsetsCommitted())
 }
@@ -121,6 +134,8 @@ func TestConsumerHeartbeat(t *testing.T) {
 		StartBroker().
 		CreateTopic().
 		PublishMessages().
+		JoinGroup().
+		SyncGroup().
 		ConsumeMessages().
 		Then().
 		Expect(HeartbeatsSent())

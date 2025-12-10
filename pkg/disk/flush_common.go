@@ -14,8 +14,6 @@ func (d *DiskHandler) flushLoop() {
 	ticker := time.NewTicker(d.linger)
 	defer ticker.Stop()
 
-	util.Debug("Started (batchSize=%d, linger=%v)", d.batchSize, d.linger)
-
 	var segmentTicker *time.Ticker
 	if d.segmentRollTime > 0 {
 		segmentTicker = time.NewTicker(d.segmentRollTime)

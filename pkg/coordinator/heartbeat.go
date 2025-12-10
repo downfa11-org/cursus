@@ -28,6 +28,10 @@ func (c *Coordinator) monitorHeartbeats() {
 							groupName, memberID)
 
 						delete(group.Members, memberID)
+
+						group.Generation++
+						util.Debug("⬆️ Group '%s' generation incremented to %d due to consumer '%s' timeout", groupName, group.Generation, memberID)
+
 						c.triggerRebalance(groupName)
 
 						util.Debug("❌ Consumer '%s' removed from group '%s'. Remaining members: %d",

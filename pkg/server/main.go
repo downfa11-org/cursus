@@ -186,13 +186,11 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 			var producerID string
 			var producerEpoch int64
 
-			if len(batch.Messages) > 0 {
-				lastOffset = batch.Messages[len(batch.Messages)-1].Offset
-				seqStart = batch.Messages[0].SeqNum
-				seqEnd = batch.Messages[len(batch.Messages)-1].SeqNum
-				producerID = batch.Messages[0].ProducerID
-				producerEpoch = batch.Messages[0].Epoch
-			}
+			lastOffset = batch.Messages[len(batch.Messages)-1].Offset
+			seqStart = batch.Messages[0].SeqNum
+			seqEnd = batch.Messages[len(batch.Messages)-1].SeqNum
+			producerID = batch.Messages[0].ProducerID
+			producerEpoch = batch.Messages[0].Epoch
 
 			ackResp := types.AckResponse{
 				Status:        "OK",

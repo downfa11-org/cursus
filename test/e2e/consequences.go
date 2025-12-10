@@ -36,6 +36,7 @@ func BrokerIsHealthy() Expectation {
 	}
 }
 
+// MessagesPublished verifies the count of published messages.
 func MessagesPublished(expected int) Expectation {
 	return func(ctx *TestContext) error {
 		if ctx.publishedCount != expected {
@@ -45,6 +46,7 @@ func MessagesPublished(expected int) Expectation {
 	}
 }
 
+// MessagesConsumed verifies the count of consumed messages.
 func MessagesConsumed(expected int) Expectation {
 	return func(ctx *TestContext) error {
 		if ctx.consumedCount != expected {
@@ -54,6 +56,7 @@ func MessagesConsumed(expected int) Expectation {
 	}
 }
 
+// PublisherRetriedSuccessfully verifies that at least some messages were published.
 func PublisherRetriedSuccessfully() Expectation {
 	return func(ctx *TestContext) error {
 		if ctx.publishedCount == 0 {
@@ -63,18 +66,20 @@ func PublisherRetriedSuccessfully() Expectation {
 	}
 }
 
+// MessagesPublishedSince verifies the count and ensures publication happened within a relevant timeframe.
 func MessagesPublishedSince(expected int, since time.Time) Expectation {
 	return func(ctx *TestContext) error {
 		if ctx.publishedCount != expected {
 			return fmt.Errorf("expected %d messages published, got %d", expected, ctx.publishedCount)
 		}
-		if ctx.startTime.Before(since) || time.Now().Before(since) {
-			return fmt.Errorf("messages were not published after %v", since)
+		if ctx.startTime.Before(since) {
+			return fmt.Errorf("publication started before expected time: started at %v, expected since %v", ctx.startTime, since)
 		}
 		return nil
 	}
 }
 
+// OffsetsCommitted verifies that the offset for the partition is not 0
 func OffsetsCommitted() Expectation {
 	return func(ctx *TestContext) error {
 		if ctx.consumedCount == 0 {
@@ -82,6 +87,8 @@ func OffsetsCommitted() Expectation {
 		}
 
 		client := NewBrokerClient(ctx.brokerAddr)
+		defer client.Close()
+
 		for partition := 0; partition < ctx.partitions; partition++ {
 			offset, err := client.FetchCommittedOffset(ctx.topic, partition, ctx.consumerGroup)
 			if err != nil {
@@ -95,12 +102,11 @@ func OffsetsCommitted() Expectation {
 	}
 }
 
-func HeartbeatsSent() Expectation {
+// ConsumerGroupIsActive verifies the group status via broker API.
+func ConsumerGroupIsActive() Expectation {
 	return func(ctx *TestContext) error {
 		client := NewBrokerClient(ctx.brokerAddr)
-		if err := client.RegisterConsumerGroup(ctx.topic, ctx.consumerGroup); err != nil {
-			return fmt.Errorf("failed to register consumer group: %w", err)
-		}
+		defer client.Close()
 
 		status, err := client.GetConsumerGroupStatus(ctx.consumerGroup)
 		if err != nil {
@@ -111,6 +117,42 @@ func HeartbeatsSent() Expectation {
 			return fmt.Errorf("expected group name %s, got %s", ctx.consumerGroup, status.GroupName)
 		}
 
+		if status.MemberCount < 1 {
+			return fmt.Errorf("expected at least 1 member in group %s, got %d", ctx.consumerGroup, status.MemberCount)
+		}
+
 		return nil
+	}
+}
+
+func HeartbeatsSent() Expectation {
+	return func(ctx *TestContext) error {
+		client := NewBrokerClient(ctx.brokerAddr)
+		defer client.Close()
+
+		status, err := client.GetConsumerGroupStatus(ctx.consumerGroup)
+		if err != nil {
+			return fmt.Errorf("failed to get group status for %s: %w", ctx.consumerGroup, err)
+		}
+
+		if status.GroupName != ctx.consumerGroup {
+			return fmt.Errorf("expected group name %s, got %s", ctx.consumerGroup, status.GroupName)
+		}
+
+		if status.MemberCount < 1 {
+			return fmt.Errorf("expected at least 1 member in group %s, got %d. (Run ConsumeMessages first)", ctx.consumerGroup, status.MemberCount)
+		}
+
+		threshold := time.Now().Add(-5 * time.Second)
+		for _, member := range status.Members {
+			if member.MemberID == ctx.memberID {
+				if member.LastHeartbeat.Before(threshold) {
+					return fmt.Errorf("member %s last heartbeat was too old: %v", member.MemberID, member.LastHeartbeat)
+				}
+				ctx.t.Logf("Member %s last heartbeat verified: %v", member.MemberID, member.LastHeartbeat)
+				return nil
+			}
+		}
+		return fmt.Errorf("could not find E2E client member ID (%s) in group status", ctx.memberID)
 	}
 }

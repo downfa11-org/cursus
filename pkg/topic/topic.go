@@ -3,6 +3,7 @@ package topic
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/config"
@@ -129,18 +130,17 @@ func (t *Topic) DeregisterConsumerGroup(groupName string) error {
 // Publish sends a message to one partition.
 func (t *Topic) Publish(msg types.Message) {
 	var idx int
-	t.mu.Lock()
+	partitionsLen := uint64(len(t.Partitions))
 
 	if msg.Key != "" {
 		keyID := util.GenerateID(msg.Key)
-		idx = int(keyID % uint64(len(t.Partitions)))
+		idx = int(keyID % partitionsLen)
 		util.Debug("Key-based routing to partition %d", idx)
 	} else {
-		idx = int(t.counter % uint64(len(t.Partitions)))
-		t.counter++
-		util.Debug("Round-robin routing to partition %d (counter: %d)", idx, t.counter)
+		oldCounter := atomic.AddUint64(&t.counter, 1) - 1
+		idx = int(oldCounter % partitionsLen)
+		util.Debug("Round-robin routing to partition %d (counter: %d)", idx, oldCounter)
 	}
-	t.mu.Unlock()
 
 	p := t.Partitions[idx]
 	p.Enqueue(msg)
@@ -148,25 +148,22 @@ func (t *Topic) Publish(msg types.Message) {
 
 func (t *Topic) PublishSync(msg types.Message) error {
 	var idx int
-	t.mu.Lock()
+	partitionsLen := uint64(len(t.Partitions))
 	util.Debug("Starting sync publish. Topic: %s, Key: %s", t.Name, msg.Key)
 
 	if msg.Key != "" {
 		keyID := util.GenerateID(msg.Key)
-		idx = int(keyID % uint64(len(t.Partitions)))
+		idx = int(keyID % partitionsLen)
 		util.Debug("Key-based routing to partition %d", idx)
 	} else {
-		idx = int(t.counter % uint64(len(t.Partitions)))
-		t.counter++
+		oldCounter := atomic.AddUint64(&t.counter, 1) - 1
+		idx = int(oldCounter % partitionsLen)
 		util.Debug("Round-robin routing to partition %d", idx)
 	}
-	t.mu.Unlock()
 
 	util.Debug("Calling Partition[%d].EnqueueSync", idx)
 	p := t.Partitions[idx]
-	err := p.EnqueueSync(msg)
-	util.Debug("EnqueueSync completed with error: %v", err)
-	return err
+	return p.EnqueueSync(msg)
 }
 
 func (t *Topic) PublishBatchSync(msgs []types.Message) error {
@@ -175,19 +172,18 @@ func (t *Topic) PublishBatchSync(msgs []types.Message) error {
 	}
 	partitioned := make(map[int][]types.Message)
 
-	t.mu.Lock()
+	partitionsLen := uint64(len(t.Partitions))
 	for _, msg := range msgs {
 		var idx int
 		if msg.Key != "" {
 			keyID := util.GenerateID(msg.Key)
-			idx = int(keyID % uint64(len(t.Partitions)))
+			idx = int(keyID % partitionsLen)
 		} else {
-			idx = int(t.counter % uint64(len(t.Partitions)))
-			t.counter++
+			oldCounter := atomic.AddUint64(&t.counter, 1) - 1
+			idx = int(oldCounter % partitionsLen)
 		}
 		partitioned[idx] = append(partitioned[idx], msg)
 	}
-	t.mu.Unlock()
 
 	for idx, pm := range partitioned {
 		p := t.Partitions[idx]
