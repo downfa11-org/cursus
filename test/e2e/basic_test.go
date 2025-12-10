@@ -16,6 +16,8 @@ func TestBasicPubSub(t *testing.T) {
 		StartBroker().
 		CreateTopic().
 		PublishMessages().
+		JoinGroup().
+		SyncGroup().
 		ConsumeMessages().
 		Then().
 		Expect(BrokerIsHealthy()).
@@ -51,6 +53,8 @@ func TestMultiPartition(t *testing.T) {
 		StartBroker().
 		CreateTopic().
 		PublishMessages().
+		JoinGroup().
+		SyncGroup().
 		ConsumeMessages().
 		Then().
 		Expect(MessagesPublished(20)).
