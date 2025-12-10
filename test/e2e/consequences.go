@@ -72,6 +72,9 @@ func MessagesPublishedSince(expected int, since time.Time) Expectation {
 		if ctx.publishedCount != expected {
 			return fmt.Errorf("expected %d messages published, got %d", expected, ctx.publishedCount)
 		}
+		if ctx.startTime.Before(since) {
+			return fmt.Errorf("publication started before expected time: started at %v, expected since %v", ctx.startTime, since)
+		}
 		return nil
 	}
 }

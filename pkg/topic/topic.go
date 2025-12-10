@@ -139,7 +139,7 @@ func (t *Topic) Publish(msg types.Message) {
 	} else {
 		oldCounter := atomic.AddUint64(&t.counter, 1) - 1
 		idx = int(oldCounter % partitionsLen)
-		util.Debug("Round-robin routing to partition %d (counter: %d)", idx, t.counter)
+		util.Debug("Round-robin routing to partition %d (counter: %d)", idx, oldCounter)
 	}
 
 	p := t.Partitions[idx]

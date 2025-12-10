@@ -30,7 +30,7 @@ func main() {
 
 	pub, err := producer.NewPublisher(cfg)
 	if err != nil {
-		util.Error("Failed to create publisher: %v", err)
+		util.Fatal("Failed to create publisher: %v", err)
 	}
 	defer pub.Close()
 
@@ -58,7 +58,7 @@ func main() {
 
 		for _, m := range batch {
 			if _, err := pub.PublishMessage(m); err != nil {
-				util.Error("[ERROR] publish failed: %v", err)
+				util.Error("publish failed: %v", err)
 			}
 		}
 
@@ -74,7 +74,7 @@ func main() {
 		duration := time.Since(start)
 
 		if err := pub.VerifySentSequences(total); err != nil {
-			util.Info("verify: %v", err)
+			util.Info("verify failed: %v", err)
 		}
 
 		partitionStats := make([]bench.PartitionStat, 0, pub.GetPartitionCount())

@@ -59,6 +59,9 @@ func (m *ConsumerMetrics) IsDone() bool {
 }
 
 func (m *ConsumerMetrics) PrintSummaryTo(w io.Writer) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	duration := time.Since(m.StartTime)
 	total := atomic.LoadInt64(&m.MsgCount)
 	processed := atomic.LoadInt64(&m.ProcessedCount)

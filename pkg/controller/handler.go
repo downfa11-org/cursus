@@ -593,8 +593,14 @@ EXIT - exit`
 			break
 		}
 
-		n, _ := rand.Int(rand.Reader, big.NewInt(10000))
-		randSuffix := fmt.Sprintf("%04d", n.Int64())
+		n, err := rand.Int(rand.Reader, big.NewInt(10000))
+		var randSuffix string
+		if err != nil {
+			util.Warn("Failed to generate random consumer suffix, falling back to time-based value: %v", err)
+			randSuffix = fmt.Sprintf("%04d", time.Now().UnixNano()%10000)
+		} else {
+			randSuffix = fmt.Sprintf("%04d", n.Int64())
+		}
 		consumerID = fmt.Sprintf("%s-%s", consumerID, randSuffix)
 
 		assignments, err := ch.Coordinator.AddConsumer(groupName, consumerID)
@@ -659,8 +665,7 @@ EXIT - exit`
 		}
 
 		memberAssignments := assignments[memberID]
-		respStr := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(memberAssignments)), " "), "[]")
-		resp = fmt.Sprintf("OK assignments=[%s]", respStr)
+		resp = fmt.Sprintf("OK assignments=%v", memberAssignments)
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "LEAVE_GROUP "):
 		args := parseKeyValueArgs(cmd[12:])

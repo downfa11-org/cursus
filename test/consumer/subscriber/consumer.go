@@ -166,12 +166,12 @@ func (c *Consumer) handleRebalanceSignal() {
 	c.mu.Unlock()
 
 	go func() {
-		defer atomic.StoreInt32(&c.rebalancing, 0)
 		time.Sleep(1 * time.Second)
 
 		gen, mid, assignments, err := c.joinGroup()
 		if err != nil {
 			util.Error("Rebalance join failed: %v", err)
+			atomic.StoreInt32(&c.rebalancing, 0)
 			return
 		}
 
@@ -183,6 +183,7 @@ func (c *Consumer) handleRebalanceSignal() {
 			c.partitionConsumers[pid] = pc
 		}
 		c.mu.Unlock()
+		atomic.StoreInt32(&c.rebalancing, 0)
 		c.startConsuming()
 	}()
 }
@@ -231,7 +232,6 @@ func (c *Consumer) startConsuming() {
 			}
 		}(pid, pc)
 	}
-	atomic.StoreInt32(&c.rebalancing, 0)
 }
 
 func (c *Consumer) ownsPartition(pid int) bool {

@@ -66,9 +66,12 @@ func (pc *PartitionConsumer) pollAndProcess() {
 	pc.mu.Lock()
 	conn := pc.conn
 	currentOffset := pc.offset
+	pc.mu.Unlock()
+
+	pc.consumer.mu.RLock()
 	memberID := pc.consumer.memberID
 	generation := pc.consumer.generation
-	pc.mu.Unlock()
+	pc.consumer.mu.RUnlock()
 
 	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d group=%s gen=%d member=%s",
 		pc.consumer.config.Topic, pc.partitionID, currentOffset, pc.consumer.config.GroupID, generation, memberID)
@@ -185,6 +188,10 @@ func (pc *PartitionConsumer) commitOffsetAt(offset uint64) {
 
 func (pc *PartitionConsumer) commitOffset() {
 	pc.mu.Lock()
+	if pc.offset == 0 {
+		pc.mu.Unlock()
+		return // nothing to commit yet
+	}
 	currentOffset := pc.offset - 1
 	pc.mu.Unlock()
 

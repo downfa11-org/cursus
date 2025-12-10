@@ -107,12 +107,12 @@ func (bc *BrokerClient) sendCommandAndGetResponse(cmdTopic, cmdPayload string, r
 
 	cmdBytes := util.EncodeMessage(cmdTopic, cmdPayload)
 
-	if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
-		return "", fmt.Errorf("set read deadline: %w", err)
-	}
-
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
 		return "", fmt.Errorf("send command: %w", err)
+	}
+
+	if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+		return "", fmt.Errorf("set read deadline: %w", err)
 	}
 
 	respBuf, err := util.ReadWithLength(conn)

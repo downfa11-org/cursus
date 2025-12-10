@@ -156,8 +156,9 @@ func (bc *BrokerClient) joinGroup(topic, group string) (int, string, error) {
 			}
 			if strings.HasPrefix(part, "member=") {
 				// member=e2e-consumer-1765285832171409200-6241
-				if n, scanErr := fmt.Sscanf(part, "member=%s", &newMemberID); scanErr != nil || n != 1 {
-					util.Warn("JOIN_GROUP response did not contain valid member info: %s", resp)
+				newMemberID = strings.TrimPrefix(part, "member=")
+				if newMemberID == "" {
+					util.Warn("JOIN_GROUP response contained empty member info: %s", resp)
 				}
 			}
 		}
@@ -241,15 +242,15 @@ func (bc *BrokerClient) ConsumeMessages(topic string, partition int, consumerGro
 		topic, partition, startOffset, consumerGroup, memberID, generation)
 	cmdBytes := util.EncodeMessage(topic, consumeCmd)
 
-	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-		return nil, fmt.Errorf("set read deadline: %w", err)
-	}
-
 	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
 		if resetErr := conn.SetReadDeadline(time.Time{}); resetErr != nil {
 			util.Warn("failed to reset read deadline after send failure: %v", resetErr)
 		}
 		return nil, fmt.Errorf("send consume command: %w", err)
+	}
+
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, fmt.Errorf("set read deadline: %w", err)
 	}
 
 	batchBytes, err := util.ReadWithLength(conn)

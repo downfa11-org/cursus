@@ -252,6 +252,10 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 	}
 
 	shortID := p.producer.ID[:8]
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+
 	shortEpoch := p.producer.Epoch % 1000
 	batchID := fmt.Sprintf("%s-%03d-%d-%d", shortID, shortEpoch, batchStart, batchEnd)
 	util.Info("Sending batch %s: partition=%d, messages=%d, seqRange=%d-%d", batchID, part, len(batch), batchStart, batchEnd)

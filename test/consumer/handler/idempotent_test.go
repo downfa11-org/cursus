@@ -72,16 +72,21 @@ func TestMemoryIdempotentHandler_Handle_Concurrent(t *testing.T) {
 	concurrency := 10
 	wg.Add(concurrency)
 
+	errCh := make(chan error, concurrency)
 	for i := 0; i < concurrency; i++ {
 		go func() {
 			defer wg.Done()
 			if err := h.Handle(msgs); err != nil {
-				t.Errorf("Concurrent Handle failed: %v", err)
+				errCh <- err
 			}
 		}()
 	}
 
 	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Errorf("Concurrent Handle failed: %v", err)
+	}
 
 	h.mu.RLock()
 	if len(h.processedHashes) != total {

@@ -116,14 +116,12 @@ func (a *Actions) SyncGroup() *Actions {
 
 	if client.memberID == "" {
 		a.ctx.t.Fatalf("Cannot sync group: Member ID or Generation is missing. Did you call JoinGroup()?")
-		return a
 	}
 
 	a.ctx.t.Logf("Syncing group '%s' (Gen %d) to receive partition assignments...", a.ctx.consumerGroup, client.generation)
 	assignedPartitions, err := client.syncGroup(a.ctx.topic, a.ctx.consumerGroup, client.generation, client.memberID)
 	if err != nil {
 		a.ctx.t.Fatalf("Group sync failed: %v", err)
-		return a
 	}
 	a.ctx.SyncClientState(client)
 
@@ -161,7 +159,6 @@ func (a *Actions) ConsumeMessages() *Actions {
 
 		if err != nil {
 			a.ctx.t.Fatalf("Consume assigned partition %d failed: %v", partition, err)
-			continue
 		}
 
 		a.ctx.t.Logf("Consumed %d messages from partition %d", len(messages), partition)
