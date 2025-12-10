@@ -611,11 +611,8 @@ EXIT - exit`
 					resp = fmt.Sprintf("ERROR: failed to create group: %v", regErr)
 					break
 				}
-
-				util.Debug("Group registered, Start to add consumer")
 				assignments, err = ch.Coordinator.AddConsumer(groupName, consumerID)
 				if err != nil {
-					util.Debug("add consumer errr: %v,", err)
 					resp = fmt.Sprintf("ERROR: failed to join after group creation: %v", err)
 					break
 				}
@@ -655,13 +652,15 @@ EXIT - exit`
 			break
 		}
 
-		assignments := ch.Coordinator.GetAssignments(groupName)[memberID]
-		if assignments == nil {
-			resp = "ERROR: member not found in group"
+		assignments := ch.Coordinator.GetAssignments(groupName)
+		if _, exists := assignments[memberID]; !exists {
+			resp = fmt.Sprintf("ERROR: member %s not found in group", memberID)
 			break
 		}
 
-		resp = fmt.Sprintf("OK assignments=[%s]", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(assignments)), " "), "[]"))
+		memberAssignments := assignments[memberID]
+		respStr := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(memberAssignments)), " "), "[]")
+		resp = fmt.Sprintf("OK assignments=[%s]", respStr)
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "LEAVE_GROUP "):
 		args := parseKeyValueArgs(cmd[12:])
