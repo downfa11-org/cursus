@@ -3,6 +3,7 @@ package topic
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/config"
@@ -55,13 +56,13 @@ func NewTopicManager(cfg *config.Config, hp HandlerProvider, sm *stream.StreamMa
 
 func (tm *TopicManager) CreateTopic(name string, partitionCount int) {
 	tm.mu.Lock()
-	defer tm.mu.Unlock()
 
 	if existing, ok := tm.topics[name]; ok {
 		current := len(existing.Partitions)
 		switch {
 		case partitionCount < current:
 			util.Error("⚠️ cannot decrease partitions for topic '%s' (%d → %d)\n", name, current, partitionCount)
+			tm.mu.Unlock()
 			return
 		case partitionCount > current:
 			existing.AddPartitions(partitionCount-current, tm.hp)
@@ -76,9 +77,12 @@ func (tm *TopicManager) CreateTopic(name string, partitionCount int) {
 	t, err := NewTopic(name, partitionCount, tm.hp, tm.cfg, tm.StreamManager)
 	if err != nil {
 		util.Error("❌ failed to create topic '%s': %v\n", name, err)
+		tm.mu.Unlock()
 		return
 	}
 	tm.topics[name] = t
+	tm.mu.Unlock()
+
 	t.RegisterConsumerGroup("default-group", 1)
 	util.Info("✅ topic '%s' created with %d partitions\n", name, partitionCount)
 }
@@ -111,23 +115,19 @@ func (tm *TopicManager) PublishBatchSync(topicName string, messages []types.Mess
 	}
 
 	partitioned := make(map[int][]types.Message)
-	var partitions []*Partition
 
-	t.mu.Lock()
-	partitions = make([]*Partition, len(t.Partitions))
-	copy(partitions, t.Partitions)
+	partitionsLen := uint64(len(t.Partitions))
 	for _, msg := range messages {
 		var idx int
 		if msg.Key != "" {
 			keyID := util.GenerateID(msg.Key)
-			idx = int(keyID % uint64(len(partitions)))
+			idx = int(keyID % partitionsLen)
 		} else {
-			idx = int(t.counter % uint64(len(partitions)))
-			t.counter++
+			oldCounter := atomic.AddUint64(&t.counter, 1) - 1
+			idx = int(oldCounter % partitionsLen)
 		}
 		partitioned[idx] = append(partitioned[idx], msg)
 	}
-	t.mu.Unlock()
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(partitioned))
@@ -139,7 +139,7 @@ func (tm *TopicManager) PublishBatchSync(topicName string, messages []types.Mess
 			if err := p.EnqueueBatchSync(msgs); err != nil {
 				errCh <- fmt.Errorf("partition %d: %w", p.id, err)
 			}
-		}(partitions[idx], msgs)
+		}(t.Partitions[idx], msgs)
 	}
 
 	wg.Wait()
