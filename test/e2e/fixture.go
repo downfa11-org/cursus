@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,11 @@ type TestContext struct {
 	publishedSeqNums []uint64
 	acks             string
 
+	// Consumer state
+	memberID           string
+	generation         int
+	assignedPartitions []int
+
 	// Client helper
 	client *BrokerClient
 }
@@ -46,17 +52,26 @@ func Given(t *testing.T) *TestContext {
 		publishDelayMS: 100,
 		startTime:      time.Now(),
 		consumerGroup:  fmt.Sprintf("test-group-%d", time.Now().UnixNano()),
-		producerID:     uuid.New().String(),
-		seqNum:         0,
-		acks:           "1",
-		client:         nil, // lazily initialized
+
+		memberID:   fmt.Sprintf("e2e-consumer-%d", time.Now().UnixNano()),
+		generation: 0,
+
+		producerID: uuid.New().String(),
+		seqNum:     0,
+		acks:       "1",
+		client:     nil, // lazily initialized
 	}
 }
 
 func (ctx *TestContext) getClient() *BrokerClient {
 	if ctx.client == nil {
 		ctx.client = NewBrokerClient(ctx.brokerAddr)
+
+		ctx.client.mu.Lock()
+		ctx.client.memberID = ctx.memberID
+		ctx.client.mu.Unlock()
 	}
+
 	return ctx.client
 }
 
@@ -113,7 +128,9 @@ func (ctx *TestContext) Cleanup() {
 
 	if ctx.topic != "" {
 		if err := ctx.getClient().DeleteTopic(ctx.topic); err != nil {
-			ctx.t.Logf("Failed to delete topic %s: %v", ctx.topic, err)
+			if !strings.Contains(err.Error(), "not found") {
+				ctx.t.Logf("Failed to delete topic %s: %v", ctx.topic, err)
+			}
 		} else {
 			ctx.t.Logf("Topic %s deleted", ctx.topic)
 		}
@@ -124,4 +141,16 @@ func (ctx *TestContext) Cleanup() {
 	}
 
 	time.Sleep(1 * time.Second)
+}
+
+// SyncClientState updates the TestContext with the latest group state from the BrokerClient
+func (ctx *TestContext) SyncClientState(client *BrokerClient) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+
+	if client.memberID != "" && client.memberID != ctx.memberID {
+		ctx.t.Logf("Context updated: memberID changed from '%s' to '%s'", ctx.memberID, client.memberID)
+		ctx.memberID = client.memberID
+		ctx.generation = client.generation
+	}
 }
