@@ -140,12 +140,9 @@ func HeartbeatsSent() Expectation {
 			return fmt.Errorf("expected at least 1 member in group %s, got %d. (Run ConsumeMessages first)", ctx.consumerGroup, status.MemberCount)
 		}
 
-		foundActiveMember := false
 		threshold := time.Now().Add(-5 * time.Second)
-
 		for _, member := range status.Members {
 			if member.MemberID == ctx.memberID {
-				foundActiveMember = true
 				if member.LastHeartbeat.Before(threshold) {
 					return fmt.Errorf("member %s last heartbeat was too old: %v", member.MemberID, member.LastHeartbeat)
 				}
@@ -153,11 +150,6 @@ func HeartbeatsSent() Expectation {
 				return nil
 			}
 		}
-
-		if !foundActiveMember {
-			return fmt.Errorf("could not find E2E client member ID (%s) in group status", ctx.memberID)
-		}
-
-		return nil
+		return fmt.Errorf("could not find E2E client member ID (%s) in group status", ctx.memberID)
 	}
 }
