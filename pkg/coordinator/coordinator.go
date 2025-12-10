@@ -152,23 +152,38 @@ func (c *Coordinator) AddConsumer(groupName, consumerID string) ([]int, error) {
 
 	group := c.groups[groupName]
 	if group == nil {
-		util.Error("❌ Consumer '%s' failed to join: group '%s' not found",
-			consumerID, groupName)
+		util.Error("❌ Consumer '%s' failed to join: group '%s' not found", consumerID, groupName)
 		return nil, fmt.Errorf("group not found")
 	}
 
-	util.Info("🚀 Consumer '%s' joining group '%s' (current members: %d)",
-		consumerID, groupName, len(group.Members))
+	timeout := time.Duration(c.cfg.ConsumerSessionTimeoutMS) * time.Millisecond
+	now := time.Now()
+	for memberID, member := range group.Members {
+		if now.Sub(member.LastHeartbeat) > timeout {
+			delete(group.Members, memberID)
+			util.Info("Removed inactive member %s before adding new consumer", memberID)
+		}
+	}
+
+	util.Info("🚀 Consumer '%s' joining group '%s' (current members: %d)", consumerID, groupName, len(group.Members))
 
 	group.Members[consumerID] = &MemberMetadata{
 		ID:            consumerID,
 		LastHeartbeat: time.Now(),
 	}
 
+	group.Generation++
+	util.Info("⬆️ Group '%s' generation incremented to %d", groupName, group.Generation)
+
 	c.rebalanceRange(groupName)
 	assignments := group.Members[consumerID].Assignments
+	if len(assignments) == 0 {
+		util.Warn("No assignments for new consumer %s, retrying rebalance", consumerID)
+		c.rebalanceRange(groupName)
+		assignments = group.Members[consumerID].Assignments
+	}
 
-	util.Info("✅ Consumer '%s' joined group '%s'", consumerID, groupName)
+	util.Info("✅ Consumer '%s' joined group '%s' (Gen: %d, Assignments: %v)", consumerID, groupName, group.Generation, assignments)
 	return assignments, nil
 }
 
@@ -179,15 +194,17 @@ func (c *Coordinator) RemoveConsumer(groupName, consumerID string) error {
 
 	group := c.groups[groupName]
 	if group == nil {
-		util.Error("❌ Consumer '%s' failed to leave: group '%s' not found",
-			consumerID, groupName)
+		util.Error("❌ Consumer '%s' failed to leave: group '%s' not found", consumerID, groupName)
 		return fmt.Errorf("group not found")
 	}
 
-	util.Info("👋 Consumer '%s' leaving group '%s' (current members: %d)",
-		consumerID, groupName, len(group.Members))
+	util.Info("👋 Consumer '%s' leaving group '%s' (current members: %d)", consumerID, groupName, len(group.Members))
 
 	delete(group.Members, consumerID)
+
+	group.Generation++
+	util.Info("⬆️ Group '%s' generation incremented to %d after member left", groupName, group.Generation)
+
 	c.rebalanceRange(groupName)
 	c.updateOffsetPartitionCount()
 	util.Info("✅ Consumer '%s' left group '%s'. Remaining members: %d", consumerID, groupName, len(group.Members))
