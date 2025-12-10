@@ -16,7 +16,9 @@ func (d *DummyPublisher) Publish(topic string, msg *types.Message) error {
 func (d *DummyPublisher) CreateTopic(topic string, partitionCount int) {}
 
 func TestRebalanceRange_AssignsPartitionsEvenly(t *testing.T) {
-	cfg := &config.Config{}
+	cfg := &config.Config{
+		ConsumerSessionTimeoutMS: 30000,
+	}
 	c := NewCoordinator(cfg, &DummyPublisher{})
 
 	groupName := "group1"
@@ -31,8 +33,6 @@ func TestRebalanceRange_AssignsPartitionsEvenly(t *testing.T) {
 	if _, err := c.AddConsumer(groupName, "c2"); err != nil {
 		t.Fatalf("AddConsumer c2 failed: %v", err)
 	}
-
-	c.rebalanceRange(groupName)
 
 	c.mu.RLock()
 	defer c.mu.RUnlock()

@@ -1,10 +1,11 @@
 package controller
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"net"
 	"strconv"
 	"strings"
@@ -52,7 +53,7 @@ func (ch *CommandHandler) logCommandResult(cmd, response string) {
 		status = "FAILURE"
 	}
 	cleanResponse := strings.ReplaceAll(response, "\n", " ")
-	util.Debug("%s - [%s] to Response [%s]", status, cmd, cleanResponse)
+	util.Debug("status: '%s', command: '%s' to Response '%s'", status, cmd, cleanResponse)
 }
 
 // HandleConsumeCommand is responsible for parsing the CONSUME command and streaming messages.
@@ -155,8 +156,6 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		util.Error("Failed to read messages: %v", err)
 		return streamedCount, err
 	}
-
-	util.Debug("disk read message: %v", messages)
 
 	if len(messages) == 0 && waitTimeout > 0 {
 		startTime := time.Now()
@@ -594,7 +593,14 @@ EXIT - exit`
 			break
 		}
 
-		randSuffix := fmt.Sprintf("%04d", rand.Intn(10000))
+		n, err := rand.Int(rand.Reader, big.NewInt(10000))
+		var randSuffix string
+		if err != nil {
+			util.Warn("Failed to generate random consumer suffix, falling back to time-based value: %v", err)
+			randSuffix = fmt.Sprintf("%04d", time.Now().UnixNano()%10000)
+		} else {
+			randSuffix = fmt.Sprintf("%04d", n.Int64())
+		}
 		consumerID = fmt.Sprintf("%s-%s", consumerID, randSuffix)
 
 		assignments, err := ch.Coordinator.AddConsumer(groupName, consumerID)
@@ -611,11 +617,8 @@ EXIT - exit`
 					resp = fmt.Sprintf("ERROR: failed to create group: %v", regErr)
 					break
 				}
-
-				util.Debug("Group registered, Start to add consumer")
 				assignments, err = ch.Coordinator.AddConsumer(groupName, consumerID)
 				if err != nil {
-					util.Debug("add consumer errr: %v,", err)
 					resp = fmt.Sprintf("ERROR: failed to join after group creation: %v", err)
 					break
 				}
@@ -655,13 +658,14 @@ EXIT - exit`
 			break
 		}
 
-		assignments := ch.Coordinator.GetAssignments(groupName)[memberID]
-		if assignments == nil {
-			resp = "ERROR: member not found in group"
+		assignments := ch.Coordinator.GetAssignments(groupName)
+		if _, exists := assignments[memberID]; !exists {
+			resp = fmt.Sprintf("ERROR: member %s not found in group", memberID)
 			break
 		}
 
-		resp = fmt.Sprintf("OK assignments=[%s]", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(assignments)), " "), "[]"))
+		memberAssignments := assignments[memberID]
+		resp = fmt.Sprintf("OK assignments=%v", memberAssignments)
 
 	case strings.HasPrefix(strings.ToUpper(cmd), "LEAVE_GROUP "):
 		args := parseKeyValueArgs(cmd[12:])
@@ -909,7 +913,7 @@ func (ch *CommandHandler) resolveOffset(
 
 func (ch *CommandHandler) ValidateOwnership(groupName, memberID string, generation int, partition int) bool {
 	if ch.Coordinator == nil {
-		util.Debug("failed to to validate ownership: Coordinator is nil.")
+		util.Debug("failed to validate ownership: Coordinator is nil.")
 		return false
 	}
 
