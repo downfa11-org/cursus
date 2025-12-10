@@ -32,8 +32,6 @@ func TestRebalanceRange_AssignsPartitionsEvenly(t *testing.T) {
 		t.Fatalf("AddConsumer c2 failed: %v", err)
 	}
 
-	c.rebalanceRange(groupName)
-
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	group := c.groups[groupName]
