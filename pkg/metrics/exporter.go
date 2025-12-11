@@ -19,7 +19,9 @@ func StartMetricsServer(port int) {
 		http.Handle("/metrics", promhttp.Handler())
 		addr := fmt.Sprintf(":%d", port)
 		fmt.Println("[METRICS] Prometheus exporter listening on", addr)
-		_ = http.ListenAndServe(addr, nil)
+		if err := http.ListenAndServe(addr, nil); err != nil {
+			fmt.Printf("[METRICS] Failed to start metrics server: %v\n", err)
+		}
 	}()
 }
 
@@ -27,5 +29,7 @@ func StartMetricsServer(port int) {
 func PushMetric(topic string, elapsedSeconds float64) {
 	MessagesProcessed.Inc()
 	LatencyHist.Observe(elapsedSeconds)
-	MessagesPerSec.Set(1.0 / elapsedSeconds)
+	if elapsedSeconds > 0 {
+		MessagesPerSec.Set(1.0 / elapsedSeconds)
+	}
 }

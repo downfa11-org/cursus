@@ -19,6 +19,10 @@ func (rm *RaftReplicationManager) BootstrapCluster(peers []string) error {
 	}
 
 	for _, peerAddr := range peers {
+		if peerAddr == rm.localAddr {
+			continue // skip self
+		}
+
 		configuration.Servers = append(configuration.Servers, raft.Server{
 			ID:      raft.ServerID(generateIDFromAddr(peerAddr)),
 			Address: raft.ServerAddress(peerAddr),

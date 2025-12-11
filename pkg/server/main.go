@@ -103,7 +103,7 @@ func RunServer(
 		}
 
 		cc := clusterController.NewClusterController(rm, sd, tm)
-		isrManager := replication.NewISRManager(rm)
+		isrManager := replication.NewISRManager()
 		cc.SetISRManager(isrManager)
 
 		controllerElection := clusterController.NewControllerElection(rm)
@@ -130,8 +130,8 @@ func RunServer(
 			}
 		}()
 
-		md = delivery.NewMessageDelivery(sd, cc, brokerID, localAddr)
-		util.Info("🌐 Distributed clustering enabled (brokerID=%s)", brokerID)
+		md = delivery.NewMessageDelivery(cc, brokerID, localAddr, 5*time.Second)
+		util.Info("🌐 Distributed clustering enabled (brokerID=%s, localAddr=%s)", brokerID, localAddr)
 	}
 
 	workerCh := make(chan net.Conn, maxWorkers)
@@ -329,8 +329,10 @@ func HandleConnection(
 					writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
 					continue
 				}
+				writeResponse(conn, "OK")
 			} else {
 				writeResponse(conn, "ERROR: acks=all requires distributed clustering")
+				continue
 			}
 		default:
 			writeResponse(conn, fmt.Sprintf("ERROR: invalid acks: %s", acks))

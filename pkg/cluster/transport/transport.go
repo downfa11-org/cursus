@@ -3,6 +3,8 @@ package transport
 import (
 	"net"
 	"time"
+
+	"github.com/downfa11-org/go-broker/util"
 )
 
 type Transport struct {
@@ -14,17 +16,28 @@ func NewTransport(timeout time.Duration) *Transport {
 }
 
 func (t *Transport) SendRequest(addr, command string) (string, error) {
+	util.Debug("Sending request to %s (timeout: %v)", addr, t.timeout)
+
 	conn, err := net.DialTimeout("tcp", addr, t.timeout)
 	if err != nil {
+		util.Error("Failed to connect to %s: %v", addr, err)
 		return "", err
 	}
 	defer conn.Close()
 
 	if err := t.sendCommand(conn, command); err != nil {
+		util.Error("Failed to send command to %s: %v", addr, err)
 		return "", err
 	}
 
-	return t.receiveResponse(conn)
+	resp, err := t.receiveResponse(conn)
+	if err != nil {
+		util.Error("Failed to receive response from %s: %v", addr, err)
+		return "", err
+	}
+
+	util.Debug("Successfully received response from %s", addr)
+	return resp, nil
 }
 
 func (t *Transport) sendCommand(conn net.Conn, command string) error {
@@ -40,6 +53,7 @@ func (t *Transport) sendCommand(conn net.Conn, command string) error {
 		return err
 	}
 	_, err := conn.Write(data)
+	util.Debug("Sent %d bytes to %s", len(data), conn.RemoteAddr())
 	return err
 }
 
@@ -56,5 +70,6 @@ func (t *Transport) receiveResponse(conn net.Conn) (string, error) {
 		return "", err
 	}
 
+	util.Debug("Received %d bytes from %s", msgLen, conn.RemoteAddr())
 	return string(msgBuf), nil
 }

@@ -2,15 +2,17 @@ package controller
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/cluster/replication"
+	"github.com/downfa11-org/go-broker/util"
 	"github.com/hashicorp/raft"
 )
 
 type ControllerElection struct {
 	rm       *replication.RaftReplicationManager
-	isLeader bool
+	isLeader atomic.Bool
 	leaderCh chan bool
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -27,21 +29,33 @@ func NewControllerElection(rm *replication.RaftReplicationManager) *ControllerEl
 }
 
 func (ce *ControllerElection) Start() {
+	util.Info("Starting controller leadership monitoring")
 	go ce.monitorLeadership()
 }
 
+func (ce *ControllerElection) Stop() {
+	ce.cancel()
+}
+
 func (ce *ControllerElection) monitorLeadership() {
+	util.Debug("Starting leadership monitor loop")
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ce.ctx.Done():
+			util.Info("Leadership monitor stopping: context cancelled")
 			return
 		case <-ticker.C:
 			isLeader := ce.rm.GetRaft().State() == raft.Leader
-			if isLeader != ce.isLeader {
-				ce.isLeader = isLeader
+			if isLeader != ce.isLeader.Load() {
+				ce.isLeader.Store(isLeader)
+				if isLeader {
+					util.Info("Became cluster leader")
+				} else {
+					util.Info("Lost cluster leadership")
+				}
 				ce.leaderCh <- isLeader
 			}
 		}
@@ -49,5 +63,5 @@ func (ce *ControllerElection) monitorLeadership() {
 }
 
 func (ce *ControllerElection) IsLeader() bool {
-	return ce.isLeader
+	return ce.isLeader.Load()
 }

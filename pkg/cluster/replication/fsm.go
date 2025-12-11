@@ -52,25 +52,33 @@ func (f *BrokerFSM) GetBrokers() []BrokerInfo {
 
 func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 	data := string(log.Data)
+	util.Debug("Applying log entry at index %d", log.Index)
 
 	if strings.HasPrefix(data, "REGISTER:") {
 		var broker BrokerInfo
 		if err := json.Unmarshal([]byte(data[9:]), &broker); err != nil {
+			util.Error("Failed to unmarshal broker registration: %v", err)
 			return err
 		}
 		f.mu.Lock()
 		f.brokers[broker.ID] = &broker
 		f.mu.Unlock()
+
+		util.Info("Registered broker %s at %s", broker.ID, broker.Addr)
 		return nil
 	} else if strings.HasPrefix(data, "DEREGISTER:") {
 		brokerID := data[11:]
 		f.mu.Lock()
 		delete(f.brokers, brokerID)
 		f.mu.Unlock()
+
+		util.Info("Deregistered broker %s", brokerID)
 		return nil
 	} else if strings.HasPrefix(data, "MESSAGE:") {
 		var entry ReplicationEntry
-		if err := json.Unmarshal(log.Data, &entry); err != nil {
+		jsonData := data[8:] // Skip "MESSAGE:" prefix
+		if err := json.Unmarshal([]byte(jsonData), &entry); err != nil {
+			util.Error("Failed to unmarshal replication entry: %v", err)
 			return fmt.Errorf("failed to unmarshal entry: %w", err)
 		}
 
@@ -82,25 +90,35 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 		return f.persistMessage(&entry)
 	} else if strings.HasPrefix(data, "PARTITION:") {
 		parts := strings.SplitN(data, ":", 3)
-		if len(parts) == 3 {
-			key := parts[1]
-			var metadata PartitionMetadata
-			if err := json.Unmarshal([]byte(parts[2]), &metadata); err != nil {
-				return err
-			}
 
-			f.mu.Lock()
-			f.partitionMetadata[key] = &metadata
-			f.mu.Unlock()
+		if len(parts) != 3 {
+			return fmt.Errorf("invalid PARTITION command format: expected PARTITION:key:json")
 		}
+
+		key := parts[1]
+		var metadata PartitionMetadata
+		if err := json.Unmarshal([]byte(parts[2]), &metadata); err != nil {
+			util.Error("Failed to unmarshal partition metadata: %v", err)
+			return err
+		}
+
+		f.mu.Lock()
+		f.partitionMetadata[key] = &metadata
+		f.mu.Unlock()
+
+		util.Debug("Updated partition metadata for %s", key)
+
 		return nil
 	}
 
+	util.Debug("Unknown log entry type: %s", data[:20])
 	return nil
 }
 
 func (f *BrokerFSM) Restore(rc io.ReadCloser) error {
 	defer rc.Close()
+
+	util.Info("Starting FSM restore from snapshot")
 
 	var state struct {
 		Logs              map[uint64]*ReplicationEntry  `json:"logs"`
@@ -109,6 +127,7 @@ func (f *BrokerFSM) Restore(rc io.ReadCloser) error {
 	}
 
 	if err := json.NewDecoder(rc).Decode(&state); err != nil {
+		util.Error("Failed to decode snapshot: %v", err)
 		return fmt.Errorf("failed to restore snapshot: %w", err)
 	}
 
@@ -126,17 +145,33 @@ func (f *BrokerFSM) Restore(rc io.ReadCloser) error {
 	f.applied = maxIndex
 	f.mu.Unlock()
 
+	util.Info("FSM restore completed: %d logs, %d brokers, %d partitions", len(state.Logs), len(state.Brokers), len(state.PartitionMetadata))
 	return nil
 }
 
 func (f *BrokerFSM) Snapshot() (raft.FSMSnapshot, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 
+	// Deep copy maps to avoid concurrent modification
+	logsCopy := make(map[uint64]*ReplicationEntry, len(f.logs))
+	for k, v := range f.logs {
+		logsCopy[k] = v
+	}
+	brokersCopy := make(map[string]*BrokerInfo, len(f.brokers))
+	for k, v := range f.brokers {
+		brokersCopy[k] = v
+	}
+	metadataCopy := make(map[string]*PartitionMetadata, len(f.partitionMetadata))
+	for k, v := range f.partitionMetadata {
+		metadataCopy[k] = v
+	}
+
+	util.Debug("Creating FSM snapshot")
 	return &BrokerFSMSnapshot{
-		logs:              f.logs,
-		brokers:           f.brokers,
-		partitionMetadata: f.partitionMetadata,
+		logs:              logsCopy,
+		brokers:           brokersCopy,
+		partitionMetadata: metadataCopy,
 	}, nil
 }
 
@@ -157,6 +192,7 @@ func (s *BrokerFSMSnapshot) Persist(sink raft.SnapshotSink) error {
 		PartitionMetadata: s.partitionMetadata,
 	}
 
+	util.Debug("Persisting snapshot data")
 	err := json.NewEncoder(sink).Encode(state)
 	if err != nil {
 		cancelErr := sink.Cancel()
@@ -172,6 +208,7 @@ func (s *BrokerFSMSnapshot) Release() {}
 
 func (f *BrokerFSM) persistMessage(entry *ReplicationEntry) error {
 	if f.diskHandler == nil {
+		util.Error("Disk handler not initialized for message persistence")
 		return fmt.Errorf("disk handler not initialized")
 	}
 

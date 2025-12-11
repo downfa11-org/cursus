@@ -8,6 +8,7 @@ import (
 	"github.com/downfa11-org/go-broker/pkg/cluster/discovery"
 	"github.com/downfa11-org/go-broker/pkg/cluster/replication"
 	"github.com/downfa11-org/go-broker/pkg/cluster/transport"
+	"github.com/downfa11-org/go-broker/util"
 )
 
 type ClientRouter struct {
@@ -31,16 +32,23 @@ func NewClientRouter(sd discovery.ServiceDiscovery, brokerID, localAddr string) 
 }
 
 func (r *ClientRouter) RouteTopicPartition(topic string, partition int) (*RouteDecision, error) {
+	util.Debug("Routing topic %s partition %d", topic, partition)
+
 	brokers, err := r.serviceDiscovery.DiscoverBrokers()
 	if err != nil {
+		util.Error("Failed to discover brokers for routing: %v", err)
 		return nil, fmt.Errorf("failed to discover brokers: %w", err)
 	}
 
 	if len(brokers) == 0 {
+		util.Error("No brokers available for routing")
 		return nil, fmt.Errorf("no brokers available")
 	}
 
 	target := r.selectBrokerForPartition(topic, partition, brokers)
+	isLocal := target == r.localAddr
+
+	util.Debug("Routed %s-%d to broker %s (local: %v)", topic, partition, target, isLocal)
 
 	return &RouteDecision{
 		TargetBroker: target,
@@ -50,9 +58,16 @@ func (r *ClientRouter) RouteTopicPartition(topic string, partition int) (*RouteD
 }
 
 func (r *ClientRouter) RouteConsumerGroup(groupID string) (*RouteDecision, error) {
+	util.Debug("Routing consumer group %s", groupID)
+
 	brokers, err := r.serviceDiscovery.DiscoverBrokers()
 	if err != nil {
+		util.Error("Failed to discover brokers for consumer group routing: %v", err)
 		return nil, fmt.Errorf("failed to discover brokers: %w", err)
+	}
+
+	if len(brokers) == 0 {
+		return nil, fmt.Errorf("no brokers available")
 	}
 
 	hash := fnv.New32a()
@@ -60,6 +75,9 @@ func (r *ClientRouter) RouteConsumerGroup(groupID string) (*RouteDecision, error
 	idx := hash.Sum32() % uint32(len(brokers))
 
 	target := brokers[idx].Addr
+	isLocal := target == r.localAddr
+
+	util.Debug("Routed consumer group %s to broker %s (local: %v)", groupID, target, isLocal)
 
 	return &RouteDecision{
 		TargetBroker: target,
@@ -73,10 +91,22 @@ func (r *ClientRouter) selectBrokerForPartition(topic string, partition int, bro
 	hash.Write([]byte(fmt.Sprintf("%s-%d", topic, partition)))
 	idx := hash.Sum32() % uint32(len(brokers))
 
-	return brokers[idx].Addr
+	selected := brokers[idx].Addr
+	util.Debug("Selected broker %s for %s-%d (hash index: %d)", selected, topic, partition, idx)
+	return selected
 }
 
 func (r *ClientRouter) ForwardRequest(targetBroker string, command string) (string, error) {
+	util.Debug("Forwarding request to broker %s", targetBroker)
+
 	transport := transport.NewTransport(5 * time.Second)
-	return transport.SendRequest(targetBroker, command)
+	resp, err := transport.SendRequest(targetBroker, command)
+
+	if err != nil {
+		util.Error("Failed to forward request to %s: %v", targetBroker, err)
+		return "", err
+	}
+
+	util.Debug("Received response from broker %s", targetBroker)
+	return resp, nil
 }
