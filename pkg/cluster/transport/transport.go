@@ -1,11 +1,15 @@
 package transport
 
 import (
+	"fmt"
+	"io"
 	"net"
 	"time"
 
 	"github.com/downfa11-org/go-broker/util"
 )
+
+const maxMessageSize = 64 * 1024 * 1024 // 64MB reasonable upper bound
 
 type Transport struct {
 	timeout time.Duration
@@ -24,6 +28,10 @@ func (t *Transport) SendRequest(addr, command string) (string, error) {
 		return "", err
 	}
 	defer conn.Close()
+
+	if err := conn.SetDeadline(time.Now().Add(t.timeout)); err != nil {
+		return "", err
+	}
 
 	if err := t.sendCommand(conn, command); err != nil {
 		util.Error("Failed to send command to %s: %v", addr, err)
@@ -59,14 +67,18 @@ func (t *Transport) sendCommand(conn net.Conn, command string) error {
 
 func (t *Transport) receiveResponse(conn net.Conn) (string, error) {
 	lenBuf := make([]byte, 4)
-	if _, err := conn.Read(lenBuf); err != nil {
+	if _, err := io.ReadFull(conn, lenBuf); err != nil {
 		return "", err
 	}
 
 	msgLen := uint32(lenBuf[0])<<24 | uint32(lenBuf[1])<<16 | uint32(lenBuf[2])<<8 | uint32(lenBuf[3])
+	if msgLen > maxMessageSize {
+		return "", fmt.Errorf("message size %d exceeds maximum %d", msgLen, maxMessageSize)
+	}
+
 	msgBuf := make([]byte, msgLen)
 
-	if _, err := conn.Read(msgBuf); err != nil {
+	if _, err := io.ReadFull(conn, lenBuf); err != nil {
 		return "", err
 	}
 

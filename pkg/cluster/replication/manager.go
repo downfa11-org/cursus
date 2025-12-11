@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -17,10 +18,33 @@ import (
 	"github.com/hashicorp/raft"
 )
 
+type RaftInterface interface {
+	BootstrapCluster(raft.Configuration) raft.Future
+	Apply([]byte, time.Duration) raft.ApplyFuture
+	AddVoter(raft.ServerID, raft.ServerAddress, uint64, time.Duration) raft.IndexFuture
+	State() raft.RaftState
+	Shutdown() raft.Future
+	GetConfiguration() raft.ConfigurationFuture
+	RemoveServer(raft.ServerID, uint64, time.Duration) raft.IndexFuture
+	Leader() raft.ServerAddress
+}
+
+type BrokerFSMInterface interface {
+	Apply(*raft.Log) interface{}
+	Restore(io.ReadCloser) error
+	Snapshot() (raft.FSMSnapshot, error)
+	GetBrokers() []BrokerInfo
+	GetPartitionMetadata(string) *PartitionMetadata
+}
+
+type ISRManagerInterface interface {
+	HasQuorum(string, int, int) bool
+}
+
 type RaftReplicationManager struct {
-	raft       *raft.Raft
-	fsm        *BrokerFSM
-	isrManager *ISRManager
+	raft       RaftInterface
+	fsm        BrokerFSMInterface
+	isrManager ISRManagerInterface
 
 	brokerID  string
 	localAddr string
@@ -38,11 +62,17 @@ type ReplicationEntry struct {
 }
 
 func (rm *RaftReplicationManager) GetRaft() *raft.Raft {
-	return rm.raft
+	if r, ok := rm.raft.(*raft.Raft); ok {
+		return r
+	}
+	return nil
 }
 
 func (rm *RaftReplicationManager) GetFSM() *BrokerFSM {
-	return rm.fsm
+	if f, ok := rm.fsm.(*BrokerFSM); ok {
+		return f
+	}
+	return nil
 }
 
 func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager *disk.DiskManager) (*RaftReplicationManager, error) {
