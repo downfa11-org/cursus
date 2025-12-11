@@ -1,0 +1,96 @@
+services:  
+  broker-1:  
+    build:  
+      context: ..  
+      dockerfile: Dockerfile  
+    container_name: broker-1  
+    command: ./broker  
+    environment:  
+      - CONFIG_PATH=/root/config.yaml  
+      - BROKER_ID=broker-1  
+      - ADVERTISED_HOST=broker-1  
+    volumes:  
+      - ./config.yaml:/root/config.yaml:ro  
+      - broker1-logs:/root/broker-logs  
+      - broker1-data:/root/raft-data  
+    ports:  
+      - "9001:9000"   # Broker port  
+      - "9081:9080"   # Health check port  
+      - "9101:9100"   # Metrics port  
+      - "7001:7000"   # Raft port  
+    networks:  
+      - cluster-net  
+  
+  broker-2:  
+    build:  
+      context: ..  
+      dockerfile: Dockerfile  
+    container_name: broker-2  
+    command: ./broker  
+    environment:  
+      - CONFIG_PATH=/root/config.yaml  
+      - BROKER_ID=broker-2  
+      - ADVERTISED_HOST=broker-2  
+    volumes:  
+      - ./config.yaml:/root/config.yaml:ro  
+      - broker2-logs:/root/broker-logs  
+      - broker2-data:/root/raft-data  
+    ports:  
+      - "9002:9000"  
+      - "9082:9080"  
+      - "9102:9100"  
+      - "7002:7000"  
+    networks:  
+      - cluster-net  
+    depends_on:  
+      - broker-1  
+  
+  broker-3:  
+    build:  
+      context: ..  
+      dockerfile: Dockerfile  
+    container_name: broker-3  
+    command: ./broker  
+    environment:  
+      - CONFIG_PATH=/root/config.yaml  
+      - BROKER_ID=broker-3  
+      - ADVERTISED_HOST=broker-3  
+    volumes:  
+      - ./config.yaml:/root/config.yaml:ro  
+      - broker3-logs:/root/broker-logs  
+      - broker3-data:/root/raft-data  
+    ports:  
+      - "9003:9000"  
+      - "9083:9080"  
+      - "9103:9100"  
+      - "7003:7000"  
+    networks:  
+      - cluster-net  
+    depends_on:  
+      - broker-1  
+   
+  prometheus:  
+    image: prom/prometheus:latest  
+    container_name: cluster-prometheus  
+    volumes:  
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro  
+    ports:  
+      - "9090:9090"  
+    networks:  
+      - cluster-net  
+    depends_on:  
+      - broker-1  
+      - broker-2  
+      - broker-3  
+  
+networks:  
+  cluster-net:  
+    driver: bridge  
+  
+volumes:  
+  broker1-logs:  
+  broker2-logs:  
+  broker3-logs:  
+  broker1-data:  
+  broker2-data:  
+  broker3-data:
