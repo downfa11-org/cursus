@@ -5,7 +5,7 @@ import "github.com/prometheus/client_golang/prometheus"
 var (
 	MessagesProcessed = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "broker_messages_processed_total",
-		Help: "Total number of messages processed by the benchmark",
+		Help: "Total number of messages processed by the broker",
 	})
 
 	MessagesPerSec = prometheus.NewGauge(prometheus.GaugeOpts{

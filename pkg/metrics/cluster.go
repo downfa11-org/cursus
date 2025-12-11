@@ -7,7 +7,7 @@ import (
 var (
 	ClusterBrokersTotal = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "cluster_cluster_brokers_total",
+			Name: "cluster_brokers_total",
 			Help: "Total number of brokers in the cluster",
 		},
 		[]string{"cluster_id"},
