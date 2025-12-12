@@ -58,6 +58,7 @@ type Config struct {
 	// cluster Options
 	EnabledDistribution  bool     `yaml:"enabled_distribution" json:"distribution.enabled"`
 	RaftPort             int      `yaml:"raft_port" json:"distribution.raft.port"`
+	DiscoveryPort        int      `yaml:"discovery_port" json:"distribution.discovery.port"`
 	RaftPeers            []string `yaml:"raft_peers" json:"distribution.raft.peers"`
 	StaticClusterMembers []string `yaml:"static_cluster_members" json:"static_cluster_members"`
 	BootstrapCluster     bool     `yaml:"bootstrap_cluster" json:"distribution.bootstrap"`
@@ -90,6 +91,7 @@ func defaultConfig() *Config {
 		EnableGzip:               false,
 		EnabledDistribution:      false,
 		RaftPort:                 9001,
+		DiscoveryPort:            8000,
 		RaftPeers:                []string{},
 		StaticClusterMembers:     []string{},
 		BootstrapCluster:         false,
@@ -137,6 +139,7 @@ func LoadConfig() (*Config, error) {
 	flag.BoolVar(&cfg.EnabledDistribution, "enable-distribution", cfg.EnabledDistribution, "Enable distributed clustering")
 	flag.StringVar(&cfg.AdvertisedHost, "advertised-host", cfg.AdvertisedHost, "Advertised host for discovery")
 	flag.IntVar(&cfg.RaftPort, "raft-port", cfg.RaftPort, "Raft port for replication")
+	flag.IntVar(&cfg.DiscoveryPort, "discovery-port", cfg.DiscoveryPort, "Discovery service port")
 	raftPeersFlag := flag.String("raft-peers", "", "Raft peer addresses (comma-separated)")
 	flag.BoolVar(&cfg.BootstrapCluster, "bootstrap-cluster", cfg.BootstrapCluster, "Bootstrap Raft cluster")
 	flag.IntVar(&cfg.MinInSyncReplicas, "min-insync-replicas", cfg.MinInSyncReplicas, "Minimum in-sync replicas for writes")
@@ -202,6 +205,7 @@ func LoadConfig() (*Config, error) {
 	overrideEnvBool(&cfg.EnabledDistribution, "ENABLE_DISTRIBUTION")
 	overrideEnvString(&cfg.AdvertisedHost, "ADVERTISED_HOST")
 	overrideEnvInt(&cfg.RaftPort, "RAFT_PORT")
+	overrideEnvInt(&cfg.DiscoveryPort, "DISCOVERY_PORT")
 	overrideEnvStringSlice(&cfg.RaftPeers, "RAFT_PEERS")
 	overrideEnvBool(&cfg.BootstrapCluster, "BOOTSTRAP_CLUSTER")
 	overrideEnvInt(&cfg.MinInSyncReplicas, "MIN_INSYNC_REPLICAS")
@@ -336,6 +340,9 @@ func (cfg *Config) Normalize() {
 	}
 	if cfg.RaftPort <= 0 {
 		cfg.RaftPort = 9001
+	}
+	if cfg.DiscoveryPort <= 0 {
+		cfg.DiscoveryPort = 8000
 	}
 	if strings.TrimSpace(cfg.AdvertisedHost) == "" {
 		cfg.AdvertisedHost = "localhost"

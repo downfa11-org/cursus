@@ -18,6 +18,7 @@ import (
 	"github.com/downfa11-org/go-broker/pkg/cluster/discovery"
 	"github.com/downfa11-org/go-broker/pkg/cluster/replication"
 	"github.com/downfa11-org/go-broker/pkg/cluster/routing"
+	clusterServer "github.com/downfa11-org/go-broker/pkg/cluster/server"
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/controller"
 	"github.com/downfa11-org/go-broker/pkg/coordinator"
@@ -88,19 +89,23 @@ func RunServer(
 
 	if cfg.EnabledDistribution {
 		brokerID := fmt.Sprintf("%s-%d", cfg.AdvertisedHost, cfg.BrokerPort)
-		localAddr := fmt.Sprintf("%s:%d", cfg.AdvertisedHost, cfg.BrokerPort)
+		localAddr := fmt.Sprintf("%s:%d", cfg.AdvertisedHost, cfg.RaftPort)
+		raftServerID := cfg.AdvertisedHost
 
 		var err error
-		rm, err = replication.NewRaftReplicationManager(cfg, brokerID, dm)
+		rm, err = replication.NewRaftReplicationManager(cfg, raftServerID, dm)
 		if err != nil {
 			return fmt.Errorf("failed to create raft replication manager: %w", err)
 		}
 
 		fsm := rm.GetFSM()
 		sd = discovery.NewServiceDiscovery(fsm, brokerID, localAddr, rm.GetRaft())
-		if err := sd.Register(); err != nil {
-			return fmt.Errorf("failed to register with service discovery: %w", err)
-		}
+
+		discoveryAddr := fmt.Sprintf(":%d", cfg.DiscoveryPort)
+		cs := clusterServer.NewClusterServer(sd)
+		go cs.Start(discoveryAddr)
+
+		sd.SetRaftManager(rm)
 
 		cc := clusterController.NewClusterController(rm, sd, tm)
 		isrManager := replication.NewISRManager()
@@ -113,7 +118,23 @@ func RunServer(
 		defer cancel()
 
 		go func() {
-			ticker := time.NewTicker(5 * time.Minute)
+			util.Info("🔄 Starting cluster leader election monitor...")
+			for isLeader := range controllerElection.LeaderCh() {
+				if isLeader {
+					util.Info("🎉 Became cluster leader! Registering self and starting controller.")
+					if regErr := sd.Register(); regErr != nil {
+						util.Error("❌ Failed to register as leader, attempting to step down: %v", regErr)
+						continue
+					}
+					cc.Start(ctx)
+				} else {
+					util.Info("💀 Lost cluster leadership. Stopping controller functions.")
+				}
+			}
+		}()
+
+		go func() {
+			ticker := time.NewTicker(1 * time.Minute)
 			defer ticker.Stop()
 
 			for {
@@ -129,7 +150,6 @@ func RunServer(
 				}
 			}
 		}()
-
 		md = delivery.NewMessageDelivery(cc, brokerID, localAddr, 5*time.Second)
 		util.Info("🌐 Distributed clustering enabled (brokerID=%s, localAddr=%s)", brokerID, localAddr)
 	}
