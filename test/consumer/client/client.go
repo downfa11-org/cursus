@@ -2,11 +2,11 @@ package client
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"sync"
 
 	"github.com/downfa11-org/go-broker/consumer/config"
+	"github.com/downfa11-org/go-broker/util"
 	"github.com/google/uuid"
 )
 
@@ -55,19 +55,19 @@ func (c *ConsumerClient) ConnectWithFailover() (net.Conn, string, error) {
 			return conn, broker, nil
 		}
 		lastErr = err
-		log.Printf("Failed to connect to %s: %v", broker, err)
+		util.Warn("Failed to connect to %s: %v", broker, err)
 	}
 
 	return nil, "", fmt.Errorf("failed to connect to all brokers: %w", lastErr)
 }
 
 func (c *ConsumerClient) Connect(addr string) (net.Conn, error) {
-	c.mu.Lock()
+	c.mu.RLock()
 	if conn, exists := c.connPool[addr]; exists && conn != nil {
-		c.mu.Unlock()
+		c.mu.RUnlock()
 		return conn, nil
 	}
-	c.mu.Unlock()
+	c.mu.RUnlock()
 
 	conn, err := net.Dial("tcp", addr)
 	if err == nil {

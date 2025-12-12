@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"strings"
 
@@ -37,10 +38,10 @@ func NewClusterServer(sd discovery.ServiceDiscovery) *ClusterServer {
 	return &ClusterServer{sd: sd}
 }
 
-func (h *ClusterServer) Start(addr string) error {
+func (h *ClusterServer) Start(addr string) (net.Listener, error) {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	util.Info("TCP cluster server listening at %s", addr)
@@ -49,13 +50,16 @@ func (h *ClusterServer) Start(addr string) error {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
+				if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
+					return // graceful shutdown
+				}
 				util.Error("cluster accept error: %v", err)
 				continue
 			}
 			go h.handleConnection(conn)
 		}
 	}()
-	return nil
+	return listener, nil
 }
 
 func (h *ClusterServer) handleConnection(conn net.Conn) {
@@ -68,7 +72,7 @@ func (h *ClusterServer) handleConnection(conn net.Conn) {
 		}
 
 		topic, payload := util.DecodeMessage(data)
-		util.Debug("cluster-server received conneciton: topic %s, payload %s", topic, payload)
+		util.Debug("cluster-server received connection: topic %s, payload %s", topic, payload)
 
 		if strings.HasPrefix(payload, "JOIN_CLUSTER ") {
 			h.handleJoinCluster(conn, payload)
@@ -136,12 +140,21 @@ func (h *ClusterServer) handleLeaveCluster(conn net.Conn, payload string) {
 }
 
 func (h *ClusterServer) handleListCluster(conn net.Conn) {
-	nodes, _ := h.sd.DiscoverBrokers()
+	nodes, err := h.sd.DiscoverBrokers()
+	if err != nil {
+		h.writeErrorResponse(conn, fmt.Sprintf("discovery failed: %v", err))
+		return
+	}
 	h.writeResponse(conn, nodes)
 }
 
 func (h *ClusterServer) writeResponse(conn net.Conn, resp interface{}) {
-	data, _ := json.Marshal(resp)
+	data, err := json.Marshal(resp)
+	if err != nil {
+		util.Error("cluster response marshal error: %v", err)
+		return
+	}
+
 	if err := util.WriteWithLength(conn, data); err != nil {
 		util.Error("cluster response write error: %v", err)
 	}

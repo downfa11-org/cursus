@@ -164,11 +164,12 @@ func (cc *ClusterController) selectLeaderWithLeastLoad(brokers []replication.Bro
 	var selected *replication.BrokerInfo
 	minCount := int(^uint(0) >> 1)
 
-	for _, broker := range brokers {
+	for i := range brokers {
+		broker := &brokers[i]
 		count := leaderCount[broker.Addr]
 		if count < minCount {
 			minCount = count
-			selected = &broker
+			selected = broker
 		}
 	}
 
@@ -179,6 +180,11 @@ func (cc *ClusterController) selectLeaderWithLeastLoad(brokers []replication.Bro
 }
 
 func (cc *ClusterController) UpdateISRStates() {
+	if cc.isrManager == nil {
+		util.Warn("ISRManager is nil; skipping ISR state update")
+		return
+	}
+
 	util.Debug("Updating ISR states for %d partitions", len(cc.partitionLeaders))
 	updated := 0
 
@@ -242,16 +248,14 @@ func (cc *ClusterController) assignLeader(topic string, partition int, leaderAdd
 		LeaderEpoch: epoch,
 	}
 
-	cc.partitionLeaders[key] = leaderAddr
-	cc.partitionMetadata[key] = metadata
-
-	util.Info("Assigned leader %s (epoch %d) for %s with %d replicas", leaderAddr, epoch, key, len(metadata.Replicas))
-
 	if err := cc.raftManager.UpdatePartitionLeader(topic, partition, leaderAddr); err != nil {
 		util.Error("Failed to update partition leader in raft: %v", err)
 		return err
 	}
 
+	cc.partitionLeaders[key] = leaderAddr
+	cc.partitionMetadata[key] = metadata
+	util.Info("Assigned leader %s (epoch %d) for %s with %d replicas", leaderAddr, epoch, key, len(metadata.Replicas))
 	return nil
 }
 

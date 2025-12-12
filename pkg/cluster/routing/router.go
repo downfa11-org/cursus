@@ -52,7 +52,7 @@ func (r *ClientRouter) RouteTopicPartition(topic string, partition int) (*RouteD
 
 	return &RouteDecision{
 		TargetBroker: target,
-		IsLocal:      target == r.localAddr,
+		IsLocal:      isLocal,
 		Reason:       "partition-based routing",
 	}, nil
 }

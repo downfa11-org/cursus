@@ -106,7 +106,7 @@ func RunServer(
 		discoveryAddr := fmt.Sprintf(":%d", cfg.DiscoveryPort)
 		cs := cluster.NewClusterServer(sd)
 		go func() {
-			if err := cs.Start(discoveryAddr); err != nil {
+			if _, err := cs.Start(discoveryAddr); err != nil {
 				util.Error("discovery-server start error: %v", err)
 			}
 		}()

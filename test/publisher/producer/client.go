@@ -198,6 +198,10 @@ func (pc *ProducerClient) selectBrokerForPartition(partition int) string {
 		return ""
 	}
 
+	if partition < 0 {
+		return ""
+	}
+
 	index := partition % len(pc.config.BrokerAddrs)
 	return pc.config.BrokerAddrs[index]
 }
@@ -205,6 +209,9 @@ func (pc *ProducerClient) selectBrokerForPartition(partition int) string {
 func (pc *ProducerClient) ConnectPartition(idx int, addr string, useTLS bool, certPath, keyPath string) error {
 	if addr == "" {
 		addr = pc.selectBrokerForPartition(idx)
+	}
+	if addr == "" {
+		return fmt.Errorf("no broker address available for partition %d", idx)
 	}
 
 	pc.mu.Lock()
@@ -215,14 +222,13 @@ func (pc *ProducerClient) ConnectPartition(idx int, addr string, useTLS bool, ce
 
 func (pc *ProducerClient) ReconnectPartition(idx int, addr string, useTLS bool, certPath, keyPath string) error {
 	pc.mu.Lock()
-	defer pc.mu.Unlock()
-
 	if idx < len(pc.conns) && pc.conns[idx] != nil {
 		_ = pc.conns[idx].Close()
 		pc.conns[idx] = nil
 	}
+	pc.mu.Unlock()
 
-	err := pc.connectPartitionLocked(idx, addr, useTLS, certPath, keyPath)
+	err := pc.ConnectPartition(idx, addr, useTLS, certPath, keyPath)
 	if err == nil {
 		return nil
 	}
@@ -230,7 +236,7 @@ func (pc *ProducerClient) ReconnectPartition(idx int, addr string, useTLS bool, 
 	log.Printf("Failed to reconnect to %s, trying other brokers: %v", addr, err)
 
 	if pc.config == nil {
-		return fmt.Errorf("failed to reconnect: config not initialized")
+		return fmt.Errorf("failed to reconnect to %s (no config for fallback): %w", addr, err)
 	}
 
 	for _, brokerAddr := range pc.config.BrokerAddrs {
@@ -238,12 +244,12 @@ func (pc *ProducerClient) ReconnectPartition(idx int, addr string, useTLS bool, 
 			continue
 		}
 
-		if err = pc.connectPartitionLocked(idx, brokerAddr, useTLS, certPath, keyPath); err == nil {
+		if err = pc.ConnectPartition(idx, brokerAddr, useTLS, certPath, keyPath); err == nil {
 			log.Printf("Successfully reconnected partition %d to broker %s", idx, brokerAddr)
 			return nil
 		}
 		log.Printf("Failed to reconnect to %s: %v", brokerAddr, err)
 	}
 
-	return fmt.Errorf("failed to reconnect to any broker")
+	return fmt.Errorf("failed to reconnect to any broker: %w", err)
 }

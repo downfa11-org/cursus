@@ -59,9 +59,13 @@ func LoadConfig() (*ConsumerConfig, error) {
 	cfg := &ConsumerConfig{}
 
 	flag.Func("broker-addr", "Comma-separated broker addresses", func(val string) error {
-		cfg.BrokerAddrs = strings.Split(val, ",")
-		for i, addr := range cfg.BrokerAddrs {
-			cfg.BrokerAddrs[i] = strings.TrimSpace(addr)
+		parts := strings.Split(val, ",")
+		cfg.BrokerAddrs = make([]string, 0, len(parts))
+		for _, addr := range parts {
+			trimmed := strings.TrimSpace(addr)
+			if trimmed != "" {
+				cfg.BrokerAddrs = append(cfg.BrokerAddrs, trimmed)
+			}
 		}
 		return nil
 	})
