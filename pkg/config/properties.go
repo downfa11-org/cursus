@@ -56,10 +56,13 @@ type Config struct {
 	TLSCert tls.Certificate
 
 	// cluster Options
-	EnabledDistribution bool   `yaml:"enabled_distribution" json:"distribution.enabled"`
-	RaftPort            int    `yaml:"raft_port" json:"distribution.raft.port"`
-	AdvertisedHost      string `yaml:"advertised_host" json:"distribution.advertised_host"`
-	MinInSyncReplicas   int    `yaml:"min_insync_replicas" json:"min.insync.replicas"`
+	EnabledDistribution  bool     `yaml:"enabled_distribution" json:"distribution.enabled"`
+	RaftPort             int      `yaml:"raft_port" json:"distribution.raft.port"`
+	RaftPeers            []string `yaml:"raft_peers" json:"distribution.raft.peers"`
+	StaticClusterMembers []string `yaml:"static_cluster_members" json:"static_cluster_members"`
+	BootstrapCluster     bool     `yaml:"bootstrap_cluster" json:"distribution.bootstrap"`
+	AdvertisedHost       string   `yaml:"advertised_host" json:"distribution.advertised_host"`
+	MinInSyncReplicas    int      `yaml:"min_insync_replicas" json:"min.insync.replicas"`
 }
 
 func defaultConfig() *Config {
@@ -87,6 +90,9 @@ func defaultConfig() *Config {
 		EnableGzip:               false,
 		EnabledDistribution:      false,
 		RaftPort:                 9001,
+		RaftPeers:                []string{},
+		StaticClusterMembers:     []string{},
+		BootstrapCluster:         false,
 		AdvertisedHost:           "localhost",
 		MinInSyncReplicas:        2,
 	}
@@ -131,6 +137,8 @@ func LoadConfig() (*Config, error) {
 	flag.BoolVar(&cfg.EnabledDistribution, "enable-distribution", cfg.EnabledDistribution, "Enable distributed clustering")
 	flag.StringVar(&cfg.AdvertisedHost, "advertised-host", cfg.AdvertisedHost, "Advertised host for discovery")
 	flag.IntVar(&cfg.RaftPort, "raft-port", cfg.RaftPort, "Raft port for replication")
+	raftPeersFlag := flag.String("raft-peers", "", "Raft peer addresses (comma-separated)")
+	flag.BoolVar(&cfg.BootstrapCluster, "bootstrap-cluster", cfg.BootstrapCluster, "Bootstrap Raft cluster")
 	flag.IntVar(&cfg.MinInSyncReplicas, "min-insync-replicas", cfg.MinInSyncReplicas, "Minimum in-sync replicas for writes")
 
 	flag.Parse()
@@ -154,7 +162,7 @@ func LoadConfig() (*Config, error) {
 		data, err := os.ReadFile(*configPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				util.Info("Config file %s not found, using flag defaults", *configPath)
+				util.Error("Config file %s not found, using flag defaults", *configPath)
 				return cfg, nil
 			}
 			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
@@ -167,6 +175,13 @@ func LoadConfig() (*Config, error) {
 			if err := yaml.Unmarshal(data, cfg); err != nil {
 				return nil, err
 			}
+		}
+	}
+
+	if *raftPeersFlag != "" {
+		cfg.RaftPeers = strings.Split(*raftPeersFlag, ",")
+		for i, s := range cfg.RaftPeers {
+			cfg.RaftPeers[i] = strings.TrimSpace(s)
 		}
 	}
 
@@ -187,6 +202,8 @@ func LoadConfig() (*Config, error) {
 	overrideEnvBool(&cfg.EnabledDistribution, "ENABLE_DISTRIBUTION")
 	overrideEnvString(&cfg.AdvertisedHost, "ADVERTISED_HOST")
 	overrideEnvInt(&cfg.RaftPort, "RAFT_PORT")
+	overrideEnvStringSlice(&cfg.RaftPeers, "RAFT_PEERS")
+	overrideEnvBool(&cfg.BootstrapCluster, "BOOTSTRAP_CLUSTER")
 	overrideEnvInt(&cfg.MinInSyncReplicas, "MIN_INSYNC_REPLICAS")
 
 	cfg.Normalize()
@@ -221,6 +238,15 @@ func overrideEnvBool(target *bool, key string) {
 func overrideEnvString(target *string, key string) {
 	if v := os.Getenv(key); v != "" {
 		*target = v
+	}
+}
+
+func overrideEnvStringSlice(target *[]string, key string) {
+	if v := os.Getenv(key); v != "" {
+		*target = strings.Split(v, ",")
+		for i, s := range *target {
+			(*target)[i] = strings.TrimSpace(s)
+		}
 	}
 }
 

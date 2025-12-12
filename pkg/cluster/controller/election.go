@@ -65,3 +65,7 @@ func (ce *ControllerElection) monitorLeadership() {
 func (ce *ControllerElection) IsLeader() bool {
 	return ce.isLeader.Load()
 }
+
+func (ce *ControllerElection) LeaderCh() <-chan bool {
+	return ce.leaderCh
+}

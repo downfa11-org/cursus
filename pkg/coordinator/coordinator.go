@@ -87,7 +87,6 @@ func NewCoordinator(cfg *config.Config, publisher OffsetPublisher) *Coordinator 
 		offsets:                   make(map[string]map[string]map[int]uint64),
 	}
 
-	// Create offset topic based on initial partition count.
 	publisher.CreateTopic(c.offsetTopic, c.offsetTopicPartitionCount)
 	return c
 }
@@ -122,7 +121,6 @@ func (c *Coordinator) RegisterGroup(topicName, groupName string, partitionCount 
 		Partitions: partitions,
 	}
 
-	// NOTE: updateOffsetPartitionCount assumes caller holds the lock to avoid deadlock.
 	c.updateOffsetPartitionCount()
 	return nil
 }
@@ -266,13 +264,11 @@ func (c *Coordinator) GetGroupStatus(groupName string) (*GroupStatus, error) {
 		return nil, fmt.Errorf("group '%s' not found", groupName)
 	}
 
-	// Determine group state
 	state := "Stable"
 	if len(group.Members) == 0 {
 		state = "Dead"
 	}
 
-	// Build member info list
 	members := make([]MemberInfo, 0, len(group.Members))
 	for _, member := range group.Members {
 		members = append(members, MemberInfo{
@@ -353,12 +349,7 @@ func (c *Coordinator) GetOffset(group, topic string, partition int) (uint64, err
 }
 
 // updateOffsetPartitionCount updates the number of partitions for the internal offset topic.
-//
-// IMPORTANT: this function DOES NOT acquire c.mu. Callers MUST hold the Coordinator lock
-// (either c.mu.Lock() or c.mu.RLock() as appropriate) before calling this to avoid races.
-// This change removes deadlock caused by nested locking when callers already hold the lock.
 func (c *Coordinator) updateOffsetPartitionCount() {
-	// NOTE: intentionally no locking here. Caller must hold lock.
 	groupCount := len(c.groups)
 	newCount := calculateOffsetPartitionCount(groupCount)
 

@@ -14,8 +14,14 @@ type MockServiceDiscovery struct {
 	DiscoverBrokersFunc func() ([]replication.BrokerInfo, error)
 }
 
-func (m *MockServiceDiscovery) Register() error   { return nil }
-func (m *MockServiceDiscovery) Deregister() error { return nil }
+func (m *MockServiceDiscovery) Register() error                                       { return nil }
+func (m *MockServiceDiscovery) Deregister() error                                     { return nil }
+func (m *MockServiceDiscovery) JoinCluster(arg1, arg2 string) (string, error)         { return "", nil }
+func (m *MockServiceDiscovery) SetRaftManager(rm *replication.RaftReplicationManager) {}
+func (m *MockServiceDiscovery) AddNode(nodeID string, addr string) (leader string, err error) {
+	return "", nil
+}
+func (m *MockServiceDiscovery) RemoveNode(nodeID string) (leader string, err error) { return "", nil }
 func (m *MockServiceDiscovery) DiscoverBrokers() ([]replication.BrokerInfo, error) {
 	return m.DiscoverBrokersFunc()
 }
