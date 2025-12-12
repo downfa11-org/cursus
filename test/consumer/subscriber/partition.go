@@ -1,9 +1,8 @@
 package subscriber
 
 import (
-	"errors"
 	"fmt"
-	"io"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -30,27 +29,21 @@ func (pc *PartitionConsumer) ensureConnection() error {
 	if pc.closed {
 		return fmt.Errorf("partition consumer closed")
 	}
-
 	if pc.conn != nil {
-		pc.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		if _, err := pc.conn.Read([]byte{}); err != nil {
-			if !errors.Is(err, io.EOF) && !strings.Contains(err.Error(), "timeout") {
-				pc.conn.Close()
-				pc.conn = nil
-			}
-		} else {
-			pc.conn.SetReadDeadline(time.Time{})
-			return nil
-		}
+		return nil
 	}
 
 	var err error
-	for i := 0; i < pc.consumer.config.MaxConnectRetries; i++ {
-		pc.conn, err = pc.consumer.client.Connect(pc.consumer.config.BrokerAddr)
-		if err == nil {
+	for attempt := 0; attempt < pc.consumer.config.MaxConnectRetries; attempt++ {
+		conn, broker, connectErr := pc.consumer.client.ConnectWithFailover()
+		if connectErr == nil {
+			pc.conn = conn
+			log.Printf("Partition [%d] connected to broker %s", pc.partitionID, broker)
 			return nil
 		}
-		util.Error("Partition [%d] connect retry %d failed: %v", pc.partitionID, i+1, err)
+		err = connectErr
+		log.Printf("Partition [%d] connect attempt %d failed: %v", pc.partitionID, attempt+1, err)
+
 		duration := time.Duration(pc.consumer.config.ConnectRetryBackoffMS) * time.Millisecond
 		time.Sleep(duration)
 	}
@@ -195,7 +188,7 @@ func (pc *PartitionConsumer) commitOffset() {
 	currentOffset := pc.offset - 1
 	pc.mu.Unlock()
 
-	conn, err := pc.consumer.client.Connect(pc.consumer.config.BrokerAddr)
+	conn, _, err := pc.consumer.client.ConnectWithFailover()
 	if err != nil {
 		util.Error("Partition [%d] commit connect failed: %v", pc.partitionID, err)
 		return

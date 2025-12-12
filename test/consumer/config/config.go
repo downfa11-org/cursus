@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/downfa11-org/go-broker/util"
@@ -20,7 +21,10 @@ const (
 )
 
 type ConsumerConfig struct {
-	BrokerAddr string `yaml:"broker_addr" json:"broker_addr"`
+	BrokerAddrs        []string     `yaml:"broker_addrs" json:"broker_addrs"`
+	CurrentBrokerIndex int          `yaml:"-" json:"-"`
+	mu                 sync.RWMutex `yaml:"-" json:"-"`
+
 	Topic      string `yaml:"topic" json:"topic"`
 	GroupID    string `yaml:"group_id" json:"group_id"`
 	ConsumerID string `yaml:"consumer_id" json:"consumer_id"`
@@ -51,6 +55,15 @@ type ConsumerConfig struct {
 
 func LoadConfig() (*ConsumerConfig, error) {
 	cfg := &ConsumerConfig{}
+
+	flag.Func("broker-addr", "Comma-separated broker addresses", func(val string) error {
+		cfg.BrokerAddrs = strings.Split(val, ",")
+		for i, addr := range cfg.BrokerAddrs {
+			cfg.BrokerAddrs[i] = strings.TrimSpace(addr)
+		}
+		return nil
+	})
+
 	flag.StringVar(&cfg.ConsumerID, "consumer-id", "consumer-1", "Consumer ID")
 	flag.StringVar(&cfg.GroupID, "group-id", "default-group", "Consumer group ID")
 	flag.StringVar(&cfg.Topic, "topic", "", "Topic to consume")
@@ -89,7 +102,7 @@ func LoadConfig() (*ConsumerConfig, error) {
 		data, err := os.ReadFile(*configPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				util.Fatal("Config file %s not found, using flag defaults", *configPath)
+				util.Error("Config file %s not found, using flag defaults", *configPath)
 				return cfg, nil
 			}
 			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
@@ -105,8 +118,8 @@ func LoadConfig() (*ConsumerConfig, error) {
 		}
 	}
 
-	if len(cfg.BrokerAddr) == 0 {
-		cfg.BrokerAddr = "localhost:9000"
+	if len(cfg.BrokerAddrs) == 0 {
+		cfg.BrokerAddrs = []string{"localhost:9000"}
 	}
 	if cfg.PollInterval == 0 {
 		cfg.PollInterval = 500 * time.Millisecond

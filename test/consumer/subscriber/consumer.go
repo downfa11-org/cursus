@@ -22,7 +22,7 @@ import (
 )
 
 type Consumer struct {
-	config             config.ConsumerConfig
+	config             *config.ConsumerConfig
 	client             *client.ConsumerClient
 	partitionConsumers map[int]*PartitionConsumer
 
@@ -52,8 +52,8 @@ type commitEntry struct {
 	offset    uint64
 }
 
-func NewConsumer(cfg config.ConsumerConfig) (*Consumer, error) {
-	client := client.NewConsumerClient()
+func NewConsumer(cfg *config.ConsumerConfig) (*Consumer, error) {
+	client := client.NewConsumerClient(cfg)
 	c := &Consumer{
 		config:             cfg,
 		client:             client,
@@ -121,7 +121,15 @@ func (c *Consumer) heartbeatLoop() {
 			return
 		case <-ticker.C:
 			// send heartbeat with generation and memberID
-			conn, err := c.client.Connect(c.config.BrokerAddr)
+			var brokerAddr string
+			if len(c.config.BrokerAddrs) > 0 {
+				brokerAddr = c.config.BrokerAddrs[0]
+			} else {
+				util.Error("No broker addresses configured for heartbeat")
+				continue
+			}
+
+			conn, err := c.client.Connect(brokerAddr)
 			if err != nil {
 				util.Error("heartbeat connect failed: %v", err)
 				continue
@@ -289,7 +297,14 @@ func (c *Consumer) joinGroup() (generation int64, memberID string, assignments [
 		return c.generation, c.memberID, assignments, nil
 	}
 
-	conn, err := c.client.Connect(c.config.BrokerAddr)
+	var brokerAddr string
+	if len(c.config.BrokerAddrs) > 0 {
+		brokerAddr = c.config.BrokerAddrs[0]
+	} else {
+		return 0, "", nil, fmt.Errorf("no broker addresses configured")
+	}
+
+	conn, err := c.client.Connect(brokerAddr)
 	if err != nil {
 		return 0, "", nil, fmt.Errorf("connect failed: %w", err)
 	}
@@ -356,7 +371,14 @@ func (c *Consumer) joinGroup() (generation int64, memberID string, assignments [
 }
 
 func (c *Consumer) syncGroup(generation int64, memberID string) ([]int, error) {
-	conn, err := c.client.Connect(c.config.BrokerAddr)
+	var brokerAddr string
+	if len(c.config.BrokerAddrs) > 0 {
+		brokerAddr = c.config.BrokerAddrs[0]
+	} else {
+		return nil, fmt.Errorf("no broker addresses configured")
+	}
+
+	conn, err := c.client.Connect(brokerAddr)
 	if err != nil {
 		return nil, fmt.Errorf("connect failed: %w", err)
 	}
@@ -582,7 +604,14 @@ func (c *Consumer) processBatchSync(msgs []types.Message, partition int) error {
 }
 
 func (c *Consumer) directCommit(partition int, offset uint64) error {
-	conn, err := c.client.Connect(c.config.BrokerAddr)
+	var brokerAddr string
+	if len(c.config.BrokerAddrs) > 0 {
+		brokerAddr = c.config.BrokerAddrs[0]
+	} else {
+		return fmt.Errorf("no broker addresses configured")
+	}
+
+	conn, err := c.client.Connect(brokerAddr)
 	if err != nil {
 		return fmt.Errorf("direct commit connect failed: %v", err)
 	}
@@ -622,7 +651,14 @@ func (c *Consumer) Close() error {
 	c.closed = true
 
 	if c.memberID != "" {
-		conn, err := c.client.Connect(c.config.BrokerAddr)
+		var brokerAddr string
+		if len(c.config.BrokerAddrs) > 0 {
+			brokerAddr = c.config.BrokerAddrs[0]
+		} else {
+			return fmt.Errorf("no broker addresses configured")
+		}
+
+		conn, err := c.client.Connect(brokerAddr)
 		if err == nil {
 			defer conn.Close()
 			leaveCmd := fmt.Sprintf("LEAVE_GROUP topic=%s group=%s consumer=%s",

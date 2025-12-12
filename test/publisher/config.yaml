@@ -1,4 +1,5 @@
-broker_addr: "broker:9000"
+broker_addrs:  
+  - "broker:9000" 
 enable_benchmark: true
 
 max_retries: 1
