@@ -642,6 +642,10 @@ func (c *Consumer) directCommit(partition int, offset uint64) error {
 	return nil
 }
 
+func (c *Consumer) isDistributedMode() bool {
+	return len(c.config.BrokerAddrs) > 1
+}
+
 func (c *Consumer) Close() error {
 	c.closeMu.Lock()
 	defer c.closeMu.Unlock()

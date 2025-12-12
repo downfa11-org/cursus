@@ -13,12 +13,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/downfa11-org/go-broker/pkg/cluster"
+	clusterClient "github.com/downfa11-org/go-broker/pkg/cluster/client"
 	clusterController "github.com/downfa11-org/go-broker/pkg/cluster/controller"
 	"github.com/downfa11-org/go-broker/pkg/cluster/delivery"
 	"github.com/downfa11-org/go-broker/pkg/cluster/discovery"
 	"github.com/downfa11-org/go-broker/pkg/cluster/replication"
 	"github.com/downfa11-org/go-broker/pkg/cluster/routing"
-	clusterServer "github.com/downfa11-org/go-broker/pkg/cluster/server"
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/controller"
 	"github.com/downfa11-org/go-broker/pkg/coordinator"
@@ -93,7 +94,8 @@ func RunServer(
 		raftServerID := cfg.AdvertisedHost
 
 		var err error
-		rm, err = replication.NewRaftReplicationManager(cfg, raftServerID, dm)
+		clusterClient := &clusterClient.HTTPClusterClient{}
+		rm, err = replication.NewRaftReplicationManager(cfg, raftServerID, dm, clusterClient)
 		if err != nil {
 			return fmt.Errorf("failed to create raft replication manager: %w", err)
 		}
@@ -102,8 +104,12 @@ func RunServer(
 		sd = discovery.NewServiceDiscovery(fsm, brokerID, localAddr, rm.GetRaft())
 
 		discoveryAddr := fmt.Sprintf(":%d", cfg.DiscoveryPort)
-		cs := clusterServer.NewClusterServer(sd)
-		go cs.Start(discoveryAddr)
+		cs := cluster.NewClusterServer(sd)
+		go func() {
+			if err := cs.Start(discoveryAddr); err != nil {
+				util.Error("discovery-server start error: %v", err)
+			}
+		}()
 
 		sd.SetRaftManager(rm)
 

@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	client "github.com/downfa11-org/go-broker/pkg/cluster/client"
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/disk"
 	"github.com/downfa11-org/go-broker/pkg/metrics"
@@ -75,7 +78,7 @@ func (rm *RaftReplicationManager) GetFSM() *BrokerFSM {
 	return nil
 }
 
-func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager *disk.DiskManager) (*RaftReplicationManager, error) {
+func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager *disk.DiskManager, clusterClient client.ClusterClient) (*RaftReplicationManager, error) {
 	diskHandler, err := diskManager.GetHandler("replicated", 0)
 	if err != nil {
 		util.Error("Failed to get disk handler for replication: %v", err)
@@ -88,24 +91,39 @@ func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager 
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(brokerID)
 
+	config.ProtocolVersion = raft.ProtocolVersionMax
+	config.HeartbeatTimeout = 500 * time.Millisecond
+	config.ElectionTimeout = 1500 * time.Millisecond
+	config.CommitTimeout = 100 * time.Millisecond
+	config.LogLevel = "Debug"
+
+	if len(cfg.StaticClusterMembers) >= 3 {
+		config.PreVoteDisabled = true
+	}
+
 	dataDir := filepath.Join(cfg.LogDir, "raft")
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		util.Error("Failed to create raft data directory %s: %v", dataDir, err)
 		return nil, fmt.Errorf("failed to create raft data directory: %w", err)
 	}
 
-	util.Debug("Raft configuration: localAddr=%s, dataDir=%s", localAddr, dataDir)
-
 	logStore := raft.NewInmemStore()
 	stableStore := raft.NewInmemStore()
+
 	snapshots, err := raft.NewFileSnapshotStore(dataDir, 3, os.Stderr)
 	if err != nil {
 		util.Error("Failed to create snapshot store: %v", err)
 		return nil, fmt.Errorf("failed to create snapshot store: %w", err)
 	}
 
-	addr := fmt.Sprintf("%s:%d", cfg.AdvertisedHost, cfg.RaftPort)
-	transport, err := raft.NewTCPTransport(addr, nil, 3, 10*time.Second, os.Stderr)
+	advertiseTCPAddr, err := net.ResolveTCPAddr("tcp", localAddr)
+	if err != nil {
+		util.Error("Failed to resolve advertised address %s: %v", localAddr, err)
+		return nil, fmt.Errorf("failed to resolve advertised address: %w", err)
+	}
+
+	bindAddr := fmt.Sprintf("0.0.0.0:%d", cfg.RaftPort)
+	transport, err := raft.NewTCPTransport(bindAddr, advertiseTCPAddr, 3, 10*time.Second, os.Stderr)
 	if err != nil {
 		util.Error("Failed to create raft transport: %v", err)
 		return nil, fmt.Errorf("failed to create transport: %w", err)
@@ -117,14 +135,104 @@ func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager 
 		return nil, fmt.Errorf("failed to create raft: %w", err)
 	}
 
-	return &RaftReplicationManager{
+	if cfg.BootstrapCluster {
+		if confFuture := r.GetConfiguration(); confFuture.Error() == nil {
+			conf := confFuture.Configuration()
+			if len(conf.Servers) == 0 {
+				util.Info("🚀 Starting static cluster bootstrap")
+
+				var servers []raft.Server
+				if len(cfg.StaticClusterMembers) == 0 {
+					if staticMembers := os.Getenv("STATIC_CLUSTER_MEMBERS"); staticMembers != "" {
+						cfg.StaticClusterMembers = strings.Split(staticMembers, ",")
+					}
+				}
+
+				if len(cfg.StaticClusterMembers) == 0 {
+					return nil, fmt.Errorf("STATIC_CLUSTER_MEMBERS is required for static cluster bootstrap")
+				}
+
+				for _, member := range cfg.StaticClusterMembers {
+					member = strings.TrimSpace(member)
+					if member == "" {
+						continue
+					}
+
+					var memberID, memberAddr string
+					if strings.Contains(member, "@") {
+						parts := strings.SplitN(member, "@", 2)
+						if len(parts) == 2 {
+							memberID = parts[0]
+							memberAddr = parts[1]
+						} else {
+							continue
+						}
+					} else {
+						memberAddr = member
+						memberID = strings.Split(memberAddr, ":")[0]
+					}
+
+					servers = append(servers, raft.Server{
+						ID:       raft.ServerID(memberID),
+						Address:  raft.ServerAddress(memberAddr),
+						Suffrage: raft.Voter,
+					})
+					util.Debug("Added static cluster member: id=%s addr=%s", memberID, memberAddr)
+				}
+
+				if len(servers) == 0 {
+					return nil, fmt.Errorf("no valid servers found in StaticClusterMembers")
+				}
+
+				bootstrapConfig := raft.Configuration{Servers: servers}
+				util.Debug("Static bootstrap configuration: %+v", bootstrapConfig)
+
+				future := r.BootstrapCluster(bootstrapConfig)
+				if err := future.Error(); err != nil {
+					util.Error("Failed to bootstrap static cluster: %v", err)
+					return nil, fmt.Errorf("failed to bootstrap static cluster: %w", err)
+				}
+				util.Info("✅ Static cluster bootstrap completed")
+			}
+		}
+	} else if len(cfg.RaftPeers) > 0 {
+		go func() {
+			if err := clusterClient.JoinCluster(cfg.RaftPeers, brokerID, localAddr, cfg.DiscoveryPort); err != nil {
+				util.Error("Failed to join cluster: %v", err)
+			}
+		}()
+	}
+
+	manager := &RaftReplicationManager{
 		raft:             r,
 		brokerID:         brokerID,
 		localAddr:        localAddr,
 		peers:            make(map[string]string),
 		fsm:              fsm,
 		partitionLeaders: make(map[string]string),
-	}, nil
+	}
+
+	if cfg.LogLevel == util.LogLevelDebug {
+		go func() {
+			ticker := time.NewTicker(3 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				state := manager.raft.State()
+				leaderAddr := manager.raft.Leader()
+
+				if configFuture := manager.raft.GetConfiguration(); configFuture.Error() == nil {
+					config := configFuture.Configuration()
+					util.Debug("DEBUG_RAFT_STATE: State=%s, Leader=%s, IsLeader=%v, KnownServers=%d",
+						state.String(), leaderAddr, state == raft.Leader, len(config.Servers))
+				} else {
+					util.Debug("DEBUG_RAFT_STATE: State=%s, Leader=%s, IsLeader=%v",
+						state.String(), leaderAddr, state == raft.Leader)
+				}
+			}
+		}()
+	}
+
+	return manager, nil
 }
 
 func (rm *RaftReplicationManager) ReplicateMessage(topic string, partition int, msg types.Message) error {
