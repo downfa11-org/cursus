@@ -2,20 +2,12 @@ package cluster
 
 import (
 	"encoding/json"
-	"log"
-	"net/http"
+	"net"
+	"strings"
 
 	"github.com/downfa11-org/go-broker/pkg/cluster/discovery"
 	"github.com/downfa11-org/go-broker/util"
 )
-
-type ClusterServer struct {
-	sd discovery.ServiceDiscovery
-}
-
-func NewClusterServer(sd discovery.ServiceDiscovery) *ClusterServer {
-	return &ClusterServer{sd: sd}
-}
 
 type joinRequest struct {
 	NodeID  string `json:"node_id"`
@@ -28,46 +20,6 @@ type joinResponse struct {
 	Error   string `json:"error,omitempty"`
 }
 
-func (h *ClusterServer) handleJoinCluster(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		_ = json.NewEncoder(w).Encode(joinResponse{Success: false, Error: "method not allowed"})
-		return
-	}
-
-	var req joinRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(joinResponse{Success: false, Error: "invalid json"})
-		return
-	}
-	if req.NodeID == "" || req.Address == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(joinResponse{Success: false, Error: "missing node_id or address"})
-		return
-	}
-
-	leader, err := h.sd.AddNode(req.NodeID, req.Address)
-	if err != nil {
-		util.Error("request failed for %s@%s: %v (leader hint: %s)", req.NodeID, req.Address, err, leader)
-
-		resp := joinResponse{
-			Success: false,
-			Leader:  leader,
-			Error:   err.Error(),
-		}
-		if leader == "" {
-			w.WriteHeader(http.StatusInternalServerError)
-		} else {
-			w.WriteHeader(http.StatusConflict)
-		}
-		_ = json.NewEncoder(w).Encode(resp)
-		return
-	}
-	_ = json.NewEncoder(w).Encode(joinResponse{Success: true, Leader: leader})
-}
-
 type leaveReq struct {
 	NodeID string `json:"node_id"`
 }
@@ -77,48 +29,125 @@ type leaveResp struct {
 	Error   string `json:"error,omitempty"`
 }
 
-func (h *ClusterServer) handleLeaveCluster(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		_ = json.NewEncoder(w).Encode(leaveResp{Success: false, Error: "method not allowed"})
+type ClusterServer struct {
+	sd discovery.ServiceDiscovery
+}
+
+func NewClusterServer(sd discovery.ServiceDiscovery) *ClusterServer {
+	return &ClusterServer{sd: sd}
+}
+
+func (h *ClusterServer) Start(addr string) error {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+
+	util.Info("TCP cluster server listening at %s", addr)
+
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				util.Error("cluster accept error: %v", err)
+				continue
+			}
+			go h.handleConnection(conn)
+		}
+	}()
+	return nil
+}
+
+func (h *ClusterServer) handleConnection(conn net.Conn) {
+	defer conn.Close()
+
+	for {
+		data, err := util.ReadWithLength(conn)
+		if err != nil {
+			return
+		}
+
+		topic, payload := util.DecodeMessage(data)
+		util.Debug("cluster-server received conneciton: topic %s, payload %s", topic, payload)
+
+		if strings.HasPrefix(payload, "JOIN_CLUSTER ") {
+			h.handleJoinCluster(conn, payload)
+		} else if strings.HasPrefix(payload, "LEAVE_CLUSTER ") {
+			h.handleLeaveCluster(conn, payload)
+		} else if payload == "LIST_CLUSTER" {
+			h.handleListCluster(conn)
+		}
+	}
+}
+
+func (h *ClusterServer) handleJoinCluster(conn net.Conn, payload string) {
+	jsonData := strings.TrimPrefix(payload, "JOIN_CLUSTER ")
+	if jsonData == "" {
+		h.writeErrorResponse(conn, "missing join data")
+		return
+	}
+
+	var req joinRequest
+	if err := json.Unmarshal([]byte(jsonData), &req); err != nil {
+		h.writeErrorResponse(conn, "invalid json")
+		return
+	}
+
+	if req.NodeID == "" || req.Address == "" {
+		h.writeErrorResponse(conn, "missing node_id or address")
+		return
+	}
+
+	leader, err := h.sd.AddNode(req.NodeID, req.Address)
+	if err != nil {
+		resp := joinResponse{
+			Success: false,
+			Leader:  leader,
+			Error:   err.Error(),
+		}
+		h.writeResponse(conn, resp)
+		return
+	}
+
+	resp := joinResponse{Success: true, Leader: leader}
+	h.writeResponse(conn, resp)
+}
+
+func (h *ClusterServer) handleLeaveCluster(conn net.Conn, payload string) {
+	jsonData := strings.TrimPrefix(payload, "LEAVE_CLUSTER ")
+	if jsonData == "" {
+		h.writeErrorResponse(conn, "missing leave data")
 		return
 	}
 
 	var req leaveReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NodeID == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(leaveResp{Success: false, Error: "invalid request"})
+	if err := json.Unmarshal([]byte(jsonData), &req); err != nil || req.NodeID == "" {
+		h.writeErrorResponse(conn, "invalid request")
 		return
 	}
 
-	leader, err := h.sd.RemoveNode(req.NodeID)
+	_, err := h.sd.RemoveNode(req.NodeID)
 	if err != nil {
-		log.Printf("remove %s failed: %v (leader hint: %s)\n", req.NodeID, err, leader)
-		if leader == "" {
-			w.WriteHeader(http.StatusInternalServerError)
-		} else {
-			w.WriteHeader(http.StatusConflict)
-		}
-		_ = json.NewEncoder(w).Encode(leaveResp{Success: false, Error: err.Error()})
+		h.writeErrorResponse(conn, err.Error())
 		return
 	}
 
-	_ = json.NewEncoder(w).Encode(leaveResp{Success: true})
+	h.writeResponse(conn, leaveResp{Success: true})
 }
 
-func (h *ClusterServer) Start(addr string) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/join", h.handleJoinCluster)
-	mux.HandleFunc("/leave", h.handleLeaveCluster)
-	mux.HandleFunc("/cluster", func(w http.ResponseWriter, r *http.Request) {
-		nodes, _ := h.sd.DiscoverBrokers()
-		_ = json.NewEncoder(w).Encode(nodes)
-	})
-	go func() {
-		if err := http.ListenAndServe(addr, mux); err != nil {
-			util.Fatal("cluster server failed: %v", err)
-		}
-	}()
-	return nil
+func (h *ClusterServer) handleListCluster(conn net.Conn) {
+	nodes, _ := h.sd.DiscoverBrokers()
+	h.writeResponse(conn, nodes)
+}
+
+func (h *ClusterServer) writeResponse(conn net.Conn, resp interface{}) {
+	data, _ := json.Marshal(resp)
+	if err := util.WriteWithLength(conn, data); err != nil {
+		util.Error("cluster response write error: %v", err)
+	}
+}
+
+func (h *ClusterServer) writeErrorResponse(conn net.Conn, errMsg string) {
+	resp := joinResponse{Success: false, Error: errMsg}
+	h.writeResponse(conn, resp)
 }

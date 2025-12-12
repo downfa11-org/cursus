@@ -43,6 +43,16 @@ func (m *MockRaft) Leader() raft.ServerAddress {
 
 type MockConfigurationFuture struct {
 	raft.ConfigurationFuture
+	ConfigVal raft.Configuration
+	ErrorVal  error
+}
+
+func (m *MockConfigurationFuture) Configuration() raft.Configuration {
+	return m.ConfigVal
+}
+
+func (m *MockConfigurationFuture) Error() error {
+	return m.ErrorVal
 }
 
 func (m *MockRaft) GetConfiguration() raft.ConfigurationFuture {
@@ -119,7 +129,10 @@ func TestBootstrapCluster_Success(t *testing.T) {
 			if len(c.Servers) != 3 { // b1(self) + b2 + b3
 				t.Errorf("Expected 3 servers, got %d", len(c.Servers))
 			}
-			return &MockFuture{ErrorVal: nil}
+			return &MockConfigurationFuture{
+				ConfigVal: c,
+				ErrorVal:  nil,
+			}
 		},
 	}
 	rm := newTestRaftRM(mockRaft, nil, nil)

@@ -126,7 +126,7 @@ func (sd *serviceDiscovery) AddNode(nodeID string, addr string) (string, error) 
 
 	state := raftInst.State()
 	leaderAddr := string(raftInst.Leader())
-	if state != replicationRaftLeaderConst() {
+	if state != raft.Leader {
 		util.Debug("not leader (state=%s). leader=%s", state.String(), leaderAddr)
 		if leaderAddr == "" {
 			return leaderAddr, fmt.Errorf("not leader; leader unknown")
@@ -160,8 +160,11 @@ func (sd *serviceDiscovery) registerBrokerInfo(b *replication.BrokerInfo) error 
 		return fmt.Errorf("raft not available")
 	}
 
-	bs, _ := json.Marshal(b)
-	fut := sd.rm.GetRaft().Apply([]byte(fmt.Sprintf("REGISTER:%s", string(bs))), 5*time.Second)
+	bs, err := json.Marshal(b)
+	if err != nil {
+		return fmt.Errorf("failed to marshal broker info: %w", err)
+	}
+	fut := sd.rm.GetRaft().Apply([]byte(fmt.Sprintf("REGISTER:%s", string(bs))), defaultRaftApplyTimeout)
 	if err := fut.Error(); err != nil {
 		return err
 	}
@@ -182,7 +185,7 @@ func (sd *serviceDiscovery) RemoveNode(nodeID string) (string, error) {
 
 	state := raftInst.State()
 	leaderAddr := string(raftInst.Leader())
-	if state != replicationRaftLeaderConst() {
+	if state != raft.Leader {
 		util.Debug("not leader (state=%s). leader=%s", state.String(), leaderAddr)
 		if leaderAddr == "" {
 			return leaderAddr, fmt.Errorf("not leader; leader unknown")
@@ -203,8 +206,4 @@ func (sd *serviceDiscovery) RemoveNode(nodeID string) (string, error) {
 
 	util.Info("RemoveNode: successfully removed %s", nodeID)
 	return leaderAddr, nil
-}
-
-func replicationRaftLeaderConst() raft.RaftState {
-	return raft.Leader
 }

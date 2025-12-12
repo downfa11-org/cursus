@@ -165,7 +165,7 @@ func LoadConfig() (*Config, error) {
 		data, err := os.ReadFile(*configPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				util.Error("Config file %s not found, using flag defaults", *configPath)
+				util.Warn("Config file %s not found, using flag defaults", *configPath)
 				return cfg, nil
 			}
 			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
@@ -182,9 +182,13 @@ func LoadConfig() (*Config, error) {
 	}
 
 	if *raftPeersFlag != "" {
-		cfg.RaftPeers = strings.Split(*raftPeersFlag, ",")
-		for i, s := range cfg.RaftPeers {
-			cfg.RaftPeers[i] = strings.TrimSpace(s)
+		parts := strings.Split(*raftPeersFlag, ",")
+		cfg.RaftPeers = make([]string, 0, len(parts))
+		for _, s := range parts {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				cfg.RaftPeers = append(cfg.RaftPeers, s)
+			}
 		}
 	}
 
@@ -247,10 +251,15 @@ func overrideEnvString(target *string, key string) {
 
 func overrideEnvStringSlice(target *[]string, key string) {
 	if v := os.Getenv(key); v != "" {
-		*target = strings.Split(v, ",")
-		for i, s := range *target {
-			(*target)[i] = strings.TrimSpace(s)
+		parts := strings.Split(v, ",")
+		result := make([]string, 0, len(parts))
+		for _, s := range parts {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				result = append(result, s)
+			}
 		}
+		*target = result
 	}
 }
 

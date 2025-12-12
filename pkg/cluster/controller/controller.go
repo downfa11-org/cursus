@@ -63,7 +63,11 @@ func (cc *ClusterController) GetPartitionLeader(topic string, partition int) (st
 	cc.mu.RLock()
 	defer cc.mu.RUnlock()
 
-	leader := cc.partitionMetadata[key].Leader
+	metadata, exists := cc.partitionMetadata[key]
+	if !exists || metadata == nil {
+		return "", fmt.Errorf("metadata not found after election for %s", key)
+	}
+	leader := metadata.Leader
 	util.Info("Elected new leader for %s: %s", key, leader)
 	return leader, nil
 }
@@ -189,7 +193,11 @@ func (cc *ClusterController) UpdateISRStates() {
 		parts := strings.Split(key, "-")
 		if len(parts) == 2 {
 			topic := parts[0]
-			partition, _ := strconv.Atoi(parts[1])
+			partition, err := strconv.Atoi(parts[1])
+			if err != nil {
+				util.Warn("Invalid partition key %s: %v", key, err)
+				continue
+			}
 
 			replicas := cc.raftManager.GetPartitionReplicas(topic, partition)
 			cc.isrManager.UpdateISR(topic, partition, leader, replicas)

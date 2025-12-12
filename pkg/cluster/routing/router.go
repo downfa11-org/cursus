@@ -75,9 +75,7 @@ func (r *ClientRouter) RouteConsumerGroup(groupID string) (*RouteDecision, error
 	idx := hash.Sum32() % uint32(len(brokers))
 
 	target := brokers[idx].Addr
-	isLocal := target == r.localAddr
-
-	util.Debug("Routed consumer group %s to broker %s (local: %v)", groupID, target, isLocal)
+	util.Debug("Routed consumer group %s to broker %s (local: %v)", groupID, target, target == r.localAddr)
 
 	return &RouteDecision{
 		TargetBroker: target,

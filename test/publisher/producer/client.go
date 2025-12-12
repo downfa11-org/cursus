@@ -194,7 +194,7 @@ func (pc *ProducerClient) selectBrokerForPartition(partition int) string {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 
-	if len(pc.config.BrokerAddrs) == 0 {
+	if pc.config == nil || len(pc.config.BrokerAddrs) == 0 {
 		return ""
 	}
 
@@ -203,12 +203,12 @@ func (pc *ProducerClient) selectBrokerForPartition(partition int) string {
 }
 
 func (pc *ProducerClient) ConnectPartition(idx int, addr string, useTLS bool, certPath, keyPath string) error {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-
 	if addr == "" {
 		addr = pc.selectBrokerForPartition(idx)
 	}
+
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
 
 	return pc.connectPartitionLocked(idx, addr, useTLS, certPath, keyPath)
 }
@@ -228,6 +228,10 @@ func (pc *ProducerClient) ReconnectPartition(idx int, addr string, useTLS bool, 
 	}
 
 	log.Printf("Failed to reconnect to %s, trying other brokers: %v", addr, err)
+
+	if pc.config == nil {
+		return fmt.Errorf("failed to reconnect: config not initialized")
+	}
 
 	for _, brokerAddr := range pc.config.BrokerAddrs {
 		if brokerAddr == addr {

@@ -102,7 +102,7 @@ func LoadConfig() (*ConsumerConfig, error) {
 		data, err := os.ReadFile(*configPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				util.Error("Config file %s not found, using flag defaults", *configPath)
+				util.Warn("Config file %s not found, using flag defaults", *configPath)
 				return cfg, nil
 			}
 			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)

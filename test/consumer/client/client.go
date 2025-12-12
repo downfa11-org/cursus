@@ -39,8 +39,11 @@ func (c *ConsumerClient) GetNextBroker() string {
 }
 
 func (c *ConsumerClient) ConnectWithFailover() (net.Conn, string, error) {
-	var lastErr error
+	if len(c.config.BrokerAddrs) == 0 {
+		return nil, "", fmt.Errorf("no broker addresses configured")
+	}
 
+	var lastErr error
 	for i := 0; i < len(c.config.BrokerAddrs); i++ {
 		broker := c.GetNextBroker()
 

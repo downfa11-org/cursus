@@ -94,7 +94,7 @@ func RunServer(
 		raftServerID := cfg.AdvertisedHost
 
 		var err error
-		clusterClient := &clusterClient.HTTPClusterClient{}
+		clusterClient := clusterClient.TCPClusterClient{}
 		rm, err = replication.NewRaftReplicationManager(cfg, raftServerID, dm, clusterClient)
 		if err != nil {
 			return fmt.Errorf("failed to create raft replication manager: %w", err)

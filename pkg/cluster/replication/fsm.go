@@ -111,7 +111,11 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 		return nil
 	}
 
-	util.Debug("Unknown log entry type: %s", data[:20])
+	preview := data
+	if len(preview) > 20 {
+		preview = preview[:20]
+	}
+	util.Debug("Unknown log entry type: %s", preview)
 	return nil
 }
 
@@ -153,18 +157,20 @@ func (f *BrokerFSM) Snapshot() (raft.FSMSnapshot, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	// Deep copy maps to avoid concurrent modification
 	logsCopy := make(map[uint64]*ReplicationEntry, len(f.logs))
 	for k, v := range f.logs {
-		logsCopy[k] = v
+		entryCopy := *v
+		logsCopy[k] = &entryCopy
 	}
 	brokersCopy := make(map[string]*BrokerInfo, len(f.brokers))
 	for k, v := range f.brokers {
-		brokersCopy[k] = v
+		brokerCopy := *v
+		brokersCopy[k] = &brokerCopy
 	}
 	metadataCopy := make(map[string]*PartitionMetadata, len(f.partitionMetadata))
 	for k, v := range f.partitionMetadata {
-		metadataCopy[k] = v
+		metaCopy := *v
+		metadataCopy[k] = &metaCopy
 	}
 
 	util.Debug("Creating FSM snapshot")
@@ -219,5 +225,10 @@ func (f *BrokerFSM) persistMessage(entry *ReplicationEntry) error {
 func (f *BrokerFSM) GetPartitionMetadata(key string) *PartitionMetadata {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	return f.partitionMetadata[key]
+
+	if meta := f.partitionMetadata[key]; meta != nil {
+		copy := *meta
+		return &copy
+	}
+	return nil
 }

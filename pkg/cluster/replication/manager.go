@@ -78,7 +78,7 @@ func (rm *RaftReplicationManager) GetFSM() *BrokerFSM {
 	return nil
 }
 
-func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager *disk.DiskManager, clusterClient client.ClusterClient) (*RaftReplicationManager, error) {
+func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager *disk.DiskManager, clusterClient client.TCPClusterClient) (*RaftReplicationManager, error) {
 	diskHandler, err := diskManager.GetHandler("replicated", 0)
 	if err != nil {
 		util.Error("Failed to get disk handler for replication: %v", err)
@@ -269,7 +269,7 @@ func (rm *RaftReplicationManager) IsLeader(topic string, partition int) bool {
 func (rm *RaftReplicationManager) AddVoter(brokerID, addr string) error {
 	util.Info("Adding voter %s at %s", brokerID, addr)
 
-	configFuture := rm.raft.AddVoter(raft.ServerID(brokerID), raft.ServerAddress(addr), 0, 0)
+	configFuture := rm.raft.AddVoter(raft.ServerID(brokerID), raft.ServerAddress(addr), 0, 10*time.Second)
 	if err := configFuture.Error(); err != nil {
 		util.Error("Failed to add voter %s: %v", brokerID, err)
 		return fmt.Errorf("failed to add voter: %w", err)
