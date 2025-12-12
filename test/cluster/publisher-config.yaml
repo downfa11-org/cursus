@@ -1,12 +1,14 @@
 broker_addrs:  
-  - "broker:9000" 
+  - "broker-1:9000"  
+  - "broker-2:9000"  
+  - "broker-3:9000"  
 enable_benchmark: true
 
 max_retries: 1
 retry_backoff_ms: 50
 
 acks: "1"
-num_messages: 100000
+num_messages: 100
 partitions: 12
 max_inflight_requests: 10
 batch_size: 10000

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/downfa11-org/go-broker/pkg/cluster/routing"
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/disk"
@@ -29,6 +30,8 @@ type CommandHandler struct {
 	Config        *config.Config
 	Coordinator   *coordinator.Coordinator
 	StreamManager *stream.StreamManager
+
+	Router *routing.ClientRouter
 }
 
 type ConsumeArgs struct {
@@ -37,13 +40,14 @@ type ConsumeArgs struct {
 	Offset    uint64
 }
 
-func NewCommandHandler(tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, cd *coordinator.Coordinator, sm *stream.StreamManager) *CommandHandler {
+func NewCommandHandler(tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, cd *coordinator.Coordinator, sm *stream.StreamManager, router *routing.ClientRouter) *CommandHandler {
 	return &CommandHandler{
 		TopicManager:  tm,
 		DiskManager:   dm,
 		Config:        cfg,
 		Coordinator:   cd,
 		StreamManager: sm,
+		Router:        router,
 	}
 }
 

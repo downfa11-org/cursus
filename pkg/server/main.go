@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
@@ -12,6 +13,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/downfa11-org/go-broker/pkg/cluster"
+	clusterClient "github.com/downfa11-org/go-broker/pkg/cluster/client"
+	clusterController "github.com/downfa11-org/go-broker/pkg/cluster/controller"
+	"github.com/downfa11-org/go-broker/pkg/cluster/delivery"
+	"github.com/downfa11-org/go-broker/pkg/cluster/discovery"
+	"github.com/downfa11-org/go-broker/pkg/cluster/replication"
+	"github.com/downfa11-org/go-broker/pkg/cluster/routing"
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/controller"
 	"github.com/downfa11-org/go-broker/pkg/coordinator"
@@ -31,7 +39,14 @@ const (
 var brokerReady = &atomic.Bool{}
 
 // RunServer starts the broker with optional TLS and gzip
-func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager, cd *coordinator.Coordinator, sm *stream.StreamManager) error {
+func RunServer(
+	cfg *config.Config,
+	tm *topic.TopicManager,
+	dm *disk.DiskManager,
+	cd *coordinator.Coordinator,
+	sm *stream.StreamManager,
+) error {
+
 	if cfg.EnableExporter {
 		metrics.StartMetricsServer(cfg.ExporterPort)
 		util.Info("📈 Prometheus exporter started on port %d", cfg.ExporterPort)
@@ -69,11 +84,87 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 		util.Info("🔄 Coordinator started with heartbeat monitoring")
 	}
 
+	var sd discovery.ServiceDiscovery
+	var rm *replication.RaftReplicationManager
+	var md *delivery.MessageDelivery
+
+	if cfg.EnabledDistribution {
+		brokerID := fmt.Sprintf("%s-%d", cfg.AdvertisedHost, cfg.BrokerPort)
+		localAddr := fmt.Sprintf("%s:%d", cfg.AdvertisedHost, cfg.RaftPort)
+		raftServerID := cfg.AdvertisedHost
+
+		var err error
+		clusterClient := clusterClient.TCPClusterClient{}
+		rm, err = replication.NewRaftReplicationManager(cfg, raftServerID, dm, clusterClient)
+		if err != nil {
+			return fmt.Errorf("failed to create raft replication manager: %w", err)
+		}
+
+		fsm := rm.GetFSM()
+		sd = discovery.NewServiceDiscovery(fsm, brokerID, localAddr, rm.GetRaft())
+
+		discoveryAddr := fmt.Sprintf(":%d", cfg.DiscoveryPort)
+		cs := cluster.NewClusterServer(sd)
+		go func() {
+			if err := cs.Start(discoveryAddr); err != nil {
+				util.Error("discovery-server start error: %v", err)
+			}
+		}()
+
+		sd.SetRaftManager(rm)
+
+		cc := clusterController.NewClusterController(rm, sd, tm)
+		isrManager := replication.NewISRManager()
+		cc.SetISRManager(isrManager)
+
+		controllerElection := clusterController.NewControllerElection(rm)
+		controllerElection.Start()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		go func() {
+			util.Info("🔄 Starting cluster leader election monitor...")
+			for isLeader := range controllerElection.LeaderCh() {
+				if isLeader {
+					util.Info("🎉 Became cluster leader! Registering self and starting controller.")
+					if regErr := sd.Register(); regErr != nil {
+						util.Error("❌ Failed to register as leader, attempting to step down: %v", regErr)
+						continue
+					}
+					cc.Start(ctx)
+				} else {
+					util.Info("💀 Lost cluster leadership. Stopping controller functions.")
+				}
+			}
+		}()
+
+		go func() {
+			ticker := time.NewTicker(1 * time.Minute)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if controllerElection.IsLeader() {
+						if err := cc.RebalanceToPreferredLeaders(); err != nil {
+							util.Error("Preferred leader rebalance failed: %v", err)
+						}
+					}
+				}
+			}
+		}()
+		md = delivery.NewMessageDelivery(cc, brokerID, localAddr, 5*time.Second)
+		util.Info("🌐 Distributed clustering enabled (brokerID=%s, localAddr=%s)", brokerID, localAddr)
+	}
+
 	workerCh := make(chan net.Conn, maxWorkers)
 	for i := 0; i < maxWorkers; i++ {
 		go func() {
 			for conn := range workerCh {
-				HandleConnection(conn, tm, dm, cfg, cd, sm)
+				HandleConnection(conn, tm, dm, cfg, cd, sm, sd, rm, md)
 			}
 		}()
 	}
@@ -89,10 +180,27 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 }
 
 // HandleConnection processes a single client connection
-func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, cd *coordinator.Coordinator, sm *stream.StreamManager) {
+func HandleConnection(
+	conn net.Conn,
+	tm *topic.TopicManager,
+	dm *disk.DiskManager,
+	cfg *config.Config,
+	cd *coordinator.Coordinator,
+	sm *stream.StreamManager,
+	sd discovery.ServiceDiscovery,
+	rm *replication.RaftReplicationManager,
+	md *delivery.MessageDelivery,
+) {
 	defer conn.Close()
 
-	cmdHandler := controller.NewCommandHandler(tm, dm, cfg, cd, sm)
+	var router *routing.ClientRouter
+	if cfg.EnabledDistribution && sd != nil {
+		brokerID := fmt.Sprintf("%s-%d", cfg.AdvertisedHost, cfg.BrokerPort)
+		localAddr := fmt.Sprintf("%s:%d", cfg.AdvertisedHost, cfg.BrokerPort)
+		router = routing.NewClientRouter(sd, brokerID, localAddr)
+	}
+
+	cmdHandler := controller.NewCommandHandler(tm, dm, cfg, cd, sm, router)
 	ctx := controller.NewClientContext("default-group", 0)
 
 	writeTimeout := 10 * time.Second
@@ -229,13 +337,29 @@ func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManage
 			}
 			writeResponse(conn, "OK")
 		case "1":
-			if err := tm.PublishWithAck(topicName, msg); err != nil {
-				writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
-				continue
+			if cfg.EnabledDistribution && rm != nil {
+				if err := rm.ReplicateToLeader(topicName, 0, *msg); err != nil {
+					writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
+					continue
+				}
+			} else {
+				if err := tm.PublishWithAck(topicName, msg); err != nil {
+					writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
+					continue
+				}
 			}
 			writeResponse(conn, "OK")
-		case "-1":
-			writeResponse(conn, "ERROR: acks=-1(all) not implemented")
+		case "-1", "all":
+			if cfg.EnabledDistribution && rm != nil {
+				if err := rm.ReplicateWithQuorum(topicName, 0, *msg, cfg.MinInSyncReplicas); err != nil {
+					writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
+					continue
+				}
+				writeResponse(conn, "OK")
+			} else {
+				writeResponse(conn, "ERROR: acks=all requires distributed clustering")
+				continue
+			}
 		default:
 			writeResponse(conn, fmt.Sprintf("ERROR: invalid acks: %s", acks))
 		}

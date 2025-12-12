@@ -1,9 +1,8 @@
 package subscriber
 
 import (
-	"errors"
 	"fmt"
-	"io"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -30,27 +29,21 @@ func (pc *PartitionConsumer) ensureConnection() error {
 	if pc.closed {
 		return fmt.Errorf("partition consumer closed")
 	}
-
 	if pc.conn != nil {
-		pc.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		if _, err := pc.conn.Read([]byte{}); err != nil {
-			if !errors.Is(err, io.EOF) && !strings.Contains(err.Error(), "timeout") {
-				pc.conn.Close()
-				pc.conn = nil
-			}
-		} else {
-			pc.conn.SetReadDeadline(time.Time{})
-			return nil
-		}
+		return nil
 	}
 
 	var err error
-	for i := 0; i < pc.consumer.config.MaxConnectRetries; i++ {
-		pc.conn, err = pc.consumer.client.Connect(pc.consumer.config.BrokerAddr)
-		if err == nil {
+	for attempt := 0; attempt < pc.consumer.config.MaxConnectRetries; attempt++ {
+		conn, broker, connectErr := pc.consumer.client.ConnectWithFailover()
+		if connectErr == nil {
+			pc.conn = conn
+			log.Printf("Partition [%d] connected to broker %s", pc.partitionID, broker)
 			return nil
 		}
-		util.Error("Partition [%d] connect retry %d failed: %v", pc.partitionID, i+1, err)
+		err = connectErr
+		log.Printf("Partition [%d] connect attempt %d failed: %v", pc.partitionID, attempt+1, err)
+
 		duration := time.Duration(pc.consumer.config.ConnectRetryBackoffMS) * time.Millisecond
 		time.Sleep(duration)
 	}
@@ -67,6 +60,8 @@ func (pc *PartitionConsumer) pollAndProcess() {
 	conn := pc.conn
 	currentOffset := pc.offset
 	pc.mu.Unlock()
+
+	util.Debug("Partition [%d] Polling at offset %d", pc.partitionID, currentOffset)
 
 	pc.consumer.mu.RLock()
 	memberID := pc.consumer.memberID
@@ -99,10 +94,16 @@ func (pc *PartitionConsumer) pollAndProcess() {
 
 	if len(batch.Messages) > 0 {
 		// first := batch.Messages[0], last := batch.Messages[len(batch.Messages)-1]
+		util.Debug("Partition [%d] Received %d messages, offsets %d to %d",
+			pc.partitionID, len(batch.Messages),
+			batch.Messages[0].Offset, batch.Messages[len(batch.Messages)-1].Offset)
+
 		if err := pc.consumer.processBatchSync(batch.Messages, pc.partitionID); err != nil {
 			util.Error("Partition [%d] batch processing error: %v", pc.partitionID, err)
 		}
 		pc.updateOffsetAndCommit(batch.Messages)
+	} else {
+		util.Debug("Partition [%d] No messages received at offset %d", pc.partitionID, currentOffset)
 	}
 }
 
@@ -152,7 +153,39 @@ func (pc *PartitionConsumer) updateOffsetAndCommit(msgs []types.Message) {
 	pc.offset = lastOffset + 1
 	pc.mu.Unlock()
 
-	pc.commitOffsetAt(lastOffset)
+	if pc.consumer.isDistributedMode() {
+		if err := pc.commitOffsetWithRetry(lastOffset); err != nil {
+			util.Error("Partition [%d] Failed to commit offset %d: %v", pc.partitionID, lastOffset, err)
+			return
+		}
+	} else {
+		pc.commitOffsetAt(lastOffset)
+	}
+}
+
+func (pc *PartitionConsumer) commitOffsetWithRetry(offset uint64) error {
+	const maxRetries = 3
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		select {
+		case pc.consumer.commitCh <- commitEntry{
+			partition: pc.partitionID,
+			offset:    offset,
+		}:
+			return nil
+		default:
+			if err := pc.consumer.directCommit(pc.partitionID, offset); err != nil {
+				lastErr = err
+				util.Warn("Partition [%d] Direct commit attempt %d failed: %v", pc.partitionID, attempt+1, err)
+				time.Sleep(time.Duration(100*(attempt+1)) * time.Millisecond)
+				continue
+			}
+			return nil
+		}
+	}
+
+	return fmt.Errorf("commit failed after %d attempts: %w", maxRetries, lastErr)
 }
 
 func (pc *PartitionConsumer) commitOffsetAt(offset uint64) {
@@ -195,7 +228,7 @@ func (pc *PartitionConsumer) commitOffset() {
 	currentOffset := pc.offset - 1
 	pc.mu.Unlock()
 
-	conn, err := pc.consumer.client.Connect(pc.consumer.config.BrokerAddr)
+	conn, _, err := pc.consumer.client.ConnectWithFailover()
 	if err != nil {
 		util.Error("Partition [%d] commit connect failed: %v", pc.partitionID, err)
 		return

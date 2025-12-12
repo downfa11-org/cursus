@@ -26,7 +26,7 @@ func main() {
 		util.Info("Configuration:\n%s", string(data))
 	}
 
-	c, err := subscriber.NewConsumer(*cfg)
+	c, err := subscriber.NewConsumer(cfg)
 	if err != nil {
 		log.Fatalf("Failed to create consumer: %v", err)
 	}

@@ -12,10 +12,12 @@ import (
 )
 
 type PublisherConfig struct {
-	BrokerAddr     string `yaml:"broker_addr" json:"broker_addr"`
-	MaxRetries     int    `yaml:"max_retries" json:"max_retries"`
-	RetryBackoffMS int    `yaml:"retry_backoff_ms" json:"retry_backoff_ms"`
-	AckTimeoutMS   int    `yaml:"ack_timeout_ms" json:"ack_timeout_ms"`
+	BrokerAddrs        []string `yaml:"broker_addrs" json:"broker_addrs"`
+	CurrentBrokerIndex int      `yaml:"-" json:"-"`
+
+	MaxRetries     int `yaml:"max_retries" json:"max_retries"`
+	RetryBackoffMS int `yaml:"retry_backoff_ms" json:"retry_backoff_ms"`
+	AckTimeoutMS   int `yaml:"ack_timeout_ms" json:"ack_timeout_ms"`
 
 	Topic            string `yaml:"topic" json:"topic"`
 	AutoCreateTopics bool   `yaml:"auto_create_topics" json:"auto_create_topics"`
@@ -51,7 +53,14 @@ type PublisherConfig struct {
 func LoadPublisherConfig() (*PublisherConfig, error) {
 	cfg := &PublisherConfig{}
 
-	flag.StringVar(&cfg.BrokerAddr, "broker", "localhost:9000", "Broker address")
+	flag.Func("broker-addr", "Comma-separated broker addresses", func(val string) error {
+		cfg.BrokerAddrs = strings.Split(val, ",")
+		for i, addr := range cfg.BrokerAddrs {
+			cfg.BrokerAddrs[i] = strings.TrimSpace(addr)
+		}
+		return nil
+	})
+
 	flag.IntVar(&cfg.MaxRetries, "max-retries", 3, "Maximum retry attempts")
 	flag.IntVar(&cfg.RetryBackoffMS, "retry-backoff-ms", 100, "Initial backoff time in milliseconds")
 	flag.IntVar(&cfg.AckTimeoutMS, "ack-timeout-ms", 5000, "ACK timeout in milliseconds")
@@ -118,6 +127,9 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 		}
 	}
 
+	if len(cfg.BrokerAddrs) == 0 {
+		cfg.BrokerAddrs = []string{"localhost:9000"}
+	}
 	if cfg.MaxRetries < 0 {
 		cfg.MaxRetries = 0
 	}

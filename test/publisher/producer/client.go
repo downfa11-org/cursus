@@ -4,12 +4,14 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/downfa11-org/go-broker/publisher/config"
 	"github.com/google/uuid"
 )
 
@@ -27,6 +29,7 @@ type ProducerClient struct {
 	Epoch        int64
 	mu           sync.Mutex
 	conns        []net.Conn
+	config       *config.PublisherConfig
 }
 
 func (pc *ProducerClient) ReserveSeqRange(partition int, count int) (uint64, uint64) {
@@ -46,11 +49,12 @@ func (pc *ProducerClient) CommitSeqRange(partition int, endSeq uint64) {
 	pc.seqNums[partition].Store(endSeq)
 }
 
-func NewProducerClient(partitions int) *ProducerClient {
+func NewProducerClient(partitions int, config *config.PublisherConfig) *ProducerClient {
 	pc := &ProducerClient{
 		ID:      uuid.New().String(),
 		Epoch:   time.Now().UnixNano(),
 		seqNums: make([]atomic.Uint64, partitions),
+		config:  config,
 	}
 	if err := pc.loadState(); err != nil {
 		fmt.Printf("Warning: failed to load producer state: %v\n", err)
@@ -131,13 +135,6 @@ func (pc *ProducerClient) NextSeqNum(partition int) uint64 {
 	return pc.globalSeqNum.Add(1)
 }
 
-func (pc *ProducerClient) ConnectPartition(idx int, addr string, useTLS bool, certPath, keyPath string) error {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-
-	return pc.connectPartitionLocked(idx, addr, useTLS, certPath, keyPath)
-}
-
 func (pc *ProducerClient) connectPartitionLocked(idx int, addr string, useTLS bool, certPath, keyPath string) error {
 	if idx < 0 {
 		return fmt.Errorf("invalid partition index: %d", idx)
@@ -172,18 +169,6 @@ func (pc *ProducerClient) connectPartitionLocked(idx int, addr string, useTLS bo
 	return nil
 }
 
-func (pc *ProducerClient) ReconnectPartition(idx int, addr string, useTLS bool, certPath, keyPath string) error {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-
-	if idx < len(pc.conns) && pc.conns[idx] != nil {
-		_ = pc.conns[idx].Close()
-		pc.conns[idx] = nil
-	}
-
-	return pc.connectPartitionLocked(idx, addr, useTLS, certPath, keyPath)
-}
-
 func (pc *ProducerClient) GetConn(part int) net.Conn {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
@@ -203,4 +188,62 @@ func (pc *ProducerClient) Close() error {
 		}
 	}
 	return nil
+}
+
+func (pc *ProducerClient) selectBrokerForPartition(partition int) string {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	if pc.config == nil || len(pc.config.BrokerAddrs) == 0 {
+		return ""
+	}
+
+	index := partition % len(pc.config.BrokerAddrs)
+	return pc.config.BrokerAddrs[index]
+}
+
+func (pc *ProducerClient) ConnectPartition(idx int, addr string, useTLS bool, certPath, keyPath string) error {
+	if addr == "" {
+		addr = pc.selectBrokerForPartition(idx)
+	}
+
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	return pc.connectPartitionLocked(idx, addr, useTLS, certPath, keyPath)
+}
+
+func (pc *ProducerClient) ReconnectPartition(idx int, addr string, useTLS bool, certPath, keyPath string) error {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	if idx < len(pc.conns) && pc.conns[idx] != nil {
+		_ = pc.conns[idx].Close()
+		pc.conns[idx] = nil
+	}
+
+	err := pc.connectPartitionLocked(idx, addr, useTLS, certPath, keyPath)
+	if err == nil {
+		return nil
+	}
+
+	log.Printf("Failed to reconnect to %s, trying other brokers: %v", addr, err)
+
+	if pc.config == nil {
+		return fmt.Errorf("failed to reconnect: config not initialized")
+	}
+
+	for _, brokerAddr := range pc.config.BrokerAddrs {
+		if brokerAddr == addr {
+			continue
+		}
+
+		if err = pc.connectPartitionLocked(idx, brokerAddr, useTLS, certPath, keyPath); err == nil {
+			log.Printf("Successfully reconnected partition %d to broker %s", idx, brokerAddr)
+			return nil
+		}
+		log.Printf("Failed to reconnect to %s: %v", brokerAddr, err)
+	}
+
+	return fmt.Errorf("failed to reconnect to any broker")
 }

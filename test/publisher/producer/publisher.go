@@ -72,7 +72,7 @@ type Publisher struct {
 func NewPublisher(cfg *config.PublisherConfig) (*Publisher, error) {
 	p := &Publisher{
 		config:       cfg,
-		producer:     NewProducerClient(cfg.Partitions),
+		producer:     NewProducerClient(cfg.Partitions, cfg),
 		partitions:   cfg.Partitions,
 		buffers:      make([]*partitionBuffer, cfg.Partitions),
 		sentSeqs:     make(map[uint64]struct{}),
@@ -91,7 +91,8 @@ func NewPublisher(cfg *config.PublisherConfig) (*Publisher, error) {
 	connectedCount := 0
 	for i := 0; i < cfg.Partitions; i++ {
 		p.buffers[i] = newPartitionBuffer()
-		if err := p.producer.ConnectPartition(i, cfg.BrokerAddr, cfg.UseTLS, cfg.TLSCertPath, cfg.TLSKeyPath); err != nil {
+		brokerAddr := p.selectBrokerForPartition(i)
+		if err := p.producer.ConnectPartition(i, brokerAddr, cfg.UseTLS, cfg.TLSCertPath, cfg.TLSKeyPath); err != nil {
 			util.Error("Failed to connect partition %d: %v", i, err)
 		} else {
 			connectedCount++
@@ -113,7 +114,8 @@ func (p *Publisher) nextPartition() int {
 }
 
 func (p *Publisher) CreateTopic(topic string, partitions int) error {
-	conn, err := net.Dial("tcp", p.config.BrokerAddr)
+	brokerAddr := p.config.BrokerAddrs[0]
+	conn, err := net.Dial("tcp", brokerAddr)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -371,7 +373,8 @@ func (p *Publisher) sendWithRetry(payload []byte, batch []types.Message, part in
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		conn := p.producer.GetConn(part)
 		if conn == nil {
-			if err := p.producer.ReconnectPartition(part, p.config.BrokerAddr, p.config.UseTLS, p.config.TLSCertPath, p.config.TLSKeyPath); err != nil {
+			brokerAddr := p.selectBrokerForPartition(part)
+			if err := p.producer.ReconnectPartition(part, brokerAddr, p.config.UseTLS, p.config.TLSCertPath, p.config.TLSKeyPath); err != nil {
 				lastErr = fmt.Errorf("reconnect failed: %w", err)
 				time.Sleep(time.Duration(backoff) * time.Millisecond)
 				backoff = min(backoff*2, p.config.MaxBackoffMS)
@@ -389,7 +392,8 @@ func (p *Publisher) sendWithRetry(payload []byte, batch []types.Message, part in
 		_ = conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.WriteTimeoutMS) * time.Millisecond))
 		if _, err := conn.Write(payload); err != nil {
 			lastErr = fmt.Errorf("write failed: %w", err)
-			_ = p.producer.ReconnectPartition(part, p.config.BrokerAddr, p.config.UseTLS, p.config.TLSCertPath, p.config.TLSKeyPath)
+			brokerAddr := p.selectBrokerForPartition(part)
+			_ = p.producer.ReconnectPartition(part, brokerAddr, p.config.UseTLS, p.config.TLSCertPath, p.config.TLSKeyPath)
 			time.Sleep(time.Duration(backoff) * time.Millisecond)
 			backoff = min(backoff*2, p.config.MaxBackoffMS)
 			continue
@@ -648,4 +652,11 @@ func (p *Publisher) GetSentMessageCount() int {
 // GetPartitionCount returns the number of partitions
 func (p *Publisher) GetPartitionCount() int {
 	return p.partitions
+}
+
+func (p *Publisher) selectBrokerForPartition(partition int) string {
+	if len(p.config.BrokerAddrs) == 0 {
+		return ""
+	}
+	return p.config.BrokerAddrs[partition%len(p.config.BrokerAddrs)]
 }

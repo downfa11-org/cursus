@@ -54,6 +54,16 @@ type Config struct {
 	EnableGzip  bool   `yaml:"enable_gzip" json:"gzip.enable"`
 
 	TLSCert tls.Certificate
+
+	// cluster Options
+	EnabledDistribution  bool     `yaml:"enabled_distribution" json:"distribution.enabled"`
+	RaftPort             int      `yaml:"raft_port" json:"distribution.raft.port"`
+	DiscoveryPort        int      `yaml:"discovery_port" json:"distribution.discovery.port"`
+	RaftPeers            []string `yaml:"raft_peers" json:"distribution.raft.peers"`
+	StaticClusterMembers []string `yaml:"static_cluster_members" json:"static_cluster_members"`
+	BootstrapCluster     bool     `yaml:"bootstrap_cluster" json:"distribution.bootstrap"`
+	AdvertisedHost       string   `yaml:"advertised_host" json:"distribution.advertised_host"`
+	MinInSyncReplicas    int      `yaml:"min_insync_replicas" json:"min.insync.replicas"`
 }
 
 func defaultConfig() *Config {
@@ -72,13 +82,21 @@ func defaultConfig() *Config {
 		SegmentRollTimeMS:        0,
 		PartitionChannelBufSize:  10000,
 		ConsumerChannelBufSize:   1000,
-		ConsumerSessionTimeoutMS: 30000,
+		ConsumerSessionTimeoutMS: 10000,
 		ConsumerHeartbeatCheckMS: 5000,
 		CleanupInterval:          300,
 		MaxStreamConnections:     1000,
 		StreamTimeout:            30 * time.Minute,
 		StreamHeartbeatInterval:  30 * time.Second,
 		EnableGzip:               false,
+		EnabledDistribution:      false,
+		RaftPort:                 9001,
+		DiscoveryPort:            8000,
+		RaftPeers:                []string{},
+		StaticClusterMembers:     []string{},
+		BootstrapCluster:         false,
+		AdvertisedHost:           "localhost",
+		MinInSyncReplicas:        2,
 	}
 }
 
@@ -118,6 +136,14 @@ func LoadConfig() (*Config, error) {
 	flag.DurationVar(&cfg.StreamTimeout, "stream-timeout", cfg.StreamTimeout, "Stream timeout")
 	flag.DurationVar(&cfg.StreamHeartbeatInterval, "stream-heartbeat-interval", cfg.StreamHeartbeatInterval, "Stream heartbeat")
 
+	flag.BoolVar(&cfg.EnabledDistribution, "enable-distribution", cfg.EnabledDistribution, "Enable distributed clustering")
+	flag.StringVar(&cfg.AdvertisedHost, "advertised-host", cfg.AdvertisedHost, "Advertised host for discovery")
+	flag.IntVar(&cfg.RaftPort, "raft-port", cfg.RaftPort, "Raft port for replication")
+	flag.IntVar(&cfg.DiscoveryPort, "discovery-port", cfg.DiscoveryPort, "Discovery service port")
+	raftPeersFlag := flag.String("raft-peers", "", "Raft peer addresses (comma-separated)")
+	flag.BoolVar(&cfg.BootstrapCluster, "bootstrap-cluster", cfg.BootstrapCluster, "Bootstrap Raft cluster")
+	flag.IntVar(&cfg.MinInSyncReplicas, "min-insync-replicas", cfg.MinInSyncReplicas, "Minimum in-sync replicas for writes")
+
 	flag.Parse()
 
 	switch strings.ToLower(*logLevelStr) {
@@ -139,7 +165,7 @@ func LoadConfig() (*Config, error) {
 		data, err := os.ReadFile(*configPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				util.Info("Config file %s not found, using flag defaults", *configPath)
+				util.Warn("Config file %s not found, using flag defaults", *configPath)
 				return cfg, nil
 			}
 			return nil, fmt.Errorf("failed to read config file %s: %w", *configPath, err)
@@ -151,6 +177,17 @@ func LoadConfig() (*Config, error) {
 		} else {
 			if err := yaml.Unmarshal(data, cfg); err != nil {
 				return nil, err
+			}
+		}
+	}
+
+	if *raftPeersFlag != "" {
+		parts := strings.Split(*raftPeersFlag, ",")
+		cfg.RaftPeers = make([]string, 0, len(parts))
+		for _, s := range parts {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				cfg.RaftPeers = append(cfg.RaftPeers, s)
 			}
 		}
 	}
@@ -168,6 +205,14 @@ func LoadConfig() (*Config, error) {
 	overrideEnvInt(&cfg.ConsumerHeartbeatCheckMS, "CONSUMER_HEARTBEAT_CHECK")
 
 	overrideEnvBool(&cfg.EnableGzip, "ENABLE_GZIP")
+
+	overrideEnvBool(&cfg.EnabledDistribution, "ENABLE_DISTRIBUTION")
+	overrideEnvString(&cfg.AdvertisedHost, "ADVERTISED_HOST")
+	overrideEnvInt(&cfg.RaftPort, "RAFT_PORT")
+	overrideEnvInt(&cfg.DiscoveryPort, "DISCOVERY_PORT")
+	overrideEnvStringSlice(&cfg.RaftPeers, "RAFT_PEERS")
+	overrideEnvBool(&cfg.BootstrapCluster, "BOOTSTRAP_CLUSTER")
+	overrideEnvInt(&cfg.MinInSyncReplicas, "MIN_INSYNC_REPLICAS")
 
 	cfg.Normalize()
 	util.SetLevel(cfg.LogLevel)
@@ -195,6 +240,26 @@ func overrideEnvInt(target *int, key string) {
 func overrideEnvBool(target *bool, key string) {
 	if v := os.Getenv(key); v != "" {
 		*target = util.ParseBool(v, *target)
+	}
+}
+
+func overrideEnvString(target *string, key string) {
+	if v := os.Getenv(key); v != "" {
+		*target = v
+	}
+}
+
+func overrideEnvStringSlice(target *[]string, key string) {
+	if v := os.Getenv(key); v != "" {
+		parts := strings.Split(v, ",")
+		result := make([]string, 0, len(parts))
+		for _, s := range parts {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				result = append(result, s)
+			}
+		}
+		*target = result
 	}
 }
 
@@ -264,7 +329,7 @@ func (cfg *Config) Normalize() {
 	}
 
 	if cfg.ConsumerSessionTimeoutMS <= 0 {
-		cfg.ConsumerSessionTimeoutMS = 30000
+		cfg.ConsumerSessionTimeoutMS = 10000
 	}
 	if cfg.ConsumerHeartbeatCheckMS <= 0 {
 		cfg.ConsumerHeartbeatCheckMS = 5000
@@ -281,5 +346,17 @@ func (cfg *Config) Normalize() {
 	}
 	if cfg.StreamHeartbeatInterval <= 0 {
 		cfg.StreamHeartbeatInterval = 30 * time.Second
+	}
+	if cfg.RaftPort <= 0 {
+		cfg.RaftPort = 9001
+	}
+	if cfg.DiscoveryPort <= 0 {
+		cfg.DiscoveryPort = 8000
+	}
+	if strings.TrimSpace(cfg.AdvertisedHost) == "" {
+		cfg.AdvertisedHost = "localhost"
+	}
+	if cfg.MinInSyncReplicas <= 0 {
+		cfg.MinInSyncReplicas = 2
 	}
 }

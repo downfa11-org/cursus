@@ -1,0 +1,142 @@
+services:  
+  broker-1:  
+    build:  
+      context: ../..  
+      dockerfile: Dockerfile  
+    container_name: broker-1  
+    command: ./broker  
+    environment:  
+      - CONFIG_PATH=/root/config.yaml  
+      - ADVERTISED_HOST=broker-1  
+      - BOOTSTRAP_CLUSTER=true  
+      - IS_STATIC_CLUSTER=true  
+      - STATIC_CLUSTER_MEMBERS=broker-1@broker-1:7000,broker-2@broker-2:7000,broker-3@broker-3:7000  
+      - RAFT_PEERS=  
+    volumes:  
+      - ./config.yaml:/root/config.yaml:ro  
+    ports:  
+      - "9001:9000"   # Broker port  
+      - "9081:9080"   # Health check port  
+      - "9101:9100"   # Metrics port  
+      - "8001:8000"  
+    networks:  
+      - cluster-net  
+    healthcheck:  
+      test: ["CMD", "curl", "-f", "http://localhost:9080/health"]  
+      interval: 2s  
+      timeout: 1s  
+      retries: 3  
+  
+  broker-2:  
+    build:  
+      context: ../..  
+      dockerfile: Dockerfile  
+    container_name: broker-2  
+    command: ./broker  
+    environment:  
+      - CONFIG_PATH=/root/config.yaml  
+      - ADVERTISED_HOST=broker-2  
+      - BOOTSTRAP_CLUSTER=true  
+      - IS_STATIC_CLUSTER=true  
+      - STATIC_CLUSTER_MEMBERS=broker-1@broker-1:7000,broker-2@broker-2:7000,broker-3@broker-3:7000  
+      - RAFT_PEERS=  
+    volumes:  
+      - ./config.yaml:/root/config.yaml:ro  
+    ports:  
+      - "9002:9000"  
+      - "9082:9080"  
+      - "9102:9100"  
+      - "8002:8000"  
+    networks:  
+      - cluster-net  
+    healthcheck:  
+      test: ["CMD", "curl", "-f", "http://localhost:9080/health"]  
+      interval: 2s  
+      timeout: 1s  
+      retries: 3  
+  
+  broker-3:  
+    build:  
+      context: ../..  
+      dockerfile: Dockerfile  
+    container_name: broker-3  
+    command: ./broker  
+    environment:  
+      - CONFIG_PATH=/root/config.yaml  
+      - ADVERTISED_HOST=broker-3  
+      - BOOTSTRAP_CLUSTER=true  
+      - IS_STATIC_CLUSTER=true  
+      - STATIC_CLUSTER_MEMBERS=broker-1@broker-1:7000,broker-2@broker-2:7000,broker-3@broker-3:7000  
+      - RAFT_PEERS=  
+    volumes:  
+      - ./config.yaml:/root/config.yaml:ro  
+    ports:  
+      - "9003:9000"  
+      - "9083:9080"  
+      - "9103:9100"  
+      - "8003:8000"  
+    networks:  
+      - cluster-net  
+    healthcheck:  
+      test: ["CMD", "curl", "-f", "http://localhost:9080/health"]  
+      interval: 2s  
+      timeout: 1s  
+      retries: 3  
+  
+  publisher:  
+    build:  
+      context: ../publisher  
+      dockerfile: Dockerfile  
+    container_name: broker-publisher  
+    depends_on:  
+      broker-1:  
+        condition: service_healthy  
+      broker-2:  
+        condition: service_healthy  
+      broker-3:  
+        condition: service_healthy  
+    volumes:  
+      - ./publisher-config.yaml:/config.yaml:ro  
+    command: ["./publisher", "-config", "/config.yaml"]  
+    networks:  
+      - cluster-net  
+  
+  consumer:  
+    build:  
+      context: ../consumer  
+      dockerfile: Dockerfile  
+    container_name: broker-consumer  
+    depends_on:  
+      broker-1:  
+        condition: service_healthy  
+      broker-2:  
+        condition: service_healthy  
+      broker-3:  
+        condition: service_healthy  
+      publisher:  
+        condition: service_started  
+    volumes:  
+      - ./consumer-config.yaml:/config.yaml:ro  
+    environment:  
+      - BROKER_ADDRS=broker-1:9000,broker-2:9000,broker-3:9000  
+    command: ["./consumer", "-config", "/config.yaml"]  
+    networks:  
+      - cluster-net  
+  
+  prometheus:  
+    image: prom/prometheus:latest  
+    container_name: cluster-prometheus  
+    volumes:  
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro  
+    ports:  
+      - "9090:9090"  
+    networks:  
+      - cluster-net  
+    depends_on:  
+      - broker-1  
+      - broker-2  
+      - broker-3  
+  
+networks:  
+  cluster-net:  
+    driver: bridge  

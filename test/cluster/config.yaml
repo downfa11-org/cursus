@@ -1,0 +1,28 @@
+broker_port: 9000  
+health_check_port: 9080  
+enable_exporter: true  
+exporter_port: 9100  
+log_level: "debug"  
+log_dir: "broker-logs"  
+   
+enabled_distribution: true  
+raft_port: 7000  
+min_in_sync_replicas: 2  
+    
+disk_flush_batch_size: 500  
+linger_ms: 50  
+channel_buffer_size: 1024  
+disk_write_timeout_ms: 5  
+segment_size: 1048576  
+segment_roll_time_ms: 0  
+  
+partition_channel_buffer_size: 10000  
+consumer_channel_buffer_size: 1000  
+consumer_session_timeout_ms: 30000  
+consumer_heartbeat_check_ms: 5000  
+  
+cleanup_interval: 300  
+auto_create_topics: true  
+max_stream_connections: 1000  
+stream_timeout: "30m"  
+stream_heartbeat_interval: "30s"
