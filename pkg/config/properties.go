@@ -47,6 +47,7 @@ type Config struct {
 	MaxStreamConnections    int           `yaml:"max_stream_connections" json:"max.stream.connections"`
 	StreamTimeout           time.Duration `yaml:"stream_timeout" json:"stream.timeout"`
 	StreamHeartbeatInterval time.Duration `yaml:"stream_heartbeat_interval" json:"stream.heartbeat.interval"`
+	StreamCommitInterval    time.Duration `yaml:"stream_commit_interval" json:"stream.commit.interval"`
 
 	UseTLS      bool   `yaml:"use_tls" json:"tls.enable"`
 	TLSCertPath string `yaml:"tls_cert_path" json:"tls.cert_path"`
@@ -87,7 +88,8 @@ func defaultConfig() *Config {
 		CleanupInterval:          300,
 		MaxStreamConnections:     1000,
 		StreamTimeout:            30 * time.Minute,
-		StreamHeartbeatInterval:  30 * time.Second,
+		StreamHeartbeatInterval:  3 * time.Second,
+		StreamCommitInterval:     5 * time.Second,
 		EnableGzip:               false,
 		EnabledDistribution:      false,
 		RaftPort:                 9001,
@@ -135,6 +137,7 @@ func LoadConfig() (*Config, error) {
 	flag.IntVar(&cfg.MaxStreamConnections, "max-stream-connections", cfg.MaxStreamConnections, "Max stream connections")
 	flag.DurationVar(&cfg.StreamTimeout, "stream-timeout", cfg.StreamTimeout, "Stream timeout")
 	flag.DurationVar(&cfg.StreamHeartbeatInterval, "stream-heartbeat-interval", cfg.StreamHeartbeatInterval, "Stream heartbeat")
+	flag.DurationVar(&cfg.StreamCommitInterval, "stream-commit-interval", cfg.StreamCommitInterval, "Stream commit interval")
 
 	flag.BoolVar(&cfg.EnabledDistribution, "enable-distribution", cfg.EnabledDistribution, "Enable distributed clustering")
 	flag.StringVar(&cfg.AdvertisedHost, "advertised-host", cfg.AdvertisedHost, "Advertised host for discovery")
@@ -345,7 +348,10 @@ func (cfg *Config) Normalize() {
 		cfg.StreamTimeout = 30 * time.Minute
 	}
 	if cfg.StreamHeartbeatInterval <= 0 {
-		cfg.StreamHeartbeatInterval = 30 * time.Second
+		cfg.StreamHeartbeatInterval = 3 * time.Second
+	}
+	if cfg.StreamCommitInterval <= 0 {
+		cfg.StreamCommitInterval = 5 * time.Second
 	}
 	if cfg.RaftPort <= 0 {
 		cfg.RaftPort = 9001

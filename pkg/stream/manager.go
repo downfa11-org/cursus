@@ -5,6 +5,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/downfa11-org/go-broker/pkg/types"
 )
 
 type StreamManager struct {
@@ -13,20 +15,6 @@ type StreamManager struct {
 	maxConn   int
 	timeout   time.Duration
 	heartbeat time.Duration
-}
-
-type StreamConnection struct {
-	conn      net.Conn
-	topic     string
-	partition int
-	group     string
-
-	mu         sync.RWMutex
-	offset     uint64
-	lastActive time.Time
-
-	stopCh   chan struct{}
-	stopOnce sync.Once
 }
 
 func NewStreamManager(maxConn int, timeout, heartbeat time.Duration) *StreamManager {
@@ -38,22 +26,11 @@ func NewStreamManager(maxConn int, timeout, heartbeat time.Duration) *StreamMana
 	}
 }
 
-// NewStreamConnection creates a new stream connection
-func NewStreamConnection(conn net.Conn, topic string, partition int, group string, offset uint64) *StreamConnection {
-	sc := &StreamConnection{
-		conn:       conn,
-		topic:      topic,
-		partition:  partition,
-		group:      group,
-		offset:     offset,
-		lastActive: time.Now(),
-		stopCh:     make(chan struct{}),
-	}
-	sc.SetLastActive(time.Now())
-	return sc
-}
+func (sm *StreamManager) AddStream(key string, stream *StreamConnection,
+	readFn func(offset uint64, max int) ([]types.Message, error),
+	commitInterval time.Duration,
+) error {
 
-func (sm *StreamManager) AddStream(key string, stream *StreamConnection) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -62,7 +39,9 @@ func (sm *StreamManager) AddStream(key string, stream *StreamConnection) error {
 	}
 
 	sm.streams[key] = stream
+	go stream.Run(readFn, commitInterval)
 	go sm.monitorConnection(key, stream)
+
 	return nil
 }
 
@@ -100,21 +79,6 @@ func (sc *StreamConnection) Conn() net.Conn {
 	return sc.conn
 }
 
-func (sc *StreamConnection) closeConn() {
-	sc.mu.Lock()
-	conn := sc.conn
-	sc.conn = nil
-	sc.mu.Unlock()
-
-	sc.stopOnce.Do(func() {
-		close(sc.stopCh)
-	})
-
-	if conn != nil {
-		_ = conn.Close()
-	}
-}
-
 func (sm *StreamManager) StopStream(key string) {
 	sm.mu.RLock()
 	stream, ok := sm.streams[key]
@@ -137,46 +101,4 @@ func (sm *StreamManager) GetStreamsForPartition(topic string, partitionID int) [
 		}
 	}
 	return streams
-}
-
-func (sc *StreamConnection) Topic() string  { return sc.topic }
-func (sc *StreamConnection) Partition() int { return sc.partition }
-func (sc *StreamConnection) Group() string  { return sc.group }
-
-func (sc *StreamConnection) Offset() uint64 {
-	sc.mu.RLock()
-	defer sc.mu.RUnlock()
-	return sc.offset
-}
-
-func (sc *StreamConnection) SetOffset(o uint64) {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	sc.offset = o
-}
-
-func (sc *StreamConnection) IncrementOffset() {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	sc.offset++
-}
-
-func (sc *StreamConnection) SetLastActive(t time.Time) {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	sc.lastActive = t
-}
-
-func (sc *StreamConnection) LastActive() time.Time {
-	sc.mu.RLock()
-	defer sc.mu.RUnlock()
-	return sc.lastActive
-}
-
-func (sc *StreamConnection) StopCh() <-chan struct{} { return sc.stopCh }
-
-func (sc *StreamConnection) Stop() {
-	sc.stopOnce.Do(func() {
-		close(sc.stopCh)
-	})
 }
