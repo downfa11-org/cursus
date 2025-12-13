@@ -10,4 +10,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require github.com/klauspost/compress v1.15.9 // indirect
+require github.com/klauspost/compress v1.18.0 // indirect

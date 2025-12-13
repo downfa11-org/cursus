@@ -125,6 +125,7 @@ func TestCompressDecompressRoundtrip(t *testing.T) {
 
 	for _, tc := range testCases {
 		for _, compType := range []string{"gzip", "snappy", "lz4", "none"} {
+			// Snappy has a minimum practical input size; skip very small inputs
 			if compType == "snappy" && (len(tc) == 0 || len(tc) == 1) {
 				continue
 			}

@@ -413,12 +413,10 @@ func (p *Publisher) sendWithRetry(payload []byte, batch []types.Message, part in
 			continue
 		}
 
-		if p.config.CompressionType != "none" {
-			resp, err = types.DecompressMessage(resp, p.config.CompressionType)
-			if err != nil {
-				lastErr = fmt.Errorf("decompress ack failed: %w", err)
-				continue
-			}
+		resp, err = types.DecompressMessage(resp, p.config.CompressionType)
+		if err != nil {
+			lastErr = fmt.Errorf("decompress ack failed: %w", err)
+			continue
 		}
 
 		ackResp, err := p.parseAckResponse(resp)

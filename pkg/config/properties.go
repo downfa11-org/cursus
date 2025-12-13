@@ -208,7 +208,7 @@ func LoadConfig() (*Config, error) {
 	overrideEnvInt(&cfg.ConsumerSessionTimeoutMS, "CONSUMER_SESSION_TIMEOUT")
 	overrideEnvInt(&cfg.ConsumerHeartbeatCheckMS, "CONSUMER_HEARTBEAT_CHECK")
 
-	overrideEnvString(&cfg.CompressionType, "COMPLESSION_TYPE")
+	overrideEnvString(&cfg.CompressionType, "COMPRESSION_TYPE")
 
 	overrideEnvBool(&cfg.EnabledDistribution, "ENABLE_DISTRIBUTION")
 	overrideEnvString(&cfg.AdvertisedHost, "ADVERTISED_HOST")
@@ -281,6 +281,12 @@ func (cfg *Config) Normalize() {
 		cfg.ExporterPort = 9100
 	}
 	if cfg.CompressionType == "" {
+		cfg.CompressionType = "none"
+	}
+	switch cfg.CompressionType {
+	case "none", "gzip", "snappy", "lz4":
+	default:
+		util.Warn("Invalid compression_type '%s', defaulting to 'none'", cfg.CompressionType)
 		cfg.CompressionType = "none"
 	}
 	if cfg.CleanupInterval <= 0 {
