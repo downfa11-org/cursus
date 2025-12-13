@@ -5,7 +5,15 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/downfa11-org/go-broker/pkg/types"
 )
+
+var readFn = func(offset uint64, max int) ([]types.Message, error) {
+	return nil, nil
+}
+
+var DefaultStreamCommitInterval = 5 * time.Second
 
 func TestAddRemoveStream(t *testing.T) {
 	sm := NewStreamManager(2, 500*time.Millisecond, 100*time.Millisecond)
@@ -15,7 +23,7 @@ func TestAddRemoveStream(t *testing.T) {
 	stream1 := NewStreamConnection(conn1, "topic1", 0, "group1", 0)
 
 	key1 := "topic1:0:group1"
-	if err := sm.AddStream(key1, stream1); err != nil {
+	if err := sm.AddStream(key1, stream1, readFn, DefaultStreamCommitInterval); err != nil {
 		t.Fatalf("failed to add stream: %v", err)
 	}
 
@@ -34,15 +42,16 @@ func TestMaxConnections(t *testing.T) {
 
 	conn1, _ := net.Pipe()
 	defer conn1.Close()
+
 	stream1 := NewStreamConnection(conn1, "topic", 0, "group1", 0)
-	if err := sm.AddStream("key1", stream1); err != nil {
+	if err := sm.AddStream("key1", stream1, readFn, DefaultStreamCommitInterval); err != nil {
 		t.Fatalf("failed to add stream: %v", err)
 	}
 
 	conn2, _ := net.Pipe()
 	defer conn2.Close()
 	stream2 := NewStreamConnection(conn2, "topic", 0, "group2", 0)
-	if err := sm.AddStream("key2", stream2); err == nil {
+	if err := sm.AddStream("key2", stream2, readFn, DefaultStreamCommitInterval); err == nil {
 		t.Fatalf("expected error when adding stream beyond maxConn")
 	}
 }
@@ -55,7 +64,7 @@ func TestGetStreamsForPartition(t *testing.T) {
 		c1, c2 := net.Pipe()
 		conns = append(conns, c1, c2)
 		s := NewStreamConnection(c1, "topicA", i, "group", uint64(i))
-		if err := sm.AddStream("key"+strconv.Itoa(i), s); err != nil {
+		if err := sm.AddStream("key"+strconv.Itoa(i), s, readFn, DefaultStreamCommitInterval); err != nil {
 			t.Fatalf("failed to add stream: %v", err)
 		}
 

@@ -8,7 +8,6 @@ import (
 	"syscall"
 
 	"github.com/downfa11-org/go-broker/consumer/config"
-	"github.com/downfa11-org/go-broker/consumer/handler"
 	"github.com/downfa11-org/go-broker/consumer/subscriber"
 	"github.com/downfa11-org/go-broker/util"
 )
@@ -30,9 +29,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create consumer: %v", err)
 	}
-
-	handler := handler.NewMemoryIdempotentHandler(cfg.EnableBenchmark)
-	c.SetBatchHandler(handler)
 
 	if err := c.Start(); err != nil {
 		log.Fatalf("Failed to start consumer: %v", err)
