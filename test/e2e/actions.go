@@ -107,7 +107,7 @@ func (a *Actions) JoinGroup() *Actions {
 	}
 	a.ctx.SyncClientState(client)
 
-	a.ctx.t.Logf("Group join successful (Member ID: %s, Gen: %d)", client.memberID, client.generation)
+	a.ctx.t.Logf("Group join successful (Member ID: %s, Generation: %d)", client.memberID, client.generation)
 	return a
 }
 
@@ -144,7 +144,7 @@ func (a *Actions) ConsumeMessages() *Actions {
 	currentMemberID := client.memberID
 	currentGeneration := client.generation
 
-	a.ctx.t.Logf("Consumer member '%s' (Gen %d) assigned partitions: %v", currentMemberID, currentGeneration, a.ctx.assignedPartitions)
+	a.ctx.t.Logf("Consumer member '%s' (Generation %d) assigned partitions: %v", currentMemberID, currentGeneration, a.ctx.assignedPartitions)
 
 	totalConsumed := 0
 	for _, partition := range a.ctx.assignedPartitions {

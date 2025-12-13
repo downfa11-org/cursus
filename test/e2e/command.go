@@ -238,7 +238,7 @@ func (bc *BrokerClient) ConsumeMessages(topic string, partition int, consumerGro
 	}
 
 	startOffset := 0
-	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d group=%s autoOffsetReset=earliest member=%s gen=%d",
+	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d group=%s autoOffsetReset=earliest member=%s generation=%d",
 		topic, partition, startOffset, consumerGroup, memberID, generation)
 	cmdBytes := util.EncodeMessage(topic, consumeCmd)
 
