@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/downfa11-org/go-broker/util"
 )
 
 const sep = "========================================"
@@ -63,5 +65,6 @@ func PrintBenchmarkSummaryFixedTo(w io.Writer, partitionStats []PartitionStat, s
 }
 
 func PrintBenchmarkSummaryFixed(partitionStats []PartitionStat, sentMessages int, totalDuration time.Duration) {
+	util.Info("🎉 Benchmark completed successfully!")
 	PrintBenchmarkSummaryFixedTo(os.Stdout, partitionStats, sentMessages, totalDuration)
 }

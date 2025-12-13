@@ -2,7 +2,6 @@ package subscriber
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"sync"
@@ -30,7 +29,14 @@ func (pc *PartitionConsumer) ensureConnection() error {
 		return fmt.Errorf("partition consumer closed")
 	}
 	if pc.conn != nil {
-		return nil
+		pc.conn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
+		_, err := pc.conn.Read(make([]byte, 1))
+		if err == nil || err.(net.Error).Timeout() {
+			pc.conn.SetReadDeadline(time.Time{})
+			return nil
+		}
+		pc.conn.Close()
+		pc.conn = nil
 	}
 
 	var err error
@@ -38,11 +44,11 @@ func (pc *PartitionConsumer) ensureConnection() error {
 		conn, broker, connectErr := pc.consumer.client.ConnectWithFailover()
 		if connectErr == nil {
 			pc.conn = conn
-			log.Printf("Partition [%d] connected to broker %s", pc.partitionID, broker)
+			util.Info("Partition [%d] connected to %s", pc.partitionID, broker)
 			return nil
 		}
 		err = connectErr
-		log.Printf("Partition [%d] connect attempt %d failed: %v", pc.partitionID, attempt+1, err)
+		util.Info("Partition [%d] connect attempt %d failed: %v", pc.partitionID, attempt+1, err)
 
 		duration := time.Duration(pc.consumer.config.ConnectRetryBackoffMS) * time.Millisecond
 		time.Sleep(duration)
@@ -104,6 +110,97 @@ func (pc *PartitionConsumer) pollAndProcess() {
 		pc.updateOffsetAndCommit(batch.Messages)
 	} else {
 		util.Debug("Partition [%d] No messages received at offset %d", pc.partitionID, currentOffset)
+	}
+}
+
+func (pc *PartitionConsumer) startStreamLoop() {
+	pid := pc.partitionID
+	c := pc.consumer
+	retryDelay := time.Duration(c.config.StreamingRetryIntervalMS) * time.Millisecond
+
+	for {
+		select {
+		case <-c.doneCh:
+			pc.closeConnection()
+			return
+		default:
+		}
+
+		if atomic.LoadInt32(&c.rebalancing) == 1 {
+			pc.closeConnection()
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		if err := pc.ensureConnection(); err != nil {
+			util.Warn("Partition [%d] streaming connection failed, retrying: %v", pid, err)
+			time.Sleep(retryDelay)
+			continue
+		}
+
+		pc.mu.Lock()
+		conn := pc.conn
+		currentOffset := pc.offset
+		pc.mu.Unlock()
+
+		streamCmd := fmt.Sprintf("STREAM topic=%s partition=%d group=%s offset=%d gen=%d member=%s",
+			c.config.Topic, pid, c.config.GroupID, currentOffset, c.generation, c.memberID)
+		util.Debug("📤 Partition [%d] sending STREAM command with offset %d", pid, currentOffset)
+
+		if err := util.WriteWithLength(conn, util.EncodeMessage("", streamCmd)); err != nil {
+			util.Error("Partition [%d] STREAM command send failed: %v", pid, err)
+			pc.closeConnection()
+			time.Sleep(retryDelay)
+			continue
+		}
+
+		idleTimeout := 5 * time.Second
+
+		for {
+			select {
+			case <-c.doneCh:
+				return
+			default:
+			}
+
+			conn.SetReadDeadline(time.Now().Add(idleTimeout))
+			batchData, err := util.ReadWithLength(conn)
+			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					util.Debug("Partition [%d] idle timeout, continuing stream read.", pid)
+					continue
+				}
+
+				util.Error("Partition [%d] Stream read fatal error: %v", pid, err)
+				pc.closeConnection()
+				break
+			}
+
+			if len(batchData) == 0 {
+				continue // keepalive
+			}
+
+			batch, err := types.DecodeBatchMessages(batchData)
+			if err != nil {
+				util.Error("Partition [%d] Failed to decode batch message: %v", pid, err)
+				pc.closeConnection()
+				break
+			}
+
+			if len(batch.Messages) > 0 {
+				if err := c.processBatchSync(batch.Messages, pid); err != nil {
+					util.Error("Partition [%d] Failed to process stream batch: %v", pid, err)
+					pc.closeConnection()
+					break
+				}
+
+				pc.updateOffsetAndCommit(batch.Messages)
+				lastOffset := batch.Messages[len(batch.Messages)-1].Offset
+				util.Debug("Partition [%d] Processed batch of %d messages, last offset: %d", pid, len(batch.Messages), lastOffset)
+			}
+		}
+
+		time.Sleep(retryDelay)
 	}
 }
 
@@ -264,6 +361,15 @@ func (pc *PartitionConsumer) close() {
 		return
 	}
 	pc.closed = true
+	if pc.conn != nil {
+		pc.conn.Close()
+		pc.conn = nil
+	}
+}
+
+func (pc *PartitionConsumer) closeConnection() {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
 	if pc.conn != nil {
 		pc.conn.Close()
 		pc.conn = nil

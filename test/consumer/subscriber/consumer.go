@@ -2,9 +2,7 @@ package subscriber
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"strconv"
@@ -16,7 +14,6 @@ import (
 	"github.com/downfa11-org/go-broker/consumer/bench"
 	"github.com/downfa11-org/go-broker/consumer/client"
 	"github.com/downfa11-org/go-broker/consumer/config"
-	"github.com/downfa11-org/go-broker/consumer/handler"
 	"github.com/downfa11-org/go-broker/consumer/types"
 	"github.com/downfa11-org/go-broker/util"
 )
@@ -38,13 +35,14 @@ type Consumer struct {
 	doneCh  chan struct{}
 	mu      sync.RWMutex
 
+	hbConn net.Conn
+	hbMu   sync.Mutex
+
 	closed  bool
 	closeMu sync.Mutex
 
 	bmStartTime time.Time
-
-	batchHandler handler.BatchHandler
-	metrics      *bench.ConsumerMetrics
+	metrics     *bench.ConsumerMetrics
 }
 
 type commitEntry struct {
@@ -105,10 +103,6 @@ func (c *Consumer) Start() error {
 	return nil
 }
 
-func (c *Consumer) SetBatchHandler(h handler.BatchHandler) {
-	c.batchHandler = h
-}
-
 // heartbeatLoop runs in background; if coordinator indicates generation mismatch or error => trigger rejoin
 func (c *Consumer) heartbeatLoop() {
 	interval := time.Duration(c.config.HeartbeatIntervalMS) * time.Millisecond
@@ -120,34 +114,34 @@ func (c *Consumer) heartbeatLoop() {
 		case <-c.doneCh:
 			return
 		case <-ticker.C:
-			// send heartbeat with generation and memberID
-			var brokerAddr string
-			if len(c.config.BrokerAddrs) > 0 {
-				brokerAddr = c.config.BrokerAddrs[0]
-			} else {
-				util.Error("No broker addresses configured for heartbeat")
-				continue
+			c.hbMu.Lock()
+			if c.hbConn == nil {
+				var brokerAddr string
+				if len(c.config.BrokerAddrs) > 0 {
+					brokerAddr = c.config.BrokerAddrs[0]
+				}
+				c.hbConn, _ = c.client.Connect(brokerAddr)
 			}
-
-			conn, err := c.client.Connect(brokerAddr)
-			if err != nil {
-				util.Error("heartbeat connect failed: %v", err)
-				continue
-			}
+			conn := c.hbConn
+			c.hbMu.Unlock()
 
 			hb := fmt.Sprintf("HEARTBEAT topic=%s group=%s member=%s generation=%d",
 				c.config.Topic, c.config.GroupID, c.memberID, c.generation)
 
 			if err := util.WriteWithLength(conn, util.EncodeMessage("", hb)); err != nil {
 				util.Error("heartbeat send failed: %v", err)
-				conn.Close()
+				c.hbMu.Lock()
+				c.hbConn = nil
+				c.hbMu.Unlock()
 				continue
 			}
 
 			resp, err := util.ReadWithLength(conn)
-			conn.Close()
 			if err != nil {
 				util.Error("heartbeat response failed: %v", err)
+				c.hbMu.Lock()
+				c.hbConn = nil
+				c.hbMu.Unlock()
 				continue
 			}
 
@@ -192,7 +186,12 @@ func (c *Consumer) handleRebalanceSignal() {
 		}
 		c.mu.Unlock()
 		atomic.StoreInt32(&c.rebalancing, 0)
-		c.startConsuming()
+
+		if c.config.Mode != config.ModePolling {
+			c.startStreaming()
+		} else {
+			c.startConsuming()
+		}
 	}()
 }
 
@@ -424,131 +423,22 @@ func (c *Consumer) syncGroup(generation int64, memberID string) ([]int, error) {
 }
 
 func (c *Consumer) startStreaming() error {
-	for pid, pc := range c.partitionConsumers {
-		go func(pid int, pc *PartitionConsumer) {
-			retryDelay := time.Duration(c.config.StreamingRetryIntervalMS) * time.Millisecond
-			maxBatch := c.config.BatchSize
-			if maxBatch > c.config.MaxPollRecords {
-				maxBatch = c.config.MaxPollRecords
-			}
+	if c.config.EnableBenchmark {
+		c.bmStartTime = time.Now()
+	}
 
-			for {
-				select {
-				case <-c.doneCh:
-					return
-				default:
-				}
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.heartbeatLoop()
+	}()
 
-				if atomic.LoadInt32(&c.rebalancing) == 1 {
-					time.Sleep(100 * time.Millisecond)
-					continue
-				}
-
-				if err := pc.ensureConnection(); err != nil {
-					util.Warn("Partition [%d] streaming connection failed, retrying: %v", pid, err)
-					time.Sleep(retryDelay)
-					continue
-				}
-
-				pc.mu.Lock()
-				conn := pc.conn
-				pc.mu.Unlock()
-				if conn == nil {
-					time.Sleep(retryDelay)
-					continue
-				}
-
-				streamCmd := fmt.Sprintf("STREAM topic=%s partition=%d group=%s gen=%d member=%s",
-					c.config.Topic, pid, c.config.GroupID, c.generation, c.memberID)
-				if err := util.WriteWithLength(conn, util.EncodeMessage("", streamCmd)); err != nil {
-					util.Error("Partition [%d] STREAM command send failed: %v", pid, err)
-					pc.mu.Lock()
-					pc.conn.Close()
-					pc.conn = nil
-					pc.mu.Unlock()
-					time.Sleep(retryDelay)
-					continue
-				}
-
-				msgs := make([]types.Message, 0, maxBatch)
-				perReadTimeout := 100 * time.Millisecond
-				deadline := time.Now().Add(perReadTimeout)
-
-				for i := 0; i < maxBatch; i++ {
-					conn.SetReadDeadline(deadline)
-
-					// [8-byte offset][length-prefixed message]
-					offsetBytes := make([]byte, 8)
-					_, err := io.ReadFull(conn, offsetBytes)
-					if err != nil {
-						if ne, ok := err.(net.Error); ok && ne.Timeout() {
-							break
-						}
-						util.Error("Partition [%d] read stream offset error: %v", pid, err)
-						pc.mu.Lock()
-						pc.conn.Close()
-						pc.conn = nil
-						pc.mu.Unlock()
-						break
-					}
-
-					msgBytes, err := util.ReadWithLength(conn)
-					if err != nil {
-						if ne, ok := err.(net.Error); ok && ne.Timeout() {
-							break
-						}
-						if len(msgBytes) == 0 {
-							break
-						}
-						util.Error("Partition [%d] read streamed message error: %v", pid, err)
-						pc.mu.Lock()
-						pc.conn.Close()
-						pc.conn = nil
-						pc.mu.Unlock()
-						break
-					}
-
-					offset := binary.BigEndian.Uint64(offsetBytes)
-					msgs = append(msgs, types.Message{
-						Offset:  offset,
-						Payload: string(msgBytes),
-					})
-
-					deadline = time.Now().Add(perReadTimeout)
-				}
-
-				if len(msgs) > 0 {
-					if err := pc.consumer.processBatchSync(msgs, pc.partitionID); err != nil {
-						util.Error("Partition [%d] batch processing error: %v", pid, err)
-					}
-
-					pc.mu.Lock()
-					if len(msgs) > 0 {
-						pc.offset = msgs[len(msgs)-1].Offset + 1
-					}
-					newOffset := pc.offset - 1
-					pc.mu.Unlock()
-
-					select {
-					case c.commitCh <- commitEntry{
-						partition: pid,
-						offset:    newOffset,
-					}:
-					default:
-						go func() {
-							if atomic.LoadInt32(&c.rebalancing) == 1 {
-								return
-							}
-							if err := c.directCommit(pid, newOffset); err != nil {
-								util.Error("Partition [%d] direct commit failed: %v", pid, err)
-							}
-						}()
-					}
-				}
-
-				time.Sleep(50 * time.Millisecond)
-			}
-		}(pid, pc)
+	for _, pc := range c.partitionConsumers {
+		c.wg.Add(1)
+		go func(pc *PartitionConsumer) {
+			defer c.wg.Done()
+			pc.startStreamLoop()
+		}(pc)
 	}
 
 	<-c.doneCh
@@ -569,35 +459,21 @@ func (c *Consumer) commitAllOffsets() {
 }
 
 func (c *Consumer) processBatchSync(msgs []types.Message, partition int) error {
-	var processedCountInBatch int64
-	if c.batchHandler != nil {
-		if idempotentHandler, ok := c.batchHandler.(*handler.MemoryIdempotentHandler); ok {
-			_ = idempotentHandler.GetProcessedCount()
-
-			if err := idempotentHandler.Handle(msgs); err != nil {
-				return err
-			}
-			processedCountInBatch = idempotentHandler.GetProcessedCount()
-		} else {
-			if err := c.batchHandler.Handle(msgs); err != nil {
-				return err
-			}
-			processedCountInBatch = int64(len(msgs))
-		}
-	}
-
 	if c.metrics != nil {
 		for range msgs {
 			c.metrics.RecordMessage(partition)
 		}
 
-		if processedCountInBatch > 0 {
-			c.metrics.RecordProcessed(processedCountInBatch)
-		}
+		processedCount := int64(len(msgs))
+		c.metrics.RecordProcessed(processedCount)
+		util.Debug("recorded %d processed messages", processedCount)
 
 		if c.metrics.IsDone() {
+			util.Info("🎉 Benchmark completed successfully!")
 			c.TriggerBenchmarkStop()
 		}
+	} else {
+		util.Debug("⚠️ No metrics configured")
 	}
 
 	return nil
