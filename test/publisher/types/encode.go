@@ -6,6 +6,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+
+	"github.com/pierrec/lz4/v4"
+	snappy "github.com/segmentio/kafka-go/compress/snappy/go-xerial-snappy"
 )
 
 // todo. need to migrated util/serialize.go EncodeBathMessage
@@ -110,27 +113,62 @@ func EncodeBatchMessages(topic string, partition int, msgs []Message) ([]byte, e
 	return buf.Bytes(), nil
 }
 
-func DecompressMessage(data []byte) ([]byte, error) {
-	gr, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return nil, err
+func CompressMessage(data []byte, compressionType string) ([]byte, error) {
+	switch compressionType {
+	case "gzip":
+		var buf bytes.Buffer
+		gw := gzip.NewWriter(&buf)
+		if _, err := gw.Write(data); err != nil {
+			return nil, err
+		}
+		if err := gw.Close(); err != nil {
+			return nil, err
+		}
+		return buf.Bytes(), nil
+
+	case "snappy":
+		return snappy.Encode(data), nil
+
+	case "lz4":
+		var buf bytes.Buffer
+		zw := lz4.NewWriter(&buf)
+		if _, err := zw.Write(data); err != nil {
+			return nil, err
+		}
+		if err := zw.Close(); err != nil {
+			return nil, err
+		}
+		return buf.Bytes(), nil
+
+	case "none", "":
+		return data, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported compression type: %s", compressionType)
 	}
-	defer gr.Close()
-	return io.ReadAll(gr)
 }
 
-func CompressMessage(data []byte, enableGzip bool) ([]byte, error) {
-	if !enableGzip {
-		return data, nil
-	}
+func DecompressMessage(data []byte, compressionType string) ([]byte, error) {
+	switch compressionType {
+	case "gzip":
+		gr, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		defer gr.Close()
+		return io.ReadAll(gr)
 
-	var buf bytes.Buffer
-	gw := gzip.NewWriter(&buf)
-	if _, err := gw.Write(data); err != nil {
-		return nil, err
+	case "snappy":
+		return snappy.Decode(data)
+
+	case "lz4":
+		reader := lz4.NewReader(bytes.NewReader(data))
+		return io.ReadAll(reader)
+
+	case "none", "":
+		return data, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported compression type: %s", compressionType)
 	}
-	if err := gw.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }
