@@ -280,7 +280,7 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 		return
 	}
 
-	payload, err := types.CompressMessage(data, p.config.EnableGzip)
+	payload, err := types.CompressMessage(data, p.config.CompressionType)
 	if err != nil {
 		util.Error("compress batch failed: %v", err)
 		p.handleSendFailure(part, batch)
@@ -413,8 +413,8 @@ func (p *Publisher) sendWithRetry(payload []byte, batch []types.Message, part in
 			continue
 		}
 
-		if p.config.EnableGzip {
-			resp, err = types.DecompressMessage(resp)
+		if p.config.CompressionType != "none" {
+			resp, err = types.DecompressMessage(resp, p.config.CompressionType)
 			if err != nil {
 				lastErr = fmt.Errorf("decompress ack failed: %w", err)
 				continue
