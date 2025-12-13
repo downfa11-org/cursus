@@ -28,7 +28,8 @@ func NewStreamManager(maxConn int, timeout, heartbeat time.Duration) *StreamMana
 
 func (sm *StreamManager) AddStream(key string, stream *StreamConnection,
 	readFn func(offset uint64, max int) ([]types.Message, error),
-	writeFn func(conn net.Conn, payload types.Message) error) error {
+	commitInterval time.Duration,
+) error {
 
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -38,7 +39,7 @@ func (sm *StreamManager) AddStream(key string, stream *StreamConnection,
 	}
 
 	sm.streams[key] = stream
-	go stream.Run(readFn, writeFn)
+	go stream.Run(readFn, commitInterval)
 	go sm.monitorConnection(key, stream)
 
 	return nil

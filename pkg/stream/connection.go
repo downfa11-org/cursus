@@ -65,7 +65,8 @@ func (sc *StreamConnection) SetCoordinator(coord *coordinator.Coordinator) {
 
 func (sc *StreamConnection) Run(
 	readFn func(offset uint64, max int) ([]types.Message, error),
-	writeFn func(conn net.Conn, payload types.Message) error) {
+	commitInterval time.Duration,
+) {
 	defer func() {
 		if sc.coordinator != nil {
 			_ = sc.coordinator.CommitOffset(sc.group, sc.topic, sc.partition, sc.Offset())
@@ -73,7 +74,7 @@ func (sc *StreamConnection) Run(
 	}()
 
 	ticker := time.NewTicker(sc.interval)
-	commitTicker := time.NewTicker(5 * time.Second)
+	commitTicker := time.NewTicker(commitInterval)
 	defer ticker.Stop()
 	defer commitTicker.Stop()
 

@@ -2,7 +2,6 @@ package controller
 
 import (
 	"crypto/rand"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -180,29 +179,7 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		}
 	}
 
-	var filteredMessages []types.Message
-	for _, msg := range messages {
-		var dedupKey string
-		// Idempotence (try to exactly-once)
-		if msg.ProducerID != "" {
-			dedupKey = fmt.Sprintf("%s-%s-%d", topicName, msg.ProducerID, msg.SeqNum)
-		} else {
-			// at-least once
-			dedupKey = fmt.Sprintf("%s-%s", topicName, msg.Payload)
-		}
-
-		now := time.Now()
-		if _, loaded := ch.TopicManager.DedupMap.LoadOrStore(dedupKey, now); !loaded {
-			filteredMessages = append(filteredMessages, msg)
-		}
-	}
-
-	if len(filteredMessages) < len(messages) {
-		filteredCount := len(messages) - len(filteredMessages)
-		util.Info("Filtered %d duplicate messages for topic '%s' partition %d", filteredCount, topicName, partition)
-	}
-
-	batchData, err := util.EncodeBatchMessages(topicName, partition, filteredMessages)
+	batchData, err := util.EncodeBatchMessages(topicName, partition, messages)
 	if err != nil {
 		return 0, fmt.Errorf("failed to encode batch: %w", err)
 	}
@@ -210,7 +187,7 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	if err := util.WriteWithLength(conn, batchData); err != nil {
 		return 0, fmt.Errorf("failed to stream batch: %w", err)
 	}
-	streamedCount = len(filteredMessages)
+	streamedCount = len(messages)
 	return streamedCount, nil
 }
 
@@ -300,37 +277,13 @@ func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx 
 			return messages, nil
 		}
 
-		var filteredCount int
-		var filteredMessages []types.Message
-		for _, msg := range messages {
-			dedupKey := fmt.Sprintf("%s-%s-%d", topicName, msg.ProducerID, msg.SeqNum)
-			if _, loaded := ch.TopicManager.DedupMap.LoadOrStore(dedupKey, time.Now()); !loaded {
-				filteredMessages = append(filteredMessages, msg)
-			} else {
-				filteredCount++
-			}
-		}
-
-		if filteredCount > 0 {
-			util.Info("Stream filtered %d duplicate messages for topic '%s' partition %d", filteredCount, topicName, partition)
-		}
-		return filteredMessages, nil
+		return messages, nil
 	}
 
-	writeFn := func(conn net.Conn, payload types.Message) error {
-		offsetBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(offsetBytes, payload.Offset)
-		if _, err := conn.Write(offsetBytes); err != nil {
-			return err
-		}
-		return util.WriteWithLength(conn, []byte(payload.Payload))
-	}
-
-	if err := ch.StreamManager.AddStream(streamKey, streamConn, readFn, writeFn); err != nil {
+	if err := ch.StreamManager.AddStream(streamKey, streamConn, readFn, ch.Config.StreamCommitInterval); err != nil {
 		return err
 	}
 
-	streamConn.Run(readFn, writeFn)
 	return nil
 }
 
