@@ -180,7 +180,29 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		}
 	}
 
-	batchData, err := util.EncodeBatchMessages(topicName, partition, messages)
+	var filteredMessages []types.Message
+	for _, msg := range messages {
+		var dedupKey string
+		// Idempotence (try to exactly-once)
+		if msg.ProducerID != "" && msg.SeqNum > 0 {
+			dedupKey = fmt.Sprintf("%s-%s-%d", topicName, msg.ProducerID, msg.SeqNum)
+		} else {
+			// at-least once
+			dedupKey = fmt.Sprintf("%s-%s", topicName, msg.Payload)
+		}
+
+		now := time.Now()
+		if _, loaded := ch.TopicManager.DedupMap.LoadOrStore(dedupKey, now); !loaded {
+			filteredMessages = append(filteredMessages, msg)
+		}
+	}
+
+	if len(filteredMessages) < len(messages) {
+		filteredCount := len(messages) - len(filteredMessages)
+		util.Info("Filtered %d duplicate messages for topic '%s' partition %d", filteredCount, topicName, partition)
+	}
+
+	batchData, err := util.EncodeBatchMessages(topicName, partition, filteredMessages)
 	if err != nil {
 		return 0, fmt.Errorf("failed to encode batch: %w", err)
 	}
@@ -233,7 +255,21 @@ func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx 
 		ctx.MemberID = memberID
 	}
 
-	actualOffset, err := ch.resolveOffset(topicName, partition, 0, groupName, args["autoOffsetReset"])
+	maxMessages := DefaultMaxPollRecords
+	if batchStr := args["batch"]; batchStr != "" {
+		if batch, err := strconv.Atoi(batchStr); err == nil && batch > 0 && batch <= DefaultMaxPollRecords {
+			maxMessages = batch
+		}
+	}
+
+	offsetStr := args["offset"]
+	var requestedOffset uint64
+	if offsetStr != "" {
+		if parsed, err := strconv.ParseUint(offsetStr, 10, 64); err == nil {
+			requestedOffset = parsed
+		}
+	}
+	actualOffset, err := ch.resolveOffset(topicName, partition, requestedOffset, groupName, args["autoOffsetReset"])
 	if err != nil {
 		return err
 	}
@@ -244,128 +280,58 @@ func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx 
 
 	streamKey := fmt.Sprintf("%s:%d:%s", topicName, partition, groupName)
 	streamConn := stream.NewStreamConnection(conn, topicName, partition, groupName, actualOffset)
-	if err := ch.StreamManager.AddStream(streamKey, streamConn); err != nil {
-		return fmt.Errorf("failed to add stream: %w", err)
-	}
-	defer ch.StreamManager.RemoveStream(streamKey)
+	streamConn.SetBatchSize(maxMessages)
+	streamConn.SetInterval(100 * time.Millisecond)
+	streamConn.SetCoordinator(ch.Coordinator)
 
 	dh, err := ch.DiskManager.GetHandler(topicName, partition)
 	if err != nil {
 		return fmt.Errorf("failed to get disk handler: %w", err)
 	}
 
-	messages, err := dh.ReadMessages(actualOffset, 100)
-	if err != nil {
-		return fmt.Errorf("failed to read initial messages: %w", err)
+	readFn := func(offset uint64, max int) ([]types.Message, error) {
+		messages, err := dh.ReadMessages(offset, max)
+		if err != nil {
+			return nil, err
+		}
+
+		if ch.TopicManager == nil {
+			util.Warn("TopicManager or DedupMap is nil in stream readFn, skipping deduplication.")
+			return messages, nil
+		}
+
+		var filteredCount int
+		var filteredMessages []types.Message
+		for _, msg := range messages {
+			dedupKey := fmt.Sprintf("%s-%s-%d", topicName, msg.ProducerID, msg.SeqNum)
+			if _, loaded := ch.TopicManager.DedupMap.LoadOrStore(dedupKey, time.Now()); !loaded {
+				filteredMessages = append(filteredMessages, msg)
+			} else {
+				filteredCount++
+			}
+		}
+
+		if filteredCount > 0 {
+			util.Info("Stream filtered %d duplicate messages for topic '%s' partition %d", filteredCount, topicName, partition)
+		}
+		return filteredMessages, nil
 	}
 
-	for _, msg := range messages {
+	writeFn := func(conn net.Conn, payload types.Message) error {
 		offsetBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(offsetBytes, msg.Offset)
-		if _, err := streamConn.Conn().Write(offsetBytes); err != nil {
+		binary.BigEndian.PutUint64(offsetBytes, payload.Offset)
+		if _, err := conn.Write(offsetBytes); err != nil {
 			return err
 		}
-		if err := util.WriteWithLength(streamConn.Conn(), []byte(msg.Payload)); err != nil {
-			return err
-		}
+		return util.WriteWithLength(conn, []byte(payload.Payload))
 	}
 
-	return ch.streamLoop(streamConn)
-}
-
-func (ch *CommandHandler) streamLoop(stream *stream.StreamConnection) error {
-	dh, err := ch.DiskManager.GetHandler(stream.Topic(), stream.Partition())
-	if err != nil {
-		util.Error("Failed to get disk handler for stream: %v", err)
+	if err := ch.StreamManager.AddStream(streamKey, streamConn, readFn, writeFn); err != nil {
 		return err
 	}
 
-	tickCount := 0
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	lastCommitTime := time.Now()
-	const commitInterval = 5 * time.Second
-
-	for {
-		select {
-		case <-stream.StopCh():
-			if ch.Coordinator != nil {
-				if err := ch.Coordinator.CommitOffset(stream.Group(), stream.Topic(), stream.Partition(), uint64(stream.Offset())); err != nil {
-					util.Warn("Failed to commit offset to OffsetManager for group '%s': %v", stream.Group(), err)
-				}
-			}
-			util.Debug("Stream loop stopped for topic '%s' partition %d group '%s'", stream.Topic(), stream.Partition(), stream.Group())
-			return nil
-		case <-ticker.C:
-			tickCount++
-
-			messages, err := dh.ReadMessages(uint64(stream.Offset()), 100)
-			if err != nil {
-				util.Error("Failed to read messages in stream loop: %v", err)
-				if ch.Coordinator != nil && stream.Offset() > 0 {
-					err = ch.Coordinator.CommitOffset(stream.Group(), stream.Topic(), stream.Partition(), uint64(stream.Offset()))
-					if err != nil {
-						util.Error("Failed to commit offset: %v", err)
-					}
-				}
-				return err
-			}
-
-			if len(messages) > 0 {
-				util.Debug("Stream tick #%d: Read %d messages from offset %d for topic '%s' partition %d",
-					tickCount, len(messages), stream.Offset(), stream.Topic(), stream.Partition())
-			}
-
-			if len(messages) == 0 {
-				continue
-			}
-
-			seqStart := messages[0].SeqNum
-			seqEnd := messages[len(messages)-1].SeqNum
-
-			var lastOffset uint64
-			for _, msg := range messages {
-				offsetBytes := make([]byte, 8)
-				binary.BigEndian.PutUint64(offsetBytes, msg.Offset)
-
-				if _, err := stream.Conn().Write(offsetBytes); err != nil {
-					return err
-				}
-
-				if err := util.WriteWithLength(stream.Conn(), []byte(msg.Payload)); err != nil {
-					util.Debug("Connection closed while streaming message for topic '%s' partition %d", stream.Topic(), stream.Partition())
-					return err
-				}
-
-				lastOffset = msg.Offset
-				stream.SetOffset(lastOffset + 1)
-				stream.SetLastActive(time.Now())
-			}
-
-			ackResp := types.AckResponse{
-				Status:     "OK",
-				LastOffset: lastOffset,
-				SeqStart:   seqStart,
-				SeqEnd:     seqEnd,
-			}
-
-			ackBytes, err := json.Marshal(ackResp)
-			if err != nil {
-				return err
-			}
-			if err := util.WriteWithLength(stream.Conn(), ackBytes); err != nil {
-				return err
-			}
-
-			if time.Since(lastCommitTime) > commitInterval && ch.Coordinator != nil {
-				if err := ch.Coordinator.CommitOffset(stream.Group(), stream.Topic(), stream.Partition(), uint64(stream.Offset())); err != nil {
-					util.Warn("Failed to commit offset to OffsetManager for group '%s': %v", stream.Group(), err)
-				}
-				lastCommitTime = time.Now()
-			}
-		}
-	}
+	streamConn.Run(readFn, writeFn)
+	return nil
 }
 
 // HandleCommand processes non-streaming commands and returns a signal for streaming commands.
@@ -894,6 +860,8 @@ func (ch *CommandHandler) resolveOffset(
 				actualOffset = savedOffset
 				util.Debug("Saved offset %d for group '%s'", actualOffset, groupName)
 				return actualOffset, nil
+			} else {
+				util.Debug("💾 No saved offset found for group '%s', using reset policy", groupName)
 			}
 		}
 

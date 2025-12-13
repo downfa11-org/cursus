@@ -17,7 +17,7 @@ import (
 
 type TopicManager struct {
 	topics        map[string]*Topic
-	dedupMap      sync.Map
+	DedupMap      sync.Map
 	cleanupInt    time.Duration
 	stopCh        chan struct{}
 	hp            HandlerProvider
@@ -167,7 +167,7 @@ func (tm *TopicManager) publishInternal(topicName string, msg *types.Message, re
 	}
 
 	now := time.Now()
-	if _, loaded := tm.dedupMap.LoadOrStore(dedupKey, now); loaded {
+	if _, loaded := tm.DedupMap.LoadOrStore(dedupKey, now); loaded {
 		util.Info("Duplicate message detected: ProducerID=%s, SeqNum=%d", msg.ProducerID, msg.SeqNum)
 		return nil
 	}
@@ -180,7 +180,7 @@ func (tm *TopicManager) publishInternal(topicName string, msg *types.Message, re
 	if requireAck {
 		if err := t.PublishSync(*msg); err != nil {
 			// Allow safe retry with same ProducerID+SeqNum
-			tm.dedupMap.Delete(dedupKey)
+			tm.DedupMap.Delete(dedupKey)
 			return fmt.Errorf("sync publish failed: %w", err)
 		}
 	} else {
@@ -249,9 +249,9 @@ func (tm *TopicManager) cleanupLoop() {
 
 func (tm *TopicManager) CleanupDedup() {
 	expireBefore := time.Now().Add(-30 * time.Minute)
-	tm.dedupMap.Range(func(key, value any) bool {
+	tm.DedupMap.Range(func(key, value any) bool {
 		if ts, ok := value.(time.Time); ok && ts.Before(expireBefore) {
-			tm.dedupMap.Delete(key)
+			tm.DedupMap.Delete(key)
 			metrics.CleanupCount.Inc()
 		}
 		return true
