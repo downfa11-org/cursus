@@ -181,7 +181,7 @@ func (ch *CommandHandler) consumeFromTopic(conn net.Conn, topicName string, part
 	if genStr := args["generation"]; genStr != "" {
 		generation, err := strconv.ParseInt(genStr, 10, 64)
 		if err != nil {
-			return 0, fmt.Errorf("invalid gen parameter: %w", err)
+			return 0, fmt.Errorf("invalid generation parameter: %w", err)
 		}
 		ctx.Generation = int(generation)
 	}
@@ -314,10 +314,11 @@ func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx 
 	}
 	ctx.ConsumerGroup = groupName
 
-	if genStr := args["gen"]; genStr != "" {
+	genStr := args["generation"]
+	if genStr != "" {
 		generation, err := strconv.ParseInt(genStr, 10, 64)
 		if err != nil {
-			return fmt.Errorf("invalid gen parameter: %w", err)
+			return fmt.Errorf("invalid generation parameter: %w", err)
 		}
 		ctx.Generation = int(generation)
 

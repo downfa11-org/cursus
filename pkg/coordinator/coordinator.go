@@ -181,7 +181,7 @@ func (c *Coordinator) AddConsumer(groupName, consumerID string) ([]int, error) {
 		assignments = group.Members[consumerID].Assignments
 	}
 
-	util.Info("✅ Consumer '%s' joined group '%s' (Gen: %d, Assignments: %v)", consumerID, groupName, group.Generation, assignments)
+	util.Info("✅ Consumer '%s' joined group '%s' (Generation: %d, Assignments: %v)", consumerID, groupName, group.Generation, assignments)
 	return assignments, nil
 }
 
