@@ -38,7 +38,7 @@ type PublisherConfig struct {
 	TLSCertPath string `yaml:"tls_cert_path" json:"tls_cert_path"`
 	TLSKeyPath  string `yaml:"tls_key_path" json:"tls_key_path"`
 
-	EnableGzip bool `yaml:"enable_gzip" json:"enable_gzip"`
+	CompressionType string `yaml:"compression_type" json:"compression.type"` // "none", "gzip", "snappy", "lz4"
 
 	EnableBenchmark bool   `yaml:"enable_benchmark" json:"enable_benchmark"`
 	BenchTopicName  string `yaml:"bench_topic_name" json:"bench_topic_name"`
@@ -84,7 +84,7 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 	flag.StringVar(&cfg.TLSCertPath, "tls-cert", "", "TLS cert path")
 	flag.StringVar(&cfg.TLSKeyPath, "tls-key", "", "TLS key path")
 
-	flag.BoolVar(&cfg.EnableGzip, "enable-gzip", false, "Enable gzip")
+	flag.StringVar(&cfg.CompressionType, "compression-type", "none", "Compression type (none, gzip, snappy, lz4)")
 
 	benchmarkFlag := flag.Bool("benchmark", false, "Enable benchmark mode with detailed metrics")
 	flag.StringVar(&cfg.BenchTopicName, "bench-topic-name", "bench-topic", "Topic used in benchmark mode")

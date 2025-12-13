@@ -70,7 +70,7 @@ func RunServer(
 		return err
 	}
 
-	util.Info("🧩 Broker listening on %s (TLS=%v, Gzip=%v)", addr, cfg.UseTLS, cfg.EnableGzip)
+	util.Info("🧩 Broker listening on %s (TLS=%v, Compression=%v)", addr, cfg.UseTLS, cfg.CompressionType)
 	brokerReady.Store(true)
 
 	healthPort := cfg.HealthCheckPort
@@ -228,7 +228,7 @@ func HandleConnection(
 			return
 		}
 
-		data, err := DecompressMessage(msgBuf, cfg.EnableGzip)
+		data, err := util.DecompressMessage(msgBuf, cfg.CompressionType)
 		if err != nil {
 			util.Error("⚠️ Decompress error: %v", err)
 			return

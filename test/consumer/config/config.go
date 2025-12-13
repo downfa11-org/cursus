@@ -50,7 +50,7 @@ type ConsumerConfig struct {
 	EnableImmediateCommit    bool          `yaml:"enable_immediate_commit" json:"enable_immediate_commit"`
 	StreamingCommitBatchSize int           `yaml:"streaming_commit_batch_size" json:"streaming_commit_batch_size"`
 
-	EnableGzip bool `yaml:"enable_gzip" json:"enable_gzip"`
+	CompressionType string `yaml:"compression_type" json:"compression.type"` // "none", "gzip", "snappy", "lz4"
 
 	LogLevel util.LogLevel `yaml:"log_level" json:"log_level"`
 }
@@ -84,7 +84,7 @@ func LoadConfig() (*ConsumerConfig, error) {
 	flag.IntVar(&cfg.StreamingCommitBatchSize, "streaming-commit-batch-size", 100, "Batch size for streaming commits")
 
 	flag.IntVar(&cfg.SessionTimeoutMS, "session-timeout-ms", 30000, "Session timeout in milliseconds")
-	flag.BoolVar(&cfg.EnableGzip, "enable-gzip", false, "Enable gzip compression")
+	flag.StringVar(&cfg.CompressionType, "compression-type", "none", "Compression type (none, gzip, snappy, lz4)")
 
 	benchmarkFlag := flag.Bool("benchmark", false, "Enable benchmark mode with detailed metrics")
 	flag.IntVar(&cfg.NumMessages, "num-messages", 10, "Number of messages to publish")

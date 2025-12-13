@@ -49,12 +49,12 @@ type Config struct {
 	StreamHeartbeatInterval time.Duration `yaml:"stream_heartbeat_interval" json:"stream.heartbeat.interval"`
 	StreamCommitInterval    time.Duration `yaml:"stream_commit_interval" json:"stream.commit.interval"`
 
-	UseTLS      bool   `yaml:"use_tls" json:"tls.enable"`
+	UseTLS      bool `yaml:"use_tls" json:"tls.enable"`
+	TLSCert     tls.Certificate
 	TLSCertPath string `yaml:"tls_cert_path" json:"tls.cert_path"`
 	TLSKeyPath  string `yaml:"tls_key_path" json:"tls.key_path"`
-	EnableGzip  bool   `yaml:"enable_gzip" json:"gzip.enable"`
 
-	TLSCert tls.Certificate
+	CompressionType string `yaml:"compression_type" json:"compression.type"` // "none", "gzip", "snappy", "lz4"
 
 	// cluster Options
 	EnabledDistribution  bool     `yaml:"enabled_distribution" json:"distribution.enabled"`
@@ -90,7 +90,7 @@ func defaultConfig() *Config {
 		StreamTimeout:            30 * time.Minute,
 		StreamHeartbeatInterval:  3 * time.Second,
 		StreamCommitInterval:     5 * time.Second,
-		EnableGzip:               false,
+		CompressionType:          "none",
 		EnabledDistribution:      false,
 		RaftPort:                 9001,
 		DiscoveryPort:            8000,
@@ -132,7 +132,8 @@ func LoadConfig() (*Config, error) {
 	flag.BoolVar(&cfg.UseTLS, "tls", cfg.UseTLS, "Enable TLS")
 	flag.StringVar(&cfg.TLSCertPath, "tls-cert", cfg.TLSCertPath, "TLS cert")
 	flag.StringVar(&cfg.TLSKeyPath, "tls-key", cfg.TLSKeyPath, "TLS key")
-	flag.BoolVar(&cfg.EnableGzip, "gzip", cfg.EnableGzip, "Enable gzip")
+
+	flag.StringVar(&cfg.CompressionType, "compression-type", "none", "Compression type (none, gzip, snappy, lz4)")
 
 	flag.IntVar(&cfg.MaxStreamConnections, "max-stream-connections", cfg.MaxStreamConnections, "Max stream connections")
 	flag.DurationVar(&cfg.StreamTimeout, "stream-timeout", cfg.StreamTimeout, "Stream timeout")
@@ -207,7 +208,7 @@ func LoadConfig() (*Config, error) {
 	overrideEnvInt(&cfg.ConsumerSessionTimeoutMS, "CONSUMER_SESSION_TIMEOUT")
 	overrideEnvInt(&cfg.ConsumerHeartbeatCheckMS, "CONSUMER_HEARTBEAT_CHECK")
 
-	overrideEnvBool(&cfg.EnableGzip, "ENABLE_GZIP")
+	overrideEnvString(&cfg.CompressionType, "COMPRESSION_TYPE")
 
 	overrideEnvBool(&cfg.EnabledDistribution, "ENABLE_DISTRIBUTION")
 	overrideEnvString(&cfg.AdvertisedHost, "ADVERTISED_HOST")
@@ -279,11 +280,18 @@ func (cfg *Config) Normalize() {
 	if cfg.ExporterPort <= 0 {
 		cfg.ExporterPort = 9100
 	}
-
+	if cfg.CompressionType == "" {
+		cfg.CompressionType = "none"
+	}
+	switch cfg.CompressionType {
+	case "none", "gzip", "snappy", "lz4":
+	default:
+		util.Warn("Invalid compression_type '%s', defaulting to 'none'", cfg.CompressionType)
+		cfg.CompressionType = "none"
+	}
 	if cfg.CleanupInterval <= 0 {
 		cfg.CleanupInterval = 300
 	}
-
 	if cfg.DiskFlushBatchSize <= 0 {
 		cfg.DiskFlushBatchSize = 50
 	}
@@ -302,7 +310,6 @@ func (cfg *Config) Normalize() {
 	if cfg.SegmentRollTimeMS < 0 {
 		cfg.SegmentRollTimeMS = 0
 	}
-
 	if cfg.PartitionChannelBufSize <= 0 {
 		cfg.PartitionChannelBufSize = 10000
 	}
