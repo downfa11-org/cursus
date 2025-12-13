@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"net"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -75,6 +76,21 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		return 0, err
 	}
 
+	if ch.Coordinator != nil && (strings.Contains(topicPattern, "*") || strings.Contains(topicPattern, "?")) {
+		assignedTopics := ch.getAssignedTopicsForGroup(ctx.ConsumerGroup, ctx.MemberID)
+		filteredTopics := []string{}
+		for _, topic := range matchedTopics {
+			if contains(assignedTopics, topic) {
+				filteredTopics = append(filteredTopics, topic)
+			}
+		}
+		matchedTopics = filteredTopics
+	}
+
+	if len(matchedTopics) == 0 {
+		return 0, fmt.Errorf("no assigned topics match pattern '%s'", topicPattern)
+	}
+
 	partitionStr, ok := args["partition"]
 	if !ok {
 		return 0, fmt.Errorf("missing partition parameter")
@@ -86,6 +102,10 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 
 	totalStreamed := 0
 	for _, topicName := range matchedTopics {
+		t := ch.TopicManager.GetTopic(topicName)
+		if t != nil && partition >= len(t.Partitions) {
+			return totalStreamed, fmt.Errorf("partition %d does not exist for topic '%s' (has %d partitions)", partition, topicName, len(t.Partitions))
+		}
 		streamed, err := ch.consumeFromTopic(conn, topicName, partition, args, ctx)
 		if err != nil {
 			return totalStreamed, err
@@ -94,6 +114,28 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	}
 
 	return totalStreamed, nil
+}
+
+func (ch *CommandHandler) getAssignedTopicsForGroup(groupName, memberID string) []string {
+	if ch.Coordinator == nil {
+		return nil
+	}
+
+	group := ch.Coordinator.GetGroup(groupName)
+	if group == nil {
+		return nil
+	}
+
+	member := group.Members[memberID]
+	if member == nil {
+		return nil
+	}
+
+	if len(member.Assignments) > 0 {
+		return []string{group.TopicName}
+	}
+
+	return nil
 }
 
 func (ch *CommandHandler) consumeFromTopic(conn net.Conn, topicName string, partition int, args map[string]string, ctx *ClientContext) (int, error) {
@@ -109,6 +151,11 @@ func (ch *CommandHandler) consumeFromTopic(conn net.Conn, topicName string, part
 	groupName := args["group"]
 	if groupName == "" || groupName == "-" {
 		groupName = "default-group"
+	}
+
+	memberID := args["member"]
+	if memberID == "" {
+		return 0, fmt.Errorf("missing member parameter")
 	}
 
 	autoOffsetReset := args["autoOffsetReset"]
@@ -131,6 +178,14 @@ func (ch *CommandHandler) consumeFromTopic(conn net.Conn, topicName string, part
 		}
 	}
 
+	if genStr := args["generation"]; genStr != "" {
+		generation, err := strconv.ParseInt(genStr, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid gen parameter: %w", err)
+		}
+		ctx.Generation = int(generation)
+	}
+
 	t := ch.TopicManager.GetTopic(topicName)
 	if t == nil {
 		return 0, fmt.Errorf("topic '%s' does not exist", topicName)
@@ -148,7 +203,7 @@ func (ch *CommandHandler) consumeFromTopic(conn net.Conn, topicName string, part
 		return 0, err
 	}
 
-	if !ch.ValidateOwnership(ctx.ConsumerGroup, ctx.MemberID, ctx.Generation, partition) {
+	if !ch.ValidateOwnership(groupName, memberID, ctx.Generation, partition) {
 		util.Debug("not validate ownership")
 		return 0, fmt.Errorf("not partition owner or generation mismatch")
 	}
@@ -172,7 +227,7 @@ func (ch *CommandHandler) consumeFromTopic(conn net.Conn, topicName string, part
 			newMessages, err := dh.ReadMessages(currentOffset, maxMessages)
 			if err != nil {
 				util.Error("Failed to read messages during wait: %v", err)
-				return 0, err
+				return streamedCount, err
 			}
 			if len(newMessages) > 0 {
 				messages = newMessages
@@ -194,6 +249,11 @@ func (ch *CommandHandler) consumeFromTopic(conn net.Conn, topicName string, part
 }
 
 func (ch *CommandHandler) matchTopicPattern(pattern string) ([]string, error) {
+	const maxPatternLength = 256
+	if len(pattern) > maxPatternLength {
+		return nil, fmt.Errorf("topic pattern exceeds maximum length of %d characters", maxPatternLength)
+	}
+
 	if !strings.Contains(pattern, "*") && !strings.Contains(pattern, "?") {
 		if ch.TopicManager.GetTopic(pattern) == nil {
 			return nil, fmt.Errorf("topic '%s' does not exist", pattern)
@@ -201,8 +261,10 @@ func (ch *CommandHandler) matchTopicPattern(pattern string) ([]string, error) {
 		return []string{pattern}, nil
 	}
 
-	regexPattern := strings.ReplaceAll(pattern, "*", ".*")
-	regexPattern = strings.ReplaceAll(regexPattern, "?", ".")
+	escaped := regexp.QuoteMeta(pattern)
+	// QuoteMeta escapes * and ?, so we need to replace the escaped versions
+	regexPattern := strings.ReplaceAll(escaped, `\*`, ".*")
+	regexPattern = strings.ReplaceAll(regexPattern, `\?`, ".")
 	regex, err := regexp.Compile("^" + regexPattern + "$")
 	if err != nil {
 		return nil, fmt.Errorf("invalid topic pattern: %w", err)
@@ -216,6 +278,7 @@ func (ch *CommandHandler) matchTopicPattern(pattern string) ([]string, error) {
 		}
 	}
 
+	sort.Strings(matchedTopics)
 	if len(matchedTopics) == 0 {
 		return nil, fmt.Errorf("no topics match pattern '%s'", pattern)
 	}
@@ -875,4 +938,13 @@ func (ch *CommandHandler) ValidateOwnership(groupName, memberID string, generati
 	}
 
 	return ch.Coordinator.ValidateOwnershipAtomic(groupName, memberID, generation, partition)
+}
+
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }

@@ -78,7 +78,7 @@ func (pc *PartitionConsumer) pollAndProcess() {
 	generation := pc.consumer.generation
 	pc.consumer.mu.RUnlock()
 
-	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d group=%s gen=%d member=%s",
+	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d group=%s generation=%d member=%s",
 		pc.consumer.config.Topic, pc.partitionID, currentOffset, pc.consumer.config.GroupID, generation, memberID)
 
 	if err := util.WriteWithLength(conn, util.EncodeMessage(pc.consumer.config.Topic, consumeCmd)); err != nil {
@@ -152,7 +152,7 @@ func (pc *PartitionConsumer) startStreamLoop() {
 		generation := c.generation
 		c.mu.RUnlock()
 
-		streamCmd := fmt.Sprintf("STREAM topic=%s partition=%d group=%s offset=%d gen=%d member=%s",
+		streamCmd := fmt.Sprintf("STREAM topic=%s partition=%d group=%s offset=%d generation=%d member=%s",
 			c.config.Topic, pid, c.config.GroupID, currentOffset, generation, memberID)
 		util.Debug("📤 Partition [%d] sending STREAM command with offset %d", pid, currentOffset)
 
