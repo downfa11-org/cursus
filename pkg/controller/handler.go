@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -64,9 +65,14 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	// CONSUME topic=<name> partition=<N> offset=<N> group=<name> [autoOffsetReset=<earliest|latest>]
 	args := parseKeyValueArgs(rawCmd[8:])
 
-	topicName, ok := args["topic"]
-	if !ok || topicName == "" {
+	topicPattern, ok := args["topic"]
+	if !ok || topicPattern == "" {
 		return 0, fmt.Errorf("missing topic parameter")
+	}
+
+	matchedTopics, err := ch.matchTopicPattern(topicPattern)
+	if err != nil {
+		return 0, err
 	}
 
 	partitionStr, ok := args["partition"]
@@ -78,6 +84,19 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		return 0, fmt.Errorf("invalid partition ID: %w", err)
 	}
 
+	totalStreamed := 0
+	for _, topicName := range matchedTopics {
+		streamed, err := ch.consumeFromTopic(conn, topicName, partition, args, ctx)
+		if err != nil {
+			return totalStreamed, err
+		}
+		totalStreamed += streamed
+	}
+
+	return totalStreamed, nil
+}
+
+func (ch *CommandHandler) consumeFromTopic(conn net.Conn, topicName string, partition int, args map[string]string, ctx *ClientContext) (int, error) {
 	offsetStr, ok := args["offset"]
 	if !ok {
 		return 0, fmt.Errorf("missing offset parameter")
@@ -90,30 +109,6 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	groupName := args["group"]
 	if groupName == "" || groupName == "-" {
 		groupName = "default-group"
-		util.Info("Using default consumer group for topic '%s' partition %d", topicName, partition)
-	}
-	ctx.ConsumerGroup = groupName
-
-	if genStr := args["gen"]; genStr != "" {
-		generation, err := strconv.ParseInt(genStr, 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid gen parameter: %w", err)
-		}
-		ctx.Generation = int(generation)
-
-	}
-
-	memberID, ok := args["member"]
-	if !ok {
-		return 0, fmt.Errorf("missing member parameter")
-	}
-	ctx.MemberID = memberID
-
-	maxMessages := DefaultMaxPollRecords
-	if batchStr := args["batch"]; batchStr != "" {
-		if batch, err := strconv.Atoi(batchStr); err == nil && batch > 0 && batch <= DefaultMaxPollRecords {
-			maxMessages = batch
-		}
 	}
 
 	autoOffsetReset := args["autoOffsetReset"]
@@ -121,6 +116,13 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		autoOffsetReset = "earliest"
 	}
 	autoOffsetReset = strings.ToLower(autoOffsetReset)
+
+	maxMessages := DefaultMaxPollRecords
+	if batchStr := args["batch"]; batchStr != "" {
+		if batch, err := strconv.Atoi(batchStr); err == nil && batch > 0 && batch <= DefaultMaxPollRecords {
+			maxMessages = batch
+		}
+	}
 
 	waitTimeout := 0 * time.Millisecond
 	if waitStr := args["wait_ms"]; waitStr != "" {
@@ -189,6 +191,36 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	}
 	streamedCount = len(messages)
 	return streamedCount, nil
+}
+
+func (ch *CommandHandler) matchTopicPattern(pattern string) ([]string, error) {
+	if !strings.Contains(pattern, "*") && !strings.Contains(pattern, "?") {
+		if ch.TopicManager.GetTopic(pattern) == nil {
+			return nil, fmt.Errorf("topic '%s' does not exist", pattern)
+		}
+		return []string{pattern}, nil
+	}
+
+	regexPattern := strings.ReplaceAll(pattern, "*", ".*")
+	regexPattern = strings.ReplaceAll(regexPattern, "?", ".")
+	regex, err := regexp.Compile("^" + regexPattern + "$")
+	if err != nil {
+		return nil, fmt.Errorf("invalid topic pattern: %w", err)
+	}
+
+	allTopics := ch.TopicManager.ListTopics()
+	var matchedTopics []string
+	for _, topic := range allTopics {
+		if regex.MatchString(topic) {
+			matchedTopics = append(matchedTopics, topic)
+		}
+	}
+
+	if len(matchedTopics) == 0 {
+		return nil, fmt.Errorf("no topics match pattern '%s'", pattern)
+	}
+
+	return matchedTopics, nil
 }
 
 func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx *ClientContext) error {
