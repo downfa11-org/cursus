@@ -81,7 +81,7 @@ func LoadConfig() (*ConsumerConfig, error) {
 
 	flag.DurationVar(&cfg.StreamingCommitInterval, "streaming-commit-interval", 1*time.Second, "Streaming commit interval")
 	flag.BoolVar(&cfg.EnableImmediateCommit, "enable-immediate-commit", false, "Enable immediate commit after each message")
-	flag.IntVar(&cfg.StreamingCommitBatchSize, "streaming-commit-batch-size", 10, "Batch size for streaming commits")
+	flag.IntVar(&cfg.StreamingCommitBatchSize, "streaming-commit-batch-size", 100, "Batch size for streaming commits")
 
 	flag.IntVar(&cfg.SessionTimeoutMS, "session-timeout-ms", 30000, "Session timeout in milliseconds")
 	flag.BoolVar(&cfg.EnableGzip, "enable-gzip", false, "Enable gzip compression")
@@ -147,6 +147,7 @@ func LoadConfig() (*ConsumerConfig, error) {
 		cfg.StreamingCommitBatchSize = 100
 	}
 	if cfg.StreamingCommitInterval > cfg.AutoCommitInterval {
+		util.Warn("StreamingCommitInterval (%v) exceeds AutoCommitInterval (%v), capping to %v", cfg.StreamingCommitInterval, cfg.AutoCommitInterval, cfg.AutoCommitInterval/2)
 		cfg.StreamingCommitInterval = cfg.AutoCommitInterval / 2
 	}
 	if cfg.MaxPollRecords == 0 {

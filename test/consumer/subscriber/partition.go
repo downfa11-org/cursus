@@ -31,7 +31,11 @@ func (pc *PartitionConsumer) ensureConnection() error {
 	if pc.conn != nil {
 		pc.conn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
 		_, err := pc.conn.Read(make([]byte, 1))
-		if err == nil || err.(net.Error).Timeout() {
+		if err == nil {
+			pc.conn.SetReadDeadline(time.Time{})
+			return nil
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
 			pc.conn.SetReadDeadline(time.Time{})
 			return nil
 		}
@@ -143,8 +147,13 @@ func (pc *PartitionConsumer) startStreamLoop() {
 		currentOffset := pc.offset
 		pc.mu.Unlock()
 
+		c.mu.RLock()
+		memberID := c.memberID
+		generation := c.generation
+		c.mu.RUnlock()
+
 		streamCmd := fmt.Sprintf("STREAM topic=%s partition=%d group=%s offset=%d gen=%d member=%s",
-			c.config.Topic, pid, c.config.GroupID, currentOffset, c.generation, c.memberID)
+			c.config.Topic, pid, c.config.GroupID, currentOffset, generation, memberID)
 		util.Debug("📤 Partition [%d] sending STREAM command with offset %d", pid, currentOffset)
 
 		if err := util.WriteWithLength(conn, util.EncodeMessage("", streamCmd)); err != nil {
@@ -154,7 +163,7 @@ func (pc *PartitionConsumer) startStreamLoop() {
 			continue
 		}
 
-		idleTimeout := 5 * time.Second
+		idleTimeout := time.Duration(c.config.StreamingReadDeadlineMS) * time.Millisecond
 
 		for {
 			select {

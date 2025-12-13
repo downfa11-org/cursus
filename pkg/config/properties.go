@@ -348,7 +348,7 @@ func (cfg *Config) Normalize() {
 		cfg.StreamTimeout = 30 * time.Minute
 	}
 	if cfg.StreamHeartbeatInterval <= 0 {
-		cfg.StreamHeartbeatInterval = 30 * time.Second
+		cfg.StreamHeartbeatInterval = 3 * time.Second
 	}
 	if cfg.StreamCommitInterval <= 0 {
 		cfg.StreamCommitInterval = 5 * time.Second

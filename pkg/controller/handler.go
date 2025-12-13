@@ -184,7 +184,7 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	for _, msg := range messages {
 		var dedupKey string
 		// Idempotence (try to exactly-once)
-		if msg.ProducerID != "" && msg.SeqNum > 0 {
+		if msg.ProducerID != "" {
 			dedupKey = fmt.Sprintf("%s-%s-%d", topicName, msg.ProducerID, msg.SeqNum)
 		} else {
 			// at-least once
@@ -210,7 +210,7 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	if err := util.WriteWithLength(conn, batchData); err != nil {
 		return 0, fmt.Errorf("failed to stream batch: %w", err)
 	}
-	streamedCount = len(messages)
+	streamedCount = len(filteredMessages)
 	return streamedCount, nil
 }
 
@@ -296,7 +296,7 @@ func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx 
 		}
 
 		if ch.TopicManager == nil {
-			util.Warn("TopicManager or DedupMap is nil in stream readFn, skipping deduplication.")
+			util.Warn("TopicManager is nil in stream readFn, skipping deduplication.")
 			return messages, nil
 		}
 

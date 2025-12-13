@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/types"
-	"github.com/downfa11-org/go-broker/util"
 )
 
 type StreamManager struct {
@@ -65,43 +64,12 @@ func (sm *StreamManager) monitorConnection(key string, stream *StreamConnection)
 			stream.closeConn()
 			return
 		case <-ticker.C:
-			if !sm.isConnectionAlive(stream) {
-				util.Info("Removing dead stream connection: %s", key)
-				sm.RemoveStream(key)
-				return
-			}
-
 			if time.Since(stream.LastActive()) > sm.timeout {
 				sm.RemoveStream(key)
 				return
 			}
 		}
 	}
-}
-
-func (sm *StreamManager) isConnectionAlive(stream *StreamConnection) bool {
-	stream.mu.RLock()
-	conn := stream.conn
-	stream.mu.RUnlock()
-
-	if conn == nil {
-		return false
-	}
-
-	remoteAddr := conn.RemoteAddr()
-	if remoteAddr == nil {
-		return false
-	}
-
-	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
-		util.Error("Failed to set read deadline for stream: %v", err)
-		return false
-	}
-
-	one := make([]byte, 1)
-	_, err := conn.Read(one)
-
-	return err == nil
 }
 
 func (sc *StreamConnection) Conn() net.Conn {

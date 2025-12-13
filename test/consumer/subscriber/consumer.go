@@ -120,7 +120,13 @@ func (c *Consumer) heartbeatLoop() {
 				if len(c.config.BrokerAddrs) > 0 {
 					brokerAddr = c.config.BrokerAddrs[0]
 				}
-				c.hbConn, _ = c.client.Connect(brokerAddr)
+				conn, err := c.client.Connect(brokerAddr)
+				if err != nil {
+					c.hbMu.Unlock()
+					util.Error("heartbeat connection failed: %v", err)
+					continue
+				}
+				c.hbConn = conn
 			}
 			conn := c.hbConn
 			c.hbMu.Unlock()
@@ -422,7 +428,7 @@ func (c *Consumer) syncGroup(generation int64, memberID string) ([]int, error) {
 	return assigned, nil
 }
 
-func (c *Consumer) startStreaming() error {
+func (c *Consumer) startStreaming() {
 	if c.config.EnableBenchmark {
 		c.bmStartTime = time.Now()
 	}
@@ -442,7 +448,6 @@ func (c *Consumer) startStreaming() error {
 	}
 
 	<-c.doneCh
-	return nil
 }
 
 func (c *Consumer) commitAllOffsets() {
@@ -529,6 +534,13 @@ func (c *Consumer) Close() error {
 		return nil
 	}
 	c.closed = true
+
+	c.hbMu.Lock()
+	if c.hbConn != nil {
+		c.hbConn.Close()
+		c.hbConn = nil
+	}
+	c.hbMu.Unlock()
 
 	if c.memberID != "" {
 		var brokerAddr string

@@ -42,7 +42,6 @@ func NewStreamConnection(conn net.Conn, topic string, partition int, group strin
 		batchSize:  10,
 		interval:   100 * time.Millisecond,
 	}
-	sc.SetLastActive(time.Now())
 	return sc
 }
 
@@ -90,15 +89,15 @@ func (sc *StreamConnection) Run(
 		case <-ticker.C:
 			sc.mu.Lock()
 			conn := sc.conn
-			sc.mu.Unlock()
-
 			if conn == nil {
+				sc.mu.Unlock()
 				util.Debug("Stream connection closed, stopping stream for %s partition %d", sc.topic, sc.partition)
 				return
 			}
-
+			sc.mu.Unlock()
 			msgs, err := readFn(sc.Offset(), sc.batchSize)
 			if err != nil {
+				util.Error("Stream read error for %s/%d: %v", sc.topic, sc.partition, err)
 				sc.Stop()
 				return
 			}

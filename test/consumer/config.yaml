@@ -8,8 +8,8 @@ group_id: "test-consumer-group-1"
 consumer_id: "consumer-1"
 mode: "polling"
 
-poll_interval: 50ms
-poll-timeout-ms: 5000
-session_timeout_ms: 3000
+poll_interval: 100ms
+poll-timeout-ms: 3000
+session_timeout_ms: 8000
 streaming_read_deadline_ms: 10000
 max-poll-records: 10000
