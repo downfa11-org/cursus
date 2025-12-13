@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/downfa11-org/go-broker/util"
@@ -21,9 +20,8 @@ const (
 )
 
 type ConsumerConfig struct {
-	BrokerAddrs        []string     `yaml:"broker_addrs" json:"broker_addrs"`
-	CurrentBrokerIndex int          `yaml:"-" json:"-"`
-	mu                 sync.RWMutex `yaml:"-" json:"-"`
+	BrokerAddrs        []string `yaml:"broker_addrs" json:"broker_addrs"`
+	CurrentBrokerIndex int      `yaml:"-" json:"-"`
 
 	Topic      string `yaml:"topic" json:"topic"`
 	GroupID    string `yaml:"group_id" json:"group_id"`
@@ -47,6 +45,10 @@ type ConsumerConfig struct {
 
 	EnableAutoCommit   bool          `yaml:"enable_auto_commit" json:"enable_auto_commit"`
 	AutoCommitInterval time.Duration `yaml:"auto_commit_interval" json:"auto_commit_interval"`
+
+	StreamingCommitInterval  time.Duration `yaml:"streaming_commit_interval" json:"streaming_commit_interval"`
+	EnableImmediateCommit    bool          `yaml:"enable_immediate_commit" json:"enable_immediate_commit"`
+	StreamingCommitBatchSize int           `yaml:"streaming_commit_batch_size" json:"streaming_commit_batch_size"`
 
 	EnableGzip bool `yaml:"enable_gzip" json:"enable_gzip"`
 
@@ -72,10 +74,15 @@ func LoadConfig() (*ConsumerConfig, error) {
 	flag.IntVar(&cfg.PollTimeoutMS, "poll-timeout-ms", 30000, "Maximum time in milliseconds to wait for new messages in a poll (Long Polling)")
 
 	flag.IntVar(&cfg.BatchSize, "batch-size", 100, "Batch size for consuming")
+	flag.IntVar(&cfg.MaxPollRecords, "max-poll-records", 500, "Max records per poll")
+
+	flag.BoolVar(&cfg.EnableAutoCommit, "enable-auto-commit", true, "Enable auto commit")
 	flag.DurationVar(&cfg.AutoCommitInterval, "auto-commit-interval", 5*time.Second, "Auto commit interval")
 
-	flag.IntVar(&cfg.MaxPollRecords, "max-poll-records", 500, "Max records per poll")
-	flag.BoolVar(&cfg.EnableAutoCommit, "enable-auto-commit", true, "Enable auto commit")
+	flag.DurationVar(&cfg.StreamingCommitInterval, "streaming-commit-interval", 1*time.Second, "Streaming commit interval")
+	flag.BoolVar(&cfg.EnableImmediateCommit, "enable-immediate-commit", false, "Enable immediate commit after each message")
+	flag.IntVar(&cfg.StreamingCommitBatchSize, "streaming-commit-batch-size", 10, "Batch size for streaming commits")
+
 	flag.IntVar(&cfg.SessionTimeoutMS, "session-timeout-ms", 30000, "Session timeout in milliseconds")
 	flag.BoolVar(&cfg.EnableGzip, "enable-gzip", false, "Enable gzip compression")
 
@@ -133,6 +140,15 @@ func LoadConfig() (*ConsumerConfig, error) {
 	if cfg.AutoCommitInterval == 0 {
 		cfg.AutoCommitInterval = 5 * time.Second
 	}
+	if cfg.StreamingCommitInterval == 0 {
+		cfg.StreamingCommitInterval = 1 * time.Second
+	}
+	if cfg.StreamingCommitBatchSize <= 0 {
+		cfg.StreamingCommitBatchSize = 100
+	}
+	if cfg.StreamingCommitInterval > cfg.AutoCommitInterval {
+		cfg.StreamingCommitInterval = cfg.AutoCommitInterval / 2
+	}
 	if cfg.MaxPollRecords == 0 {
 		cfg.MaxPollRecords = 500
 	}
@@ -152,7 +168,7 @@ func LoadConfig() (*ConsumerConfig, error) {
 		cfg.StreamingReadDeadlineMS = 5 * 60 * 1000 // 5min
 	}
 	if cfg.StreamingRetryIntervalMS == 0 {
-		cfg.StreamingRetryIntervalMS = 50
+		cfg.StreamingRetryIntervalMS = 1000
 	}
 
 	if *benchmarkFlag {
