@@ -71,7 +71,11 @@ func (h *ClusterServer) handleConnection(conn net.Conn) {
 			return
 		}
 
-		topic, payload := util.DecodeMessage(data)
+		topic, payload, err := util.DecodeMessage(data)
+		if err != nil {
+			return
+		}
+
 		util.Debug("cluster-server received connection: topic %s, payload %s", topic, payload)
 
 		if strings.HasPrefix(payload, "JOIN_CLUSTER ") {

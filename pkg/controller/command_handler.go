@@ -19,7 +19,7 @@ func (ch *CommandHandler) handleHelp() string {
 CREATE topic=<name> [partitions=<N>] - create topic (default=4)  
 DELETE topic=<name> - delete topic  
 LIST - list all topics  
-PUBLISH topic=<name> acks=<0|1> message=<text> [producerId=<id> seqNum=<N> epoch=<N>] - publish message  
+PUBLISH topic=<name> acks=<0|1> message=<text> producerId=<id> [seqNum=<N> epoch=<N>] - publish message
 CONSUME topic=<name> partition=<N> offset=<N> group=<name> [autoOffsetReset=<earliest|latest>] - consume messages  
 JOIN_GROUP topic=<name> group=<name> member=<id> - join consumer group  
 SYNC_GROUP topic=<name> group=<name> member=<id> generation=<N> - sync group assignments  
@@ -73,9 +73,8 @@ func (ch *CommandHandler) handleDelete(cmd string) string {
 	tm := ch.TopicManager
 	if tm.DeleteTopic(topicName) {
 		return fmt.Sprintf("🗑️ Topic '%s' deleted", topicName)
-	} else {
-		return fmt.Sprintf("ERROR: topic '%s' not found", topicName)
 	}
+	return fmt.Sprintf("ERROR: topic '%s' not found", topicName)
 }
 
 // handleList processes LIST command
@@ -155,7 +154,10 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 		SeqStart:      seqNum,
 		SeqEnd:        seqNum,
 	}
-	respBytes, _ := json.Marshal(ackResp)
+	respBytes, err := json.Marshal(ackResp)
+	if err != nil {
+		return fmt.Sprintf("ERROR: failed to marshal response: %v", err)
+	}
 	return string(respBytes)
 }
 
@@ -179,12 +181,10 @@ func (ch *CommandHandler) handleRegisterGroup(cmd string) string {
 	if ch.Coordinator != nil {
 		if err := ch.Coordinator.RegisterGroup(topicName, groupName, len(t.Partitions)); err != nil {
 			return fmt.Sprintf("ERROR: %v", err)
-		} else {
-			return fmt.Sprintf("✅ Group '%s' registered for topic '%s'", groupName, topicName)
 		}
-	} else {
-		return "ERROR: coordinator not available"
+		return fmt.Sprintf("✅ Group '%s' registered for topic '%s'", groupName, topicName)
 	}
+	return "ERROR: coordinator not available"
 }
 
 // handleJoinGroup processes JOIN_GROUP command
@@ -463,8 +463,10 @@ func (ch *CommandHandler) resolveOffset(
 			latest, err := dh.GetLatestOffset()
 			if err != nil {
 				util.Warn("Failed to get latest offset, defaulting to 0: %v", err)
+				actualOffset = 0
+			} else {
+				actualOffset = latest
 			}
-			actualOffset = latest
 			util.Debug("Using latest offset %d for group '%s'", actualOffset, groupName)
 		} else {
 			actualOffset = 0

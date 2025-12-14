@@ -99,9 +99,6 @@ func EncodeBatchMessages(topic string, partition int, msgs []Message) ([]byte, e
 
 		// payload
 		payloadBytes := []byte(m.Payload)
-		if len(payloadBytes) > 0xFFFFFFFF {
-			return nil, fmt.Errorf("payload too large: %d bytes", len(payloadBytes))
-		}
 		if err := write(uint32(len(payloadBytes))); err != nil {
 			return nil, err
 		}

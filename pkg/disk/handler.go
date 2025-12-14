@@ -297,10 +297,9 @@ func (dh *DiskHandler) readMessagesFromSegment(reader *mmap.ReaderAt, startOffse
 				continue
 			}
 			msg := types.Message{
-				Offset:  diskMsg.Offset,
+				Offset:  segmentStartOffset + currentMsgIndex,
 				Payload: diskMsg.Payload,
 			}
-			msg.Offset = segmentStartOffset + currentMsgIndex
 			messages = append(messages, msg)
 		}
 		currentMsgIndex++

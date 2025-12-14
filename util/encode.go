@@ -21,17 +21,17 @@ func EncodeMessage(topic string, payload string) []byte {
 }
 
 // DecodeMessage deserializes bytes into topic and payload.
-func DecodeMessage(data []byte) (string, string) {
+func DecodeMessage(data []byte) (string, string, error) {
 	if len(data) < 2 {
-		return "", ""
+		return "", "", errors.New("data too short")
 	}
 	topicLen := binary.BigEndian.Uint16(data[:2])
 	if int(topicLen)+2 > len(data) {
-		return "", ""
+		return "", "", errors.New("invalid topic length")
 	}
 	topic := string(data[2 : 2+topicLen])
 	payload := string(data[2+int(topicLen):])
-	return topic, payload
+	return topic, payload, nil
 }
 
 func EncodeBatchMessages(topic string, partition int, msgs []types.Message) ([]byte, error) {
@@ -121,9 +121,6 @@ func EncodeBatchMessages(topic string, partition int, msgs []types.Message) ([]b
 
 		// payload
 		payloadBytes := []byte(m.Payload)
-		if len(payloadBytes) > 0xFFFFFFFF {
-			return nil, fmt.Errorf("payload too large: %d bytes", len(payloadBytes))
-		}
 		if err := write(uint32(len(payloadBytes))); err != nil {
 			return nil, err
 		}

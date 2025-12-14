@@ -3,7 +3,6 @@ package disk_test
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
@@ -35,7 +34,7 @@ func TestWriteDirectAndFlush(t *testing.T) {
 	defer dh.Close()
 
 	for i := 0; i < 3; i++ {
-		dh.WriteDirect("testTopic", 0, uint64(i), "msg"+strconv.Itoa('A'+i))
+		dh.WriteDirect("testTopic", 0, uint64(i), "msg"+string(rune('A'+i)))
 	}
 
 	dh.Flush()

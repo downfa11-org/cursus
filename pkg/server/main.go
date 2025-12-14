@@ -234,7 +234,11 @@ func HandleConnection(
 			return
 		}
 
-		topicName, payload := util.DecodeMessage(data)
+		topicName, payload, err := util.DecodeMessage(data)
+		if err != nil {
+			util.Error("⚠️ Decode error: %v", err)
+			return
+		}
 
 		if strings.HasPrefix(strings.ToUpper(payload), "HEARTBEAT") {
 			writeResponseWithTimeout(conn, "OK", writeTimeout)

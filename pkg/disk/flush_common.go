@@ -208,12 +208,12 @@ func (d *DiskHandler) WriteDirect(topic string, partition int, offset uint64, pa
 
 	serialized, err := util.SerializeDiskMessage(diskMsg)
 	if err != nil {
-		util.Fatal("failed to serialize message: %v", err)
+		util.Error("failed to serialize message: %v", err)
 		return
 	}
 
 	if len(serialized) > 0xFFFFFFFF {
-		util.Fatal("message too large to write: %d bytes", len(serialized))
+		util.Error("message too large to write: %d bytes", len(serialized))
 		return
 	}
 

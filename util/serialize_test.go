@@ -15,7 +15,11 @@ func TestEncodeDecodeMessage(t *testing.T) {
 		t.Errorf("Unexpected encoded length: got %d", len(data))
 	}
 
-	decodedTopic, decodedPayload := util.DecodeMessage(data)
+	decodedTopic, decodedPayload, err := util.DecodeMessage(data)
+	if err != nil {
+		util.Error("⚠️ Decode error: %v", err)
+		return
+	}
 	if decodedTopic != topic {
 		t.Errorf("Expected topic %s, got %s", topic, decodedTopic)
 	}
@@ -26,20 +30,32 @@ func TestEncodeDecodeMessage(t *testing.T) {
 
 func TestDecodeMessageInvalidData(t *testing.T) {
 	empty := []byte{}
-	topic, payload := util.DecodeMessage(empty)
+	topic, payload, err := util.DecodeMessage(empty)
+	if err != nil {
+		util.Error("⚠️ Decode error: %v", err)
+		return
+	}
 	if topic != "" || payload != "" {
 		t.Errorf("Expected empty topic/payload, got %s/%s", topic, payload)
 	}
 
 	short := []byte{0x01}
-	topic, payload = util.DecodeMessage(short)
+	topic, payload, err = util.DecodeMessage(short)
+	if err != nil {
+		util.Error("⚠️ Decode error: %v", err)
+		return
+	}
 	if topic != "" || payload != "" {
 		t.Errorf("Expected empty topic/payload for short data, got %s/%s", topic, payload)
 	}
 
 	// topicLen > data length
 	data := []byte{0x00, 0x05, 'a'}
-	topic, payload = util.DecodeMessage(data)
+	topic, payload, err = util.DecodeMessage(data)
+	if err != nil {
+		util.Error("⚠️ Decode error: %v", err)
+		return
+	}
 	if topic != "" || payload != "" {
 		t.Errorf("Expected empty topic/payload for invalid length, got %s/%s", topic, payload)
 	}

@@ -37,11 +37,6 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 				matchedTopics = []string{group.TopicName}
 			}
 		}
-	} else {
-		matchedTopics, err = ch.matchTopicPattern(topicPattern)
-		if err != nil {
-			return 0, err
-		}
 	}
 
 	if len(matchedTopics) == 0 {
@@ -328,7 +323,7 @@ func (ch *CommandHandler) validateStreamSyntax(cmd, raw string) string {
 
 func (ch *CommandHandler) validateConsumeSyntax(cmd, raw string) string {
 	args := parseKeyValueArgs(cmd[8:])
-	if args["topic"] == "" || args["partition"] == "" || args["offset"] == "" {
+	if args["topic"] == "" || args["partition"] == "" || args["offset"] == "" || args["member"] == "" {
 		return ch.fail(raw, "ERROR: invalid CONSUME syntax")
 	}
 	return STREAM_DATA_SIGNAL
