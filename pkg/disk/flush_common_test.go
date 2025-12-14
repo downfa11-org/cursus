@@ -35,7 +35,7 @@ func TestWriteDirectAndFlush(t *testing.T) {
 	defer dh.Close()
 
 	for i := 0; i < 3; i++ {
-		dh.WriteDirect("msg" + strconv.Itoa('A'+i))
+		dh.WriteDirect("testTopic", 0, uint64(i), "msg"+strconv.Itoa('A'+i))
 	}
 
 	dh.Flush()
@@ -59,8 +59,8 @@ func TestWriteBatchRotation(t *testing.T) {
 		msg[i] = 'x'
 	}
 
-	dh.WriteDirect(string(msg))
-	dh.WriteDirect(string(msg))
+	dh.WriteDirect("testTopic", 0, 0, string(msg))
+	dh.WriteDirect("testTopic", 0, 1, string(msg))
 
 	currentSeg := dh.GetCurrentSegment()
 	if currentSeg != 1 {
@@ -72,14 +72,55 @@ func TestFlushLoopAsync(t *testing.T) {
 	dh := setupDiskHandler(t)
 	defer dh.Close()
 
-	dh.AppendMessage("async1")
-	dh.AppendMessage("async2")
-	dh.AppendMessage("async3")
+	dh.AppendMessage("testTopic", 0, 0, "async1")
+	dh.AppendMessage("testTopic", 0, 1, "async2")
+	dh.AppendMessage("testTopic", 0, 2, "async3")
 
 	t.Logf("waiting for flushLoop to process messages...")
 	<-time.After(200 * time.Millisecond)
 
 	if dh.GetAbsoluteOffset() != 3 {
 		t.Fatalf("expected AbsoluteOffset 3 after async flush, got %d", dh.GetAbsoluteOffset())
+	}
+}
+
+func TestReadMessagesWithMetadata(t *testing.T) {
+	dh := setupDiskHandler(t)
+	defer dh.Close()
+
+	testMessages := []struct {
+		topic     string
+		partition int
+		offset    uint64
+		payload   string
+	}{
+		{"testTopic", 0, 0, "message1"},
+		{"testTopic", 0, 1, "message2"},
+		{"testTopic", 0, 2, "message3"},
+	}
+
+	for _, msg := range testMessages {
+		dh.WriteDirect(msg.topic, msg.partition, msg.offset, msg.payload)
+	}
+
+	dh.Flush()
+
+	messages, err := dh.ReadMessages(0, 3)
+	if err != nil {
+		t.Fatalf("failed to read messages: %v", err)
+	}
+
+	if len(messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(messages))
+	}
+
+	for i, msg := range messages {
+		expected := testMessages[i]
+		if msg.Offset != expected.offset {
+			t.Errorf("message %d: expected offset %d, got %d", i, expected.offset, msg.Offset)
+		}
+		if msg.Payload != expected.payload {
+			t.Errorf("message %d: expected payload %q, got %q", i, expected.payload, msg.Payload)
+		}
 	}
 }

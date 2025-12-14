@@ -218,7 +218,7 @@ func (f *BrokerFSM) persistMessage(entry *ReplicationEntry) error {
 		return fmt.Errorf("disk handler not initialized")
 	}
 
-	f.diskHandler.AppendMessage(entry.Message.Payload)
+	f.diskHandler.AppendMessage(entry.Topic, entry.Partition, entry.Message.Offset, entry.Message.Payload)
 	return nil
 }
 
