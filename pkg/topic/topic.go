@@ -227,13 +227,15 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 		return fmt.Errorf("partition %d is closed", p.id)
 	}
 
-	if appender, ok := p.dh.(interface{ AppendMessageSync(string) error }); ok {
+	if appender, ok := p.dh.(interface {
+		AppendMessageSync(topic string, partition int, offset uint64, payload string) error
+	}); ok {
 		serialized, err := util.SerializeMessage(msg)
 		if err != nil {
 			util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
 			return err
 		}
-		if err := appender.AppendMessageSync(string(serialized)); err != nil {
+		if err := appender.AppendMessageSync(p.topic, p.id, msg.Offset, string(serialized)); err != nil {
 			return fmt.Errorf("disk write failed: %w", err)
 		}
 		p.NotifyNewMessage()
@@ -252,14 +254,16 @@ func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
 		return fmt.Errorf("partition %d is closed", p.id)
 	}
 
-	if appender, ok := p.dh.(interface{ AppendMessageSync(string) error }); ok {
+	if appender, ok := p.dh.(interface {
+		AppendMessageSync(topic string, partition int, offset uint64, payload string) error
+	}); ok {
 		for _, msg := range msgs {
 			serialized, err := util.SerializeMessage(msg)
 			if err != nil {
 				util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
 				return err
 			}
-			if err := appender.AppendMessageSync(string(serialized)); err != nil {
+			if err := appender.AppendMessageSync(p.topic, p.id, msg.Offset, string(serialized)); err != nil {
 				return fmt.Errorf("disk write failed for partition %d: %w", p.id, err)
 			}
 		}

@@ -22,7 +22,7 @@ type DiskHandler struct {
 	CurrentSegment int
 	AbsoluteOffset uint64
 
-	writeCh      chan string
+	writeCh      chan types.DiskMessage
 	done         chan struct{}
 	batchSize    int
 	linger       time.Duration
@@ -93,7 +93,7 @@ func NewDiskHandler(cfg *config.Config, topicName string, partitionID, segmentSi
 		CurrentSegment:   currentSegment,
 		CurrentOffset:    currentOffset,
 		AbsoluteOffset:   absoluteOffset,
-		writeCh:          make(chan string, cfg.ChannelBufferSize),
+		writeCh:          make(chan types.DiskMessage, cfg.ChannelBufferSize),
 		done:             make(chan struct{}),
 		batchSize:        cfg.DiskFlushBatchSize,
 		linger:           time.Duration(cfg.LingerMS) * time.Millisecond,
@@ -152,22 +152,29 @@ func countMessagesInFile(filePath string) (int, error) {
 	return count, nil
 }
 
-func (d *DiskHandler) AppendMessageSync(payload string) error {
-	d.WriteDirect(payload)
+func (d *DiskHandler) AppendMessageSync(topic string, partition int, offset uint64, payload string) error {
+	d.WriteDirect(topic, partition, offset, payload)
 	return nil
 }
 
 // AppendMessage sends a message to the internal write channel for asynchronous disk persistence.
-func (d *DiskHandler) AppendMessage(msg string) {
+func (d *DiskHandler) AppendMessage(topic string, partition int, offset uint64, payload string) {
 	util.Debug("Attempting to append message (len=%d) to disk.writeCh (cap=%d, len=%d)",
-		len(msg), cap(d.writeCh), len(d.writeCh))
+		len(payload), cap(d.writeCh), len(d.writeCh))
+
+	diskMsg := types.DiskMessage{
+		Topic:     topic,
+		Partition: int32(partition),
+		Offset:    offset,
+		Payload:   payload,
+	}
 
 	for {
 		select {
 		case <-d.done:
 			util.Debug("done channel closed for %s", d.BaseName)
 			return
-		case d.writeCh <- msg:
+		case d.writeCh <- diskMsg:
 			util.Debug("Message sent to writeCh for %s", d.BaseName)
 			return
 		default:
@@ -180,7 +187,7 @@ func (d *DiskHandler) AppendMessage(msg string) {
 			case <-d.done:
 				timer.Stop()
 				return
-			case d.writeCh <- msg:
+			case d.writeCh <- diskMsg:
 				timer.Stop()
 				return
 			case <-timer.C:
@@ -193,7 +200,7 @@ func (d *DiskHandler) AppendMessage(msg string) {
 		select {
 		case <-d.done:
 			return
-		case d.writeCh <- msg:
+		case d.writeCh <- diskMsg:
 			return
 		}
 	}
@@ -284,10 +291,14 @@ func (dh *DiskHandler) readMessagesFromSegment(reader *mmap.ReaderAt, startOffse
 		pos += int(msgLen)
 
 		if currentMsgIndex >= startOffset {
-			msg, err := util.DeserializeMessage(data)
+			diskMsg, err := util.DeserializeDiskMessage(data)
 			if err != nil {
 				util.Error("deserialize message failed: %v", err)
 				continue
+			}
+			msg := types.Message{
+				Offset:  diskMsg.Offset,
+				Payload: diskMsg.Payload,
 			}
 			msg.Offset = segmentStartOffset + currentMsgIndex
 			messages = append(messages, msg)
