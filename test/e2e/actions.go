@@ -132,7 +132,11 @@ func (a *Actions) SyncGroup() *Actions {
 
 // ConsumeMessages attempts to consume messages from all partitions in the group.
 func (a *Actions) ConsumeMessages() *Actions {
-	a.ctx.t.Logf("Consuming from topic '%s' for group '%s'...", a.ctx.topic, a.ctx.consumerGroup)
+	return a.ConsumeMessagesFromTopic(a.ctx.topic)
+}
+
+func (a *Actions) ConsumeMessagesFromTopic(topic string) *Actions {
+	a.ctx.t.Logf("Consuming from topic '%s' for group '%s'...", topic, a.ctx.consumerGroup)
 
 	client := a.ctx.getClient()
 
@@ -141,19 +145,14 @@ func (a *Actions) ConsumeMessages() *Actions {
 		return a
 	}
 
-	currentMemberID := client.memberID
-	currentGeneration := client.generation
-
-	a.ctx.t.Logf("Consumer member '%s' (Generation %d) assigned partitions: %v", currentMemberID, currentGeneration, a.ctx.assignedPartitions)
-
 	totalConsumed := 0
 	for _, partition := range a.ctx.assignedPartitions {
 		messages, err := client.ConsumeMessages(
-			a.ctx.topic,
+			topic,
 			partition,
 			a.ctx.consumerGroup,
-			currentMemberID,
-			currentGeneration,
+			client.memberID,
+			client.generation,
 			5*time.Second,
 		)
 
@@ -161,13 +160,10 @@ func (a *Actions) ConsumeMessages() *Actions {
 			a.ctx.t.Fatalf("Consume assigned partition %d failed: %v", partition, err)
 		}
 
-		a.ctx.t.Logf("Consumed %d messages from partition %d", len(messages), partition)
 		totalConsumed += len(messages)
 	}
 
-	a.ctx.SyncClientState(client)
 	a.ctx.consumedCount = totalConsumed
-	a.ctx.t.Logf("Total consumed: %d messages", totalConsumed)
 	return a
 }
 
