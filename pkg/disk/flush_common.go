@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
 )
 
 // flushLoop continuously processes write batches and handles segment rotation.
 func (d *DiskHandler) flushLoop() {
-	batch := make([]string, 0, d.batchSize)
+	batch := make([]types.DiskMessage, 0, d.batchSize)
 	ticker := time.NewTicker(d.linger)
 	defer ticker.Stop()
 
@@ -123,51 +124,56 @@ func (d *DiskHandler) syncLoop() {
 }
 
 // writeBatch writes a batch of messages into the current segment file.
-func (d *DiskHandler) writeBatch(batch []string) {
+func (d *DiskHandler) writeBatch(batch []types.DiskMessage) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
 	defer d.ioMu.Unlock()
 
 	if d.file == nil {
-		util.Debug("Opening new segment file")
 		if err := d.openSegment(); err != nil {
 			util.Fatal("failed to open segment: %v", err)
 		}
 	}
 
-	validMsgs := make([]string, 0, len(batch))
-	for _, msg := range batch {
-		if len(msg) > 0xFFFFFFFF {
-			util.Error("message too large to write: %d bytes", len(msg))
-			continue
-		}
-		validMsgs = append(validMsgs, msg)
-	}
-
-	if len(validMsgs) == 0 {
+	if len(batch) == 0 {
 		return
 	}
 
+	serializedMsgs := make([][]byte, 0, len(batch))
 	totalSize := 0
-	for _, msg := range validMsgs {
-		totalSize += 4 + len(msg)
+
+	for _, msg := range batch {
+		serialized, err := util.SerializeDiskMessage(msg)
+		if err != nil {
+			util.Error("failed to serialize message: %v", err)
+			continue
+		}
+		if len(serialized) > 0xFFFFFFFF {
+			util.Error("message too large to write: %d bytes", len(serialized))
+			continue
+		}
+		serializedMsgs = append(serializedMsgs, serialized)
+		totalSize += 4 + len(serialized)
+	}
+
+	if len(serializedMsgs) == 0 {
+		return
 	}
 
 	buffer := make([]byte, 0, totalSize)
 	lenBuf := make([]byte, 4)
 
-	for _, msg := range validMsgs {
-		msgLen := len(msg)
+	for _, serialized := range serializedMsgs {
+		msgLen := len(serialized)
 		binary.BigEndian.PutUint32(lenBuf, uint32(msgLen))
 		buffer = append(buffer, lenBuf...)
-		buffer = append(buffer, msg...)
+		buffer = append(buffer, serialized...)
 	}
 
-	bufferLen := uint64(len(buffer))
-	if d.CurrentOffset+bufferLen > d.SegmentSize {
+	if d.CurrentOffset+uint64(len(buffer)) > d.SegmentSize {
 		if err := d.rotateSegment(); err != nil {
-			util.Error("rotateSegment failed to rotate segment: %v", err)
+			util.Error("rotateSegment failed: %v", err)
 			return
 		}
 	}
@@ -178,7 +184,7 @@ func (d *DiskHandler) writeBatch(batch []string) {
 	}
 
 	d.CurrentOffset += uint64(len(buffer))
-	d.AbsoluteOffset += uint64(len(validMsgs))
+	d.AbsoluteOffset += uint64(len(serializedMsgs))
 
 	if err := d.writer.Flush(); err != nil {
 		util.Error("flush failed after batch: %v", err)
@@ -187,27 +193,33 @@ func (d *DiskHandler) writeBatch(batch []string) {
 }
 
 // WriteDirect writes a single message immediately without batching.
-func (d *DiskHandler) WriteDirect(msg string) {
+func (d *DiskHandler) WriteDirect(topic string, partition int, offset uint64, payload string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
 	defer d.ioMu.Unlock()
 
-	var lenBuf [4]byte
-
-	if d.file == nil {
-		if err := d.openSegment(); err != nil {
-			util.Fatal("failed to open segment: %v", err)
-		}
+	diskMsg := types.DiskMessage{
+		Topic:     topic,
+		Partition: int32(partition),
+		Offset:    offset,
+		Payload:   payload,
 	}
 
-	data := []byte(msg)
-	if len(data) > 0xFFFFFFFF {
-		util.Fatal("message too large to write: %d bytes", len(data))
+	serialized, err := util.SerializeDiskMessage(diskMsg)
+	if err != nil {
+		util.Fatal("failed to serialize message: %v", err)
 		return
 	}
-	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(data)))
-	totalLen := uint64(4 + len(data))
+
+	if len(serialized) > 0xFFFFFFFF {
+		util.Fatal("message too large to write: %d bytes", len(serialized))
+		return
+	}
+
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(serialized)))
+	totalLen := uint64(4 + len(serialized))
 
 	if d.CurrentOffset+totalLen > d.SegmentSize {
 		if err := d.rotateSegment(); err != nil {
@@ -219,7 +231,7 @@ func (d *DiskHandler) WriteDirect(msg string) {
 		util.Error("writeDirect failed writing length: %v", err)
 		return
 	}
-	if _, err := d.writer.Write(data); err != nil {
+	if _, err := d.writer.Write(serialized); err != nil {
 		util.Error("writeDirect failed writing data: %v", err)
 		return
 	}
@@ -266,7 +278,7 @@ func (d *DiskHandler) rotateSegment() error {
 
 // Flush forces all pending data to be written and synced to disk.
 func (d *DiskHandler) Flush() {
-	batch := make([]string, 0, len(d.writeCh))
+	batch := make([]types.DiskMessage, 0, len(d.writeCh))
 
 	for {
 		select {

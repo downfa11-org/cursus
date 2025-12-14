@@ -1,9 +1,7 @@
 package disk_test
 
 import (
-	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -32,8 +30,8 @@ func TestDiskHandlerBasic(t *testing.T) {
 	defer dh.Close()
 
 	messages := []string{"msg1", "msg2", "msg3", "msg4", "msg5"}
-	for _, msg := range messages {
-		dh.AppendMessage(msg)
+	for i, msg := range messages {
+		dh.AppendMessage(topic, 0, uint64(i), msg)
 	}
 
 	time.Sleep(150 * time.Millisecond)
@@ -47,14 +45,22 @@ func TestDiskHandlerBasic(t *testing.T) {
 		t.Fatalf("Expected at least 1 segment file, got %d", len(files))
 	}
 
-	allContent := ""
-	for _, f := range files {
-		data, _ := os.ReadFile(f)
-		allContent += string(data)
+	readMsgs, err := dh.ReadMessages(0, len(messages))
+	if err != nil {
+		t.Fatalf("failed to read messages: %v", err)
 	}
-	for _, msg := range messages {
-		if !strings.Contains(allContent, msg) {
-			t.Errorf("Message %q not found in logs", msg)
+
+	if len(readMsgs) != len(messages) {
+		t.Fatalf("expected %d messages, got %d", len(messages), len(readMsgs))
+	}
+
+	for i, msg := range readMsgs {
+		expectedMsg := messages[i]
+		if msg.Payload != expectedMsg {
+			t.Errorf("message %d: expected payload %q, got %q", i, expectedMsg, msg.Payload)
+		}
+		if msg.Offset != uint64(i) {
+			t.Errorf("message %d: expected offset %d, got %d", i, i, msg.Offset)
 		}
 	}
 }
@@ -79,8 +85,8 @@ func TestDiskHandlerChannelOverflow(t *testing.T) {
 	}
 	defer dh.Close()
 
-	dh.AppendMessage("first")
-	dh.AppendMessage("second")
+	dh.AppendMessage(topic, 0, 0, "first")
+	dh.AppendMessage(topic, 0, 1, "second")
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -93,9 +99,23 @@ func TestDiskHandlerChannelOverflow(t *testing.T) {
 		t.Fatalf("Expected segment file to be created")
 	}
 
-	content, _ := os.ReadFile(files[0])
-	if !strings.Contains(string(content), "first") || !strings.Contains(string(content), "second") {
-		t.Errorf("Expected both messages in file, got %q", string(content))
+	readMsgs, err := dh.ReadMessages(0, 2)
+	if err != nil {
+		t.Fatalf("failed to read messages: %v", err)
+	}
+
+	if len(readMsgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(readMsgs))
+	}
+
+	expectedPayloads := []string{"first", "second"}
+	for i, msg := range readMsgs {
+		if msg.Payload != expectedPayloads[i] {
+			t.Errorf("message %d: expected payload %q, got %q", i, expectedPayloads[i], msg.Payload)
+		}
+		if msg.Offset != uint64(i) {
+			t.Errorf("message %d: expected offset %d, got %d", i, i, msg.Offset)
+		}
 	}
 }
 
@@ -120,8 +140,8 @@ func TestDiskHandlerRotation(t *testing.T) {
 	defer dh.Close()
 
 	msgs := []string{"12345", "67890", "abcde"}
-	for _, m := range msgs {
-		dh.AppendMessage(m)
+	for i, m := range msgs {
+		dh.AppendMessage(topic, 0, uint64(i), m)
 	}
 
 	time.Sleep(50 * time.Millisecond)
@@ -135,14 +155,21 @@ func TestDiskHandlerRotation(t *testing.T) {
 		t.Errorf("Expected multiple segment files, got %d", len(files))
 	}
 
-	all := ""
-	for _, f := range files {
-		data, _ := os.ReadFile(f)
-		all += string(data)
+	readMsgs, err := dh.ReadMessages(0, len(msgs))
+	if err != nil {
+		t.Fatalf("failed to read messages: %v", err)
 	}
-	for _, m := range msgs {
-		if !strings.Contains(all, m) {
-			t.Errorf("Message %q not found in files", m)
+
+	if len(readMsgs) != len(msgs) {
+		t.Fatalf("expected %d messages, got %d", len(msgs), len(readMsgs))
+	}
+
+	for i, msg := range readMsgs {
+		if msg.Payload != msgs[i] {
+			t.Errorf("message %d: expected payload %q, got %q", i, msgs[i], msg.Payload)
+		}
+		if msg.Offset != uint64(i) {
+			t.Errorf("message %d: expected offset %d, got %d", i, i, msg.Offset)
 		}
 	}
 }
