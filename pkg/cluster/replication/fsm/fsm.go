@@ -36,16 +36,16 @@ type BrokerFSM struct {
 	partitionMetadata map[string]*PartitionMetadata
 	applied           uint64
 
-	diskHandler *disk.DiskHandler
-	tm          *topic.TopicManager
+	dm *disk.DiskManager
+	tm *topic.TopicManager
 }
 
-func NewBrokerFSM(diskHandler *disk.DiskHandler, tm *topic.TopicManager) *BrokerFSM {
+func NewBrokerFSM(dm *disk.DiskManager, tm *topic.TopicManager) *BrokerFSM {
 	return &BrokerFSM{
 		logs:              make(map[uint64]*ReplicationEntry),
 		brokers:           make(map[string]*BrokerInfo),
 		partitionMetadata: make(map[string]*PartitionMetadata),
-		diskHandler:       diskHandler,
+		dm:                dm,
 		tm:                tm,
 	}
 }
@@ -146,34 +146,36 @@ func (f *BrokerFSM) Snapshot() (raft.FSMSnapshot, error) {
 }
 
 func (f *BrokerFSM) persistMessage(topicName string, partition int, msg *types.Message) error {
-	if f.diskHandler == nil {
-		return fmt.Errorf("disk handler not initialized")
+	dh, err := f.dm.GetHandler(topicName, partition)
+	if err != nil {
+		return fmt.Errorf("failed to get disk handler for topic %s: %w", topicName, err)
 	}
 
-	msg.Offset = f.diskHandler.GetAbsoluteOffset()
+	msg.Offset = dh.GetAbsoluteOffset()
 	serialized, err := util.SerializeMessage(*msg)
 	if err != nil {
 		return fmt.Errorf("failed to serialize message: %w", err)
 	}
 
-	f.diskHandler.WriteDirect(topicName, partition, msg.Offset, string(serialized))
+	dh.WriteDirect(topicName, partition, msg.Offset, string(serialized))
 	util.Debug("FSM persisted message: topic=%s, offset=%d", topicName, msg.Offset)
 	return nil
 }
 
 func (f *BrokerFSM) persistBatch(topicName string, partition int, msgs []types.Message) error {
-	if f.diskHandler == nil {
-		return fmt.Errorf("disk handler not initialized")
+	dh, err := f.dm.GetHandler(topicName, partition)
+	if err != nil {
+		return fmt.Errorf("failed to get disk handler for topic %s: %w", topicName, err)
 	}
 
 	for i := range msgs {
-		msgs[i].Offset = f.diskHandler.GetAbsoluteOffset() + uint64(i)
+		msgs[i].Offset = dh.GetAbsoluteOffset() + uint64(i)
 		serialized, err := util.SerializeMessage(msgs[i])
 		if err != nil {
 			return fmt.Errorf("failed to serialize message at index %d: %w", i, err)
 		}
 
-		f.diskHandler.WriteDirect(topicName, partition, msgs[i].Offset, string(serialized))
+		dh.WriteDirect(topicName, partition, msgs[i].Offset, string(serialized))
 	}
 
 	util.Debug("FSM persisted batch: topic=%s, count=%d", topicName, len(msgs))

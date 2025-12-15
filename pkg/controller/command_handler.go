@@ -414,23 +414,29 @@ func (ch *CommandHandler) HandleBatchMessage(data []byte, conn net.Conn) (string
 		future := ch.ReplicationManager.GetRaft().Apply([]byte(fmt.Sprintf("BATCH:%s", batchData)), timeout)
 		if acks != "0" {
 			if err := future.Error(); err != nil {
-				return ch.errorResponse(fmt.Sprintf("failed to replicate batch message with acks=%s: %v", acks, err)), nil
+				respAck := types.AckResponse{
+					Status:        "ERROR",
+					ErrorMsg:      fmt.Sprintf("failed to replicate batch message with acks=%s: %v", acks, err),
+					ProducerID:    batch.Messages[0].ProducerID,
+					ProducerEpoch: batch.Messages[0].Epoch,
+					SeqStart:      batch.Messages[0].SeqNum,
+					SeqEnd:        batch.Messages[len(batch.Messages)-1].SeqNum,
+				}
+				ackBytes, _ := json.Marshal(respAck)
+				return string(ackBytes), nil
 			}
-
-			tempMsg := batch.Messages[len(batch.Messages)-1]
-			lastMsg = &tempMsg
 
 			if ack, ok := future.Response().(types.AckResponse); ok {
 				respAck = ack
-				util.Debug("Raft FSM returned AckResponse.")
+				util.Debug("Raft FSM returned AckResponse: %v", respAck)
 			} else {
 				respAck = types.AckResponse{
 					Status:        "ERROR",
 					ErrorMsg:      "Raft FSM failed to return acknowledgement",
-					ProducerID:    lastMsg.ProducerID,
-					ProducerEpoch: lastMsg.Epoch,
+					ProducerID:    batch.Messages[0].ProducerID,
+					ProducerEpoch: batch.Messages[0].Epoch,
 					SeqStart:      batch.Messages[0].SeqNum,
-					SeqEnd:        lastMsg.SeqNum,
+					SeqEnd:        batch.Messages[len(batch.Messages)-1].SeqNum,
 				}
 				util.Warn("Raft FSM did not return a proper AckResponse for BATCH; using local message info.")
 			}

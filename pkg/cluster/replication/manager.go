@@ -1,7 +1,6 @@
 package replication
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -15,9 +14,7 @@ import (
 	"github.com/downfa11-org/go-broker/pkg/cluster/replication/fsm"
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/disk"
-	"github.com/downfa11-org/go-broker/pkg/metrics"
 	"github.com/downfa11-org/go-broker/pkg/topic"
-	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
 	"github.com/hashicorp/raft"
 )
@@ -71,13 +68,7 @@ func (rm *RaftReplicationManager) GetFSM() *fsm.BrokerFSM {
 }
 
 func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager *disk.DiskManager, topicManager *topic.TopicManager, client client.TCPClusterClient) (*RaftReplicationManager, error) {
-	diskHandler, err := diskManager.GetHandler("replicated", 0)
-	if err != nil {
-		util.Error("Failed to get disk handler for replication: %v", err)
-		return nil, fmt.Errorf("failed to get disk handler: %w", err)
-	}
-
-	fsm := fsm.NewBrokerFSM(diskHandler, topicManager)
+	fsm := fsm.NewBrokerFSM(diskManager, topicManager)
 
 	localAddr := fmt.Sprintf("%s:%d", cfg.AdvertisedHost, cfg.RaftPort)
 	config := raft.DefaultConfig()
@@ -224,39 +215,6 @@ func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager 
 	return manager, nil
 }
 
-func (rm *RaftReplicationManager) ReplicateMessage(topic string, partition int, msg types.Message) error {
-	if rm.raft.State() != raft.Leader {
-		return fmt.Errorf("not cluster leader")
-	}
-
-	util.Debug("Replicating message to topic %s partition %d", topic, partition)
-
-	entry := &fsm.ReplicationEntry{
-		Topic:     topic,
-		Partition: partition,
-		Message:   msg,
-	}
-
-	data, err := json.Marshal(entry)
-	if err != nil {
-		util.Error("Failed to marshal replication entry: %v", err)
-		return fmt.Errorf("failed to marshal entry: %w", err)
-	}
-
-	future := rm.raft.Apply(data, 5*time.Second)
-	if err := future.Error(); err != nil {
-		util.Error("Failed to replicate message: %v", err)
-		return fmt.Errorf("failed to replicate: %w", err)
-	}
-
-	util.Debug("Successfully replicated message to topic %s partition %d", topic, partition)
-	return nil
-}
-
-func (rm *RaftReplicationManager) IsLeader(topic string, partition int) bool {
-	return rm.raft.State() == raft.Leader
-}
-
 func (rm *RaftReplicationManager) AddVoter(brokerID, addr string) error {
 	util.Info("Adding voter %s at %s", brokerID, addr)
 
@@ -282,43 +240,5 @@ func (rm *RaftReplicationManager) Shutdown() error {
 		}
 	}
 	util.Info("Successfully shutdown RaftReplicationManager")
-	return nil
-}
-
-func (rm *RaftReplicationManager) ReplicateToLeader(topic string, partition int, msg types.Message) error {
-	if !rm.IsLeader(topic, partition) {
-		util.Warn("Attempted to replicate to non-leader for topic %s partition %d", topic, partition)
-		return fmt.Errorf("not a leader for topic %s partition %d", topic, partition)
-	}
-
-	return rm.ReplicateMessage(topic, partition, msg)
-}
-
-func (rm *RaftReplicationManager) ReplicateWithQuorum(topic string, partition int, msg types.Message, minISR int) error {
-	util.Debug("Replicating with quorum for topic %s partition %d (min ISR: %d)", topic, partition, minISR)
-
-	if rm.isrManager != nil {
-		if !rm.isrManager.HasQuorum(topic, partition, minISR) {
-			metrics.QuorumOperations.WithLabelValues("write", "failure").Inc()
-			util.Error("Insufficient in-sync replicas for topic %s partition %d (min ISR: %d)", topic, partition, minISR)
-			return fmt.Errorf("not enough in-sync replicas for topic %s partition %d but min ISR %d", topic, partition, minISR)
-		}
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		util.Error("Failed to marshal message for quorum replication: %v", err)
-		return fmt.Errorf("failed to marshal message: %w", err)
-	}
-
-	future := rm.raft.Apply([]byte(fmt.Sprintf("MESSAGE:%s", string(data))), 5*time.Second)
-	if err := future.Error(); err != nil {
-		metrics.QuorumOperations.WithLabelValues("write", "failure").Inc()
-		util.Error("Failed to replicate with quorum for topic %s partition %d: %v", topic, partition, err)
-		return fmt.Errorf("failed to replicate with quorum: %w", err)
-	}
-
-	metrics.QuorumOperations.WithLabelValues("write", "success").Inc()
-	util.Debug("Successfully replicated with quorum for topic %s partition %d", topic, partition)
 	return nil
 }

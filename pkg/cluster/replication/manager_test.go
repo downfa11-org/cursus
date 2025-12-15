@@ -1,14 +1,11 @@
 package replication
 
 import (
-	"encoding/json"
-	"errors"
 	"io"
 	"testing"
 	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/cluster/replication/fsm"
-	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/hashicorp/raft"
 )
 
@@ -138,44 +135,5 @@ func TestBootstrapCluster_Success(t *testing.T) {
 
 	if err := rm.BootstrapCluster(peers); err != nil {
 		t.Fatalf("BootstrapCluster failed: %v", err)
-	}
-}
-
-func TestReplicateMessage_Success(t *testing.T) {
-	testMsg := types.Message{Key: "k1", Payload: "data"}
-
-	mockRaft := &MockRaft{
-		ApplyFunc: func(data []byte, timeout time.Duration) raft.ApplyFuture {
-			var entry fsm.ReplicationEntry
-			if err := json.Unmarshal(data, &entry); err != nil {
-				t.Fatalf("Failed to unmarshal applied data: %v", err)
-			}
-			if entry.Topic != "t1" || entry.Partition != 0 || string(entry.Message.Payload) != "data" {
-				t.Errorf("Applied data mismatch: %+v", entry)
-			}
-			return &MockApplyFuture{ErrorVal: nil}
-		},
-	}
-	rm := newTestRaftRM(mockRaft, nil, nil)
-
-	if err := rm.ReplicateMessage("t1", 0, testMsg); err != nil {
-		t.Fatalf("ReplicateMessage failed: %v", err)
-	}
-}
-
-func TestReplicateWithQuorum_RaftApplyFailure(t *testing.T) {
-	expectedErr := errors.New("raft apply error")
-
-	mockRaft := &MockRaft{
-		ApplyFunc: func(data []byte, timeout time.Duration) raft.ApplyFuture {
-			return &MockApplyFuture{ErrorVal: expectedErr}
-		},
-	}
-	rm := newTestRaftRM(mockRaft, nil, nil)
-
-	err := rm.ReplicateWithQuorum("t1", 0, types.Message{}, 1)
-
-	if !errors.Is(err, expectedErr) {
-		t.Errorf("Expected Raft apply failure error, got: %v", err)
 	}
 }
