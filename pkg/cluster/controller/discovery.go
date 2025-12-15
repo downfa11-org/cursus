@@ -1,4 +1,4 @@
-package discovery
+package controller
 
 import (
 	"encoding/json"
@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/cluster/replication"
+	"github.com/downfa11-org/go-broker/pkg/cluster/replication/fsm"
 	"github.com/downfa11-org/go-broker/util"
 	"github.com/hashicorp/raft"
 )
@@ -16,7 +17,7 @@ const joinRequestTimeout = 10 * time.Second
 
 type ServiceDiscovery interface {
 	Register() error
-	DiscoverBrokers() ([]replication.BrokerInfo, error)
+	DiscoverBrokers() ([]fsm.BrokerInfo, error)
 	Deregister() error
 	JoinCluster(brokerID string, raftAddr string) (leaderAddr string, err error)
 	SetRaftManager(rm *replication.RaftReplicationManager)
@@ -25,7 +26,7 @@ type ServiceDiscovery interface {
 }
 
 type serviceDiscovery struct {
-	fsm      *replication.BrokerFSM
+	fsm      *fsm.BrokerFSM
 	brokerID string
 	addr     string
 	raft     *raft.Raft
@@ -33,7 +34,7 @@ type serviceDiscovery struct {
 	mu       sync.Mutex
 }
 
-func NewServiceDiscovery(fsm *replication.BrokerFSM, brokerID, addr string, raft *raft.Raft) ServiceDiscovery {
+func NewServiceDiscovery(fsm *fsm.BrokerFSM, brokerID, addr string, raft *raft.Raft) ServiceDiscovery {
 	return &serviceDiscovery{
 		fsm:      fsm,
 		brokerID: brokerID,
@@ -47,7 +48,7 @@ func (sd *serviceDiscovery) SetRaftManager(rm *replication.RaftReplicationManage
 }
 
 func (sd *serviceDiscovery) Register() error {
-	broker := &replication.BrokerInfo{
+	broker := &fsm.BrokerInfo{
 		ID:       sd.brokerID,
 		Addr:     sd.addr,
 		Status:   "active",
@@ -66,9 +67,12 @@ func (sd *serviceDiscovery) Register() error {
 	return nil
 }
 
-func (sd *serviceDiscovery) DiscoverBrokers() ([]replication.BrokerInfo, error) {
+func (sd *serviceDiscovery) DiscoverBrokers() ([]fsm.BrokerInfo, error) {
 	brokers := sd.fsm.GetBrokers()
 	util.Debug("Discovered %d brokers", len(brokers))
+	for _, broker := range brokers {
+		util.Info("Found registered broker: %s at %s (status: %s)", broker.ID, broker.Addr, broker.Status)
+	}
 	return brokers, nil
 }
 
@@ -140,7 +144,7 @@ func (sd *serviceDiscovery) AddNode(nodeID string, addr string) (string, error) 
 		return leaderAddr, fmt.Errorf("add voter failed: %w", err)
 	}
 
-	broker := replication.BrokerInfo{
+	broker := fsm.BrokerInfo{
 		ID:       nodeID,
 		Addr:     addr,
 		Status:   "active",
@@ -155,7 +159,7 @@ func (sd *serviceDiscovery) AddNode(nodeID string, addr string) (string, error) 
 	return leaderAddr, nil
 }
 
-func (sd *serviceDiscovery) registerBrokerInfo(b *replication.BrokerInfo) error {
+func (sd *serviceDiscovery) registerBrokerInfo(b *fsm.BrokerInfo) error {
 	if sd.rm == nil || sd.rm.GetRaft() == nil {
 		return fmt.Errorf("raft not available")
 	}

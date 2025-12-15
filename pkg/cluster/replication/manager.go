@@ -3,7 +3,6 @@ package replication
 import (
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"net"
 	"os"
@@ -12,10 +11,12 @@ import (
 	"sync"
 	"time"
 
-	client "github.com/downfa11-org/go-broker/pkg/cluster/client"
+	"github.com/downfa11-org/go-broker/pkg/cluster/client"
+	"github.com/downfa11-org/go-broker/pkg/cluster/replication/fsm"
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/disk"
 	"github.com/downfa11-org/go-broker/pkg/metrics"
+	"github.com/downfa11-org/go-broker/pkg/topic"
 	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
 	"github.com/hashicorp/raft"
@@ -36,8 +37,8 @@ type BrokerFSMInterface interface {
 	Apply(*raft.Log) interface{}
 	Restore(io.ReadCloser) error
 	Snapshot() (raft.FSMSnapshot, error)
-	GetBrokers() []BrokerInfo
-	GetPartitionMetadata(string) *PartitionMetadata
+	GetBrokers() []fsm.BrokerInfo
+	GetPartitionMetadata(string) *fsm.PartitionMetadata
 }
 
 type ISRManagerInterface interface {
@@ -53,15 +54,6 @@ type RaftReplicationManager struct {
 	localAddr string
 	peers     map[string]string // brokerID -> addr
 	mu        sync.RWMutex
-
-	partitionLeaders map[string]string // topic-partition -> brokerID
-}
-
-type ReplicationEntry struct {
-	Topic     string
-	Partition int
-	Message   types.Message
-	Term      uint64
 }
 
 func (rm *RaftReplicationManager) GetRaft() *raft.Raft {
@@ -71,21 +63,21 @@ func (rm *RaftReplicationManager) GetRaft() *raft.Raft {
 	return nil
 }
 
-func (rm *RaftReplicationManager) GetFSM() *BrokerFSM {
-	if f, ok := rm.fsm.(*BrokerFSM); ok {
+func (rm *RaftReplicationManager) GetFSM() *fsm.BrokerFSM {
+	if f, ok := rm.fsm.(*fsm.BrokerFSM); ok {
 		return f
 	}
 	return nil
 }
 
-func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager *disk.DiskManager, clusterClient client.TCPClusterClient) (*RaftReplicationManager, error) {
+func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager *disk.DiskManager, topicManager *topic.TopicManager, client client.TCPClusterClient) (*RaftReplicationManager, error) {
 	diskHandler, err := diskManager.GetHandler("replicated", 0)
 	if err != nil {
 		util.Error("Failed to get disk handler for replication: %v", err)
 		return nil, fmt.Errorf("failed to get disk handler: %w", err)
 	}
 
-	fsm := NewBrokerFSM(diskHandler)
+	fsm := fsm.NewBrokerFSM(diskHandler, topicManager)
 
 	localAddr := fmt.Sprintf("%s:%d", cfg.AdvertisedHost, cfg.RaftPort)
 	config := raft.DefaultConfig()
@@ -197,24 +189,23 @@ func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager 
 		}
 	} else if len(cfg.RaftPeers) > 0 {
 		go func() {
-			if err := clusterClient.JoinCluster(cfg.RaftPeers, brokerID, localAddr, cfg.DiscoveryPort); err != nil {
+			if err := client.JoinCluster(cfg.RaftPeers, brokerID, localAddr, cfg.DiscoveryPort); err != nil {
 				util.Error("Failed to join cluster: %v", err)
 			}
 		}()
 	}
 
 	manager := &RaftReplicationManager{
-		raft:             r,
-		brokerID:         brokerID,
-		localAddr:        localAddr,
-		peers:            make(map[string]string),
-		fsm:              fsm,
-		partitionLeaders: make(map[string]string),
+		raft:      r,
+		brokerID:  brokerID,
+		localAddr: localAddr,
+		peers:     make(map[string]string),
+		fsm:       fsm,
 	}
 
 	if cfg.LogLevel == util.LogLevelDebug {
 		go func() {
-			ticker := time.NewTicker(3 * time.Second)
+			ticker := time.NewTicker(1 * time.Minute)
 			defer ticker.Stop()
 			for range ticker.C {
 				state := manager.raft.State()
@@ -222,11 +213,9 @@ func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager 
 
 				if configFuture := manager.raft.GetConfiguration(); configFuture.Error() == nil {
 					config := configFuture.Configuration()
-					util.Debug("DEBUG_RAFT_STATE: State=%s, Leader=%s, IsLeader=%v, KnownServers=%d",
-						state.String(), leaderAddr, state == raft.Leader, len(config.Servers))
+					util.Debug("raft: State=%s, Leader=%s, IsLeader=%v, KnownServers=%d", state.String(), leaderAddr, state == raft.Leader, len(config.Servers))
 				} else {
-					util.Debug("DEBUG_RAFT_STATE: State=%s, Leader=%s, IsLeader=%v",
-						state.String(), leaderAddr, state == raft.Leader)
+					util.Debug("raft: State=%s, Leader=%s, IsLeader=%v", state.String(), leaderAddr, state == raft.Leader)
 				}
 			}
 		}()
@@ -236,9 +225,13 @@ func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager 
 }
 
 func (rm *RaftReplicationManager) ReplicateMessage(topic string, partition int, msg types.Message) error {
+	if rm.raft.State() != raft.Leader {
+		return fmt.Errorf("not cluster leader")
+	}
+
 	util.Debug("Replicating message to topic %s partition %d", topic, partition)
 
-	entry := &ReplicationEntry{
+	entry := &fsm.ReplicationEntry{
 		Topic:     topic,
 		Partition: partition,
 		Message:   msg,
@@ -261,9 +254,7 @@ func (rm *RaftReplicationManager) ReplicateMessage(topic string, partition int, 
 }
 
 func (rm *RaftReplicationManager) IsLeader(topic string, partition int) bool {
-	isLeader := rm.raft.State() == raft.Leader
-	util.Debug("Leadership check for topic %s partition %d: %v", topic, partition, isLeader)
-	return isLeader
+	return rm.raft.State() == raft.Leader
 }
 
 func (rm *RaftReplicationManager) AddVoter(brokerID, addr string) error {
@@ -292,65 +283,6 @@ func (rm *RaftReplicationManager) Shutdown() error {
 	}
 	util.Info("Successfully shutdown RaftReplicationManager")
 	return nil
-}
-
-type PartitionMetadata struct {
-	Leader      string
-	Replicas    []string
-	ISR         []string
-	LeaderEpoch int64
-}
-
-func (rm *RaftReplicationManager) UpdatePartitionLeader(topic string, partition int, leader string) error {
-	key := fmt.Sprintf("%s-%d", topic, partition)
-	util.Info("Updating partition leader for %s to %s", key, leader)
-
-	metadata := PartitionMetadata{
-		Leader:      leader,
-		Replicas:    rm.GetPartitionReplicas(topic, partition),
-		ISR:         []string{leader}, // init state, only leader
-		LeaderEpoch: time.Now().Unix(),
-	}
-
-	data, err := json.Marshal(metadata)
-	if err != nil {
-		return fmt.Errorf("failed to marshal partition metadata: %w", err)
-	}
-
-	future := rm.raft.Apply([]byte(fmt.Sprintf("PARTITION:%s:%s", key, string(data))), 5*time.Second)
-	if err := future.Error(); err != nil {
-		util.Error("Failed to update partition leader for %s: %v", key, err)
-		return err
-	}
-
-	util.Info("Successfully updated partition leader for %s", key)
-	return nil
-}
-
-func (rm *RaftReplicationManager) GetPartitionReplicas(topic string, partition int) []string {
-	brokers := rm.fsm.GetBrokers()
-	if len(brokers) == 0 {
-		util.Debug("No brokers available for replica selection")
-		return nil
-	}
-
-	// hash based replicas
-	hash := fnv.New32a()
-	hash.Write([]byte(fmt.Sprintf("%s-%d", topic, partition)))
-
-	replicaCount := 3
-	if replicaCount > len(brokers) {
-		replicaCount = len(brokers)
-	}
-
-	var replicas []string
-	for i := 0; i < replicaCount; i++ {
-		idx := (hash.Sum32() + uint32(i)) % uint32(len(brokers))
-		replicas = append(replicas, brokers[idx].Addr)
-	}
-
-	util.Debug("Selected %d replicas for %s-%d: %v", len(replicas), topic, partition, replicas)
-	return replicas
 }
 
 func (rm *RaftReplicationManager) ReplicateToLeader(topic string, partition int, msg types.Message) error {
@@ -389,22 +321,4 @@ func (rm *RaftReplicationManager) ReplicateWithQuorum(topic string, partition in
 	metrics.QuorumOperations.WithLabelValues("write", "success").Inc()
 	util.Debug("Successfully replicated with quorum for topic %s partition %d", topic, partition)
 	return nil
-}
-
-func (rm *RaftReplicationManager) ValidateLeaderEpoch(topic string, partition int, epoch int64) bool {
-	key := fmt.Sprintf("%s-%d", topic, partition)
-
-	metadata := rm.getPartitionMetadata(key)
-	if metadata == nil {
-		util.Debug("No metadata found for %s during epoch validation", key)
-		return false
-	}
-
-	valid := metadata.LeaderEpoch == epoch
-	util.Debug("Epoch validation for %s: expected=%d, actual=%d, valid=%v", key, epoch, metadata.LeaderEpoch, valid)
-	return valid
-}
-
-func (rm *RaftReplicationManager) getPartitionMetadata(key string) *PartitionMetadata {
-	return rm.fsm.GetPartitionMetadata(key)
 }

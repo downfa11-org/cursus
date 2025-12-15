@@ -30,6 +30,9 @@ type ProducerClient struct {
 	mu           sync.Mutex
 	conns        []net.Conn
 	config       *config.PublisherConfig
+
+	leaderAddr       string
+	lastLeaderUpdate time.Time
 }
 
 func (pc *ProducerClient) ReserveSeqRange(partition int, count int) (uint64, uint64) {
@@ -190,7 +193,27 @@ func (pc *ProducerClient) Close() error {
 	return nil
 }
 
-func (pc *ProducerClient) selectBrokerForPartition(partition int) string {
+func (pc *ProducerClient) GetCachedLeader() string {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	if pc.leaderAddr != "" && time.Since(pc.lastLeaderUpdate) < 30*time.Second {
+		return pc.leaderAddr
+	}
+	return ""
+}
+
+func (pc *ProducerClient) UpdateLeader(leaderAddr string) {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	if pc.leaderAddr != leaderAddr {
+		pc.leaderAddr = leaderAddr
+		pc.lastLeaderUpdate = time.Now()
+	}
+}
+
+func (pc *ProducerClient) selectBrokerForPartition() string {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 
@@ -198,17 +221,16 @@ func (pc *ProducerClient) selectBrokerForPartition(partition int) string {
 		return ""
 	}
 
-	if partition < 0 {
-		return ""
+	if pc.leaderAddr != "" && time.Since(pc.lastLeaderUpdate) < 30*time.Second {
+		return pc.leaderAddr
 	}
 
-	index := partition % len(pc.config.BrokerAddrs)
-	return pc.config.BrokerAddrs[index]
+	return pc.config.BrokerAddrs[0]
 }
 
 func (pc *ProducerClient) ConnectPartition(idx int, addr string, useTLS bool, certPath, keyPath string) error {
 	if addr == "" {
-		addr = pc.selectBrokerForPartition(idx)
+		addr = pc.selectBrokerForPartition()
 	}
 	if addr == "" {
 		return fmt.Errorf("no broker address available for partition %d", idx)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
+	"github.com/hashicorp/raft"
 )
 
 // handleHelp processes HELP command
@@ -51,7 +52,69 @@ func (ch *CommandHandler) handleCreate(cmd string) string {
 	}
 
 	tm := ch.TopicManager
-	tm.CreateTopic(topicName, partitions)
+
+	if ch.Config.EnabledDistribution && ch.ReplicationManager != nil {
+		if ch.ReplicationManager.GetRaft().State() != raft.Leader {
+			if ch.Router == nil {
+				return "ERROR: not the leader, and router is nil"
+			}
+
+			const maxRetries = 5
+			const retryDelay = 500 * time.Millisecond
+			var leader string
+			var err error
+
+			encodedCmd := string(util.EncodeMessage(topicName, cmd))
+			for i := 0; i < maxRetries; i++ {
+
+				resp, forwardErr := ch.Router.ForwardToLeader(encodedCmd)
+				if forwardErr == nil {
+					return resp
+				}
+
+				leader, _ = ch.Router.GetCachedLeader()
+				util.Debug("Failed to forward CREATE to leader (%s). Retrying (Attempt %d/%d). Error: %v", leader, i+1, maxRetries, forwardErr)
+
+				if i < maxRetries-1 {
+					time.Sleep(retryDelay)
+				}
+				err = forwardErr
+			}
+			return ch.errorResponse(fmt.Sprintf("failed to forward CREATE to leader: %v", err))
+		}
+
+		topicData := map[string]interface{}{
+			"name":       topicName,
+			"partitions": partitions,
+		}
+		data, _ := json.Marshal(topicData)
+
+		future := ch.ReplicationManager.GetRaft().Apply(
+			[]byte(fmt.Sprintf("TOPIC:%s", string(data))),
+			5*time.Second,
+		)
+
+		if err := future.Error(); err != nil {
+			return fmt.Sprintf("ERROR: failed to replicate topic: %v", err)
+		}
+
+		const maxWaitRetries = 10
+		const waitDelay = 200 * time.Millisecond
+
+		for i := 0; i < maxWaitRetries; i++ {
+			if tm.GetTopic(topicName) != nil {
+				util.Debug("Topic '%s' successfully applied to FSM after %d attempts.", topicName, i+1)
+				break
+			}
+			if i == maxWaitRetries-1 {
+				return fmt.Sprintf("ERROR: topic '%s' creation timed out (FSM application failed)", topicName)
+			}
+			time.Sleep(waitDelay)
+		}
+	} else {
+		tm.CreateTopic(topicName, partitions)
+	}
+
 	t := tm.GetTopic(topicName)
 	if ch.Coordinator != nil {
 		err := ch.Coordinator.RegisterGroup(topicName, "default-group", partitions)
@@ -123,10 +186,59 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 		}
 	}
 
+	if ch.Config.EnabledDistribution && ch.Router != nil {
+		if leader, err := ch.Router.GetCachedLeader(); err == nil && leader != "" {
+			if leader != ch.Router.GetLocalAddr() {
+				const maxRetries = 3
+				const retryDelay = 200 * time.Millisecond
+				var lastErr error
+
+				encodedCmd := string(util.EncodeMessage(topicName, cmd))
+				for i := 0; i < maxRetries; i++ {
+					resp, forwardErr := ch.Router.ForwardToLeader(encodedCmd)
+					if forwardErr == nil {
+						return resp
+					}
+
+					util.Debug("Failed to forward PUBLISH to leader (%s). Retrying (Attempt %d/%d). Error: %v", leader, i+1, maxRetries, forwardErr)
+
+					if i < maxRetries-1 {
+						time.Sleep(retryDelay)
+					}
+					lastErr = forwardErr
+				}
+				return ch.errorResponse(fmt.Sprintf("failed to forward PUBLISH to leader after %d attempts: %v", maxRetries, lastErr))
+			} else {
+				util.Debug("Processing PUBLISH locally as leader: %s", leader)
+			}
+		}
+	}
+
+	if ch.Router != nil {
+		util.Info("router nil.")
+	}
 	tm := ch.TopicManager
 	t := tm.GetTopic(topicName)
 	if t == nil {
-		return fmt.Sprintf("ERROR: topic '%s' does not exist", topicName)
+		const maxRetries = 5
+		const retryDelay = 100 * time.Millisecond
+
+		util.Warn("Topic '%s' not found. Checking if creation is pending...", topicName)
+
+		found := false
+		for i := 0; i < maxRetries; i++ {
+			t = tm.GetTopic(topicName)
+			if t != nil {
+				found = true
+				break
+			}
+			time.Sleep(retryDelay)
+		}
+
+		if !found {
+			util.Warn("ch publish: topic '%s' does not exist after retries", topicName)
+			return fmt.Sprintf("ERROR: topic '%s' does not exist", topicName)
+		}
 	}
 
 	msg := &types.Message{
@@ -143,7 +255,7 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 	}
 
 	if err != nil {
-		return fmt.Sprintf("ERROR: %v", err)
+		return ch.errorResponse(fmt.Sprintf("%v", err))
 	}
 
 	ackResp := types.AckResponse{
@@ -154,6 +266,15 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 		SeqStart:      seqNum,
 		SeqEnd:        seqNum,
 	}
+
+	if ch.Config.EnabledDistribution && ch.Router != nil {
+		if leader, err := ch.Router.GetCachedLeader(); err == nil && leader != "" {
+			if leader != ch.Router.GetLocalAddr() {
+				ackResp.Leader = leader
+			}
+		}
+	}
+
 	respBytes, err := json.Marshal(ackResp)
 	if err != nil {
 		return fmt.Sprintf("ERROR: failed to marshal response: %v", err)
@@ -175,6 +296,7 @@ func (ch *CommandHandler) handleRegisterGroup(cmd string) string {
 
 	t := ch.TopicManager.GetTopic(topicName)
 	if t == nil {
+		util.Warn("ch registerGroup: topic '%s' does not exist", topicName)
 		return fmt.Sprintf("ERROR: topic '%s' does not exist", topicName)
 	}
 
@@ -223,6 +345,7 @@ func (ch *CommandHandler) handleJoinGroup(cmd string, ctx *ClientContext) string
 		if strings.Contains(err.Error(), "not found") {
 			t := ch.TopicManager.GetTopic(topicName)
 			if t == nil {
+				util.Warn("ch joinGroup: topic '%s' does not exist", topicName)
 				return fmt.Sprintf("ERROR: topic '%s' does not exist", topicName)
 			}
 

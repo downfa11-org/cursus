@@ -9,7 +9,7 @@ retry_backoff_ms: 50
 
 acks: "1"
 num_messages: 100
-partitions: 12
+partitions: 3
 max_inflight_requests: 10
 batch_size: 10000
 buffer_size: 70000

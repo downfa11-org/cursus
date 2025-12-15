@@ -111,6 +111,7 @@ func (tm *TopicManager) PublishBatchSync(topicName string, messages []types.Mess
 
 	t := tm.GetTopic(topicName)
 	if t == nil {
+		util.Warn("tm: topic '%s' does not exist", topicName)
 		return fmt.Errorf("topic '%s' does not exist", topicName)
 	}
 
@@ -174,6 +175,7 @@ func (tm *TopicManager) publishInternal(topicName string, msg *types.Message, re
 
 	t := tm.GetTopic(topicName)
 	if t == nil {
+		util.Warn("tm: topic '%s' does not exist", topicName)
 		return fmt.Errorf("topic '%s' does not exist", topicName)
 	}
 
@@ -196,6 +198,7 @@ func (tm *TopicManager) publishInternal(topicName string, msg *types.Message, re
 func (tm *TopicManager) RegisterConsumerGroup(topicName, groupName string, consumerCount int) (*types.ConsumerGroup, error) {
 	t := tm.GetTopic(topicName)
 	if t == nil {
+		util.Warn("tm: topic '%s' does not exist", topicName)
 		return nil, fmt.Errorf("topic '%s' does not exist", topicName)
 	}
 

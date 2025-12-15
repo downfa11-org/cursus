@@ -29,7 +29,6 @@ func NewControllerElection(rm *replication.RaftReplicationManager) *ControllerEl
 }
 
 func (ce *ControllerElection) Start() {
-	util.Info("Starting controller leadership monitoring")
 	go ce.monitorLeadership()
 }
 
@@ -38,7 +37,6 @@ func (ce *ControllerElection) Stop() {
 }
 
 func (ce *ControllerElection) monitorLeadership() {
-	util.Debug("Starting leadership monitor loop")
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -51,11 +49,6 @@ func (ce *ControllerElection) monitorLeadership() {
 			isLeader := ce.rm.GetRaft().State() == raft.Leader
 			if isLeader != ce.isLeader.Load() {
 				ce.isLeader.Store(isLeader)
-				if isLeader {
-					util.Info("Became cluster leader")
-				} else {
-					util.Info("Lost cluster leadership")
-				}
 				ce.leaderCh <- isLeader
 			}
 		}

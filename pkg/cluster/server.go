@@ -6,7 +6,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/downfa11-org/go-broker/pkg/cluster/discovery"
+	"github.com/downfa11-org/go-broker/pkg/cluster/controller"
 	"github.com/downfa11-org/go-broker/util"
 )
 
@@ -31,10 +31,10 @@ type leaveResp struct {
 }
 
 type ClusterServer struct {
-	sd discovery.ServiceDiscovery
+	sd controller.ServiceDiscovery
 }
 
-func NewClusterServer(sd discovery.ServiceDiscovery) *ClusterServer {
+func NewClusterServer(sd controller.ServiceDiscovery) *ClusterServer {
 	return &ClusterServer{sd: sd}
 }
 
@@ -73,6 +73,7 @@ func (h *ClusterServer) handleConnection(conn net.Conn) {
 
 		topic, payload, err := util.DecodeMessage(data)
 		if err != nil {
+			util.Error("⚠️ Decode error: %v", err)
 			return
 		}
 

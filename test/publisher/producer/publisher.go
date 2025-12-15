@@ -91,7 +91,7 @@ func NewPublisher(cfg *config.PublisherConfig) (*Publisher, error) {
 	connectedCount := 0
 	for i := 0; i < cfg.Partitions; i++ {
 		p.buffers[i] = newPartitionBuffer()
-		brokerAddr := p.selectBrokerForPartition(i)
+		brokerAddr := p.producer.selectBrokerForPartition()
 		if err := p.producer.ConnectPartition(i, brokerAddr, cfg.UseTLS, cfg.TLSCertPath, cfg.TLSKeyPath); err != nil {
 			util.Error("Failed to connect partition %d: %v", i, err)
 		} else {
@@ -373,7 +373,7 @@ func (p *Publisher) sendWithRetry(payload []byte, batch []types.Message, part in
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		conn := p.producer.GetConn(part)
 		if conn == nil {
-			brokerAddr := p.selectBrokerForPartition(part)
+			brokerAddr := p.producer.selectBrokerForPartition()
 			if err := p.producer.ReconnectPartition(part, brokerAddr, p.config.UseTLS, p.config.TLSCertPath, p.config.TLSKeyPath); err != nil {
 				lastErr = fmt.Errorf("reconnect failed: %w", err)
 				time.Sleep(time.Duration(backoff) * time.Millisecond)
@@ -392,7 +392,7 @@ func (p *Publisher) sendWithRetry(payload []byte, batch []types.Message, part in
 		_ = conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.WriteTimeoutMS) * time.Millisecond))
 		if _, err := conn.Write(payload); err != nil {
 			lastErr = fmt.Errorf("write failed: %w", err)
-			brokerAddr := p.selectBrokerForPartition(part)
+			brokerAddr := p.producer.selectBrokerForPartition()
 			_ = p.producer.ReconnectPartition(part, brokerAddr, p.config.UseTLS, p.config.TLSCertPath, p.config.TLSKeyPath)
 			time.Sleep(time.Duration(backoff) * time.Millisecond)
 			backoff = min(backoff*2, p.config.MaxBackoffMS)
@@ -471,9 +471,26 @@ func (p *Publisher) markBatchAckedByID(batchID string) {
 }
 
 func (p *Publisher) parseAckResponse(resp []byte) (*types.AckResponse, error) {
+	respStr := string(resp)
+	if strings.HasPrefix(respStr, "ERROR:") {
+		ackResp := types.AckResponse{
+			Status:   "ERROR",
+			ErrorMsg: strings.TrimSpace(respStr),
+		}
+		return &ackResp, fmt.Errorf("broker responded with error: %s", respStr)
+	}
+
 	var ackResp types.AckResponse
 	if err := json.Unmarshal(resp, &ackResp); err != nil {
 		return nil, fmt.Errorf("invalid ack format: %v, %w", string(resp), err)
+	}
+
+	if ackResp.Leader != "" && ackResp.Leader != p.producer.leaderAddr {
+		p.producer.mu.Lock()
+		p.producer.leaderAddr = ackResp.Leader
+		p.producer.lastLeaderUpdate = time.Now()
+		p.producer.mu.Unlock()
+		util.Info("Updated leader address to %s", ackResp.Leader)
 	}
 
 	if ackResp.ProducerID == "" {
@@ -644,11 +661,4 @@ func (p *Publisher) GetSentMessageCount() int {
 // GetPartitionCount returns the number of partitions
 func (p *Publisher) GetPartitionCount() int {
 	return p.partitions
-}
-
-func (p *Publisher) selectBrokerForPartition(partition int) string {
-	if len(p.config.BrokerAddrs) == 0 {
-		return ""
-	}
-	return p.config.BrokerAddrs[partition%len(p.config.BrokerAddrs)]
 }

@@ -28,7 +28,7 @@ func main() {
 	tm.SetCoordinator(cd)
 
 	ctx := controller.NewClientContext("default-group", 0)
-	ch := controller.NewCommandHandler(tm, dm, cfg, cd, sm, nil)
+	ch := controller.NewCommandHandler(tm, dm, cfg, cd, sm, nil, nil)
 
 	fmt.Println("🔹 Broker ready. Type HELP for commands.")
 	fmt.Println("")

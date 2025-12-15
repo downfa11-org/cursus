@@ -139,7 +139,7 @@ func TestHandleCommand_CreateListDelete(t *testing.T) {
 
 func TestHandleCommand_KeyValueFormat(t *testing.T) {
 	cfg := &config.Config{}
-	_ = controller.NewCommandHandler(nil, nil, cfg, nil, nil, nil)
+	_ = controller.NewCommandHandler(nil, nil, cfg, nil, nil, nil, nil)
 	ftm := newFakeTopicManager()
 
 	handleCommandShim := func(rawCmd string) string {
