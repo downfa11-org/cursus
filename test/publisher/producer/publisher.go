@@ -273,7 +273,7 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 	}
 	p.batchMu.Unlock()
 
-	data, err := types.EncodeBatchMessages(p.config.Topic, part, batch)
+	data, err := types.EncodeBatchMessages(p.config.Topic, part, p.config.Acks, batch)
 	if err != nil {
 		util.Error("encode batch failed: %v", err)
 		p.handleSendFailure(part, batch)

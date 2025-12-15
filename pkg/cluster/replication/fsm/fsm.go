@@ -71,7 +71,9 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 	case strings.HasPrefix(data, "DEREGISTER:"):
 		return f.applyDeregisterCommand(data[11:])
 	case strings.HasPrefix(data, "MESSAGE:"):
-		return f.applyMessageCommand(log.Index, data[8:])
+		return f.applyMessageCommand(data[8:])
+	case strings.HasPrefix(data, "BATCH:"):
+		return f.applyMessageCommand(data[6:])
 	case strings.HasPrefix(data, "TOPIC:"):
 		return f.applyTopicCommand(data[6:])
 	case strings.HasPrefix(data, "PARTITION:"):
@@ -143,16 +145,38 @@ func (f *BrokerFSM) Snapshot() (raft.FSMSnapshot, error) {
 	}, nil
 }
 
-func (f *BrokerFSM) persistMessage(entry *ReplicationEntry) error {
+func (f *BrokerFSM) persistMessage(topicName string, partition int, msg *types.Message) error {
 	if f.diskHandler == nil {
-		util.Error("Disk handler not initialized for message persistence")
 		return fmt.Errorf("disk handler not initialized")
 	}
 
-	util.Debug("FSM persisting message: topic=%s, partition=%d, offset=%d, payloadLen=%d",
-		entry.Topic, entry.Partition, entry.Message.Offset, len(entry.Message.Payload))
+	msg.Offset = f.diskHandler.GetAbsoluteOffset()
+	serialized, err := util.SerializeMessage(*msg)
+	if err != nil {
+		return fmt.Errorf("failed to serialize message: %w", err)
+	}
 
-	f.diskHandler.AppendMessage(entry.Topic, entry.Partition, entry.Message.Offset, entry.Message.Payload)
+	f.diskHandler.WriteDirect(topicName, partition, msg.Offset, string(serialized))
+	util.Debug("FSM persisted message: topic=%s, offset=%d", topicName, msg.Offset)
+	return nil
+}
+
+func (f *BrokerFSM) persistBatch(topicName string, partition int, msgs []types.Message) error {
+	if f.diskHandler == nil {
+		return fmt.Errorf("disk handler not initialized")
+	}
+
+	for i := range msgs {
+		msgs[i].Offset = f.diskHandler.GetAbsoluteOffset() + uint64(i)
+		serialized, err := util.SerializeMessage(msgs[i])
+		if err != nil {
+			return fmt.Errorf("failed to serialize message at index %d: %w", i, err)
+		}
+
+		f.diskHandler.WriteDirect(topicName, partition, msgs[i].Offset, string(serialized))
+	}
+
+	util.Debug("FSM persisted batch: topic=%s, count=%d", topicName, len(msgs))
 	return nil
 }
 

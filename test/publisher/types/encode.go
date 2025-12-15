@@ -12,7 +12,7 @@ import (
 )
 
 // todo. need to migrated util/serialize.go EncodeBathMessage
-func EncodeBatchMessages(topic string, partition int, msgs []Message) ([]byte, error) {
+func EncodeBatchMessages(topic string, partition int, acks string, msgs []Message) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.Write([]byte{0xBA, 0x7C})
 
@@ -38,6 +38,18 @@ func EncodeBatchMessages(topic string, partition int, msgs []Message) ([]byte, e
 	// partition
 	if err := write(int32(partition)); err != nil {
 		return nil, err
+	}
+
+	// acks
+	acksBytes := []byte(acks)
+	if len(acksBytes) > 0xFF {
+		return nil, fmt.Errorf("acks value too long: %d bytes", len(acksBytes))
+	}
+	if err := write(uint8(len(acksBytes))); err != nil {
+		return nil, err
+	}
+	if _, err := buf.Write(acksBytes); err != nil {
+		return nil, fmt.Errorf("write acks bytes failed: %w", err)
 	}
 
 	// batch start/end seqNum

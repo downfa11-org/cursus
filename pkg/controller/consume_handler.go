@@ -166,7 +166,7 @@ func (ch *CommandHandler) consumeFromTopic(conn net.Conn, topicName string, part
 		}
 	}
 
-	batchData, err := util.EncodeBatchMessages(topicName, partition, messages)
+	batchData, err := util.EncodeBatchMessages(topicName, partition, "1", messages)
 	if err != nil {
 		return 0, fmt.Errorf("failed to encode batch: %w", err)
 	}

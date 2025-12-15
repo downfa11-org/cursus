@@ -34,7 +34,7 @@ func DecodeMessage(data []byte) (string, string, error) {
 	return topic, payload, nil
 }
 
-func EncodeBatchMessages(topic string, partition int, msgs []types.Message) ([]byte, error) {
+func EncodeBatchMessages(topic string, partition int, acks string, msgs []types.Message) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.Write([]byte{0xBA, 0x7C})
 
@@ -60,6 +60,18 @@ func EncodeBatchMessages(topic string, partition int, msgs []types.Message) ([]b
 	// partition
 	if err := write(int32(partition)); err != nil {
 		return nil, err
+	}
+
+	// acks
+	acksBytes := []byte(acks)
+	if len(acksBytes) > 0xFF {
+		return nil, fmt.Errorf("acks value too long: %d bytes", len(acksBytes))
+	}
+	if err := write(uint8(len(acksBytes))); err != nil {
+		return nil, err
+	}
+	if _, err := buf.Write(acksBytes); err != nil {
+		return nil, fmt.Errorf("write acks bytes failed: %w", err)
 	}
 
 	// batch start/end seqNum
@@ -168,6 +180,18 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 	}
 	partition := int(binary.BigEndian.Uint32(partBytes))
 
+	// acks
+	acksLenBytes, err := read(1)
+	if err != nil {
+		return nil, err
+	}
+	acksLen := int(acksLenBytes[0])
+	acksBytes, err := read(acksLen)
+	if err != nil {
+		return nil, err
+	}
+	acks := string(acksBytes)
+
 	// batch start/end
 	batchStartBytes, err := read(8)
 	if err != nil {
@@ -260,6 +284,7 @@ func DecodeBatchMessages(data []byte) (*types.Batch, error) {
 		Partition:  partition,
 		BatchStart: batchStart,
 		BatchEnd:   batchEnd,
+		Acks:       acks,
 		Messages:   msgs,
 	}, nil
 }

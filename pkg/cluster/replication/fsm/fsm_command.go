@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
 )
 
@@ -30,35 +31,6 @@ func (f *BrokerFSM) applyRegisterCommand(jsonData string) error {
 func (f *BrokerFSM) applyDeregisterCommand(brokerID string) error {
 	f.removeBroker(brokerID)
 	util.Info("Deregistered broker %s", brokerID)
-	return nil
-}
-
-func (f *BrokerFSM) applyMessageCommand(index uint64, jsonData string) error {
-	entry, err := f.parseMessageEntry(jsonData)
-	if err != nil {
-		util.Error("Failed to parse message entry at index %d: %v", index, err)
-		return err
-	}
-
-	if f.tm == nil {
-		util.Error("TopicManager not initialized in FSM.")
-		return fmt.Errorf("TopicManager not initialized")
-	}
-
-	if t := f.tm.GetTopic(entry.Topic); t == nil {
-		util.Error("FATAL: Topic '%s' does not exist in TopicManager when applying log index %d.", entry.Topic, index)
-		return fmt.Errorf("topic '%s' not found during MESSAGE apply at index %d", entry.Topic, index)
-	}
-
-	f.storeLogEntry(index, entry)
-
-	err = f.persistMessage(entry)
-	if err != nil {
-		util.Error("Failed to persist message for topic %s partition %d: %v", entry.Topic, entry.Partition, err)
-		return err
-	}
-
-	util.Info("Successfully replicated message for topic %s partition %d at index %d", entry.Topic, entry.Partition, index)
 	return nil
 }
 
@@ -103,4 +75,105 @@ func (f *BrokerFSM) handleUnknownCommand(data string) interface{} {
 	}
 	util.Debug("Unknown log entry type: %s", preview)
 	return nil
+}
+
+func (f *BrokerFSM) applyMessageCommand(jsonData string) interface{} {
+	messageData := make(map[string]interface{})
+	if err := json.Unmarshal([]byte(jsonData), &messageData); err != nil {
+		util.Error("Failed to unmarshal message data: %v", err)
+		return types.AckResponse{
+			Status:   "ERROR",
+			ErrorMsg: fmt.Sprintf("invalid JSON format: %v", err),
+		}
+	}
+
+	if messageData["Messages"] != nil {
+		if messages, ok := messageData["Messages"].([]interface{}); ok {
+			return f.applyBatchMessage(messageData, messages)
+		}
+	}
+
+	return f.applySingleMessage(messageData)
+}
+
+func (f *BrokerFSM) applySingleMessage(messageData map[string]interface{}) interface{} {
+	topicName, err := getStringField(messageData, "topic")
+	if err != nil {
+		return errorAckResponse(err.Error())
+	}
+
+	partition, err := getIntField(messageData, "partition")
+	if err != nil {
+		return errorAckResponse(err.Error())
+	}
+
+	msg := &types.Message{
+		Payload:    getOptionalStringField(messageData, "payload"),
+		ProducerID: getOptionalStringField(messageData, "producerId"),
+		SeqNum:     getOptionalUint64Field(messageData, "seqNum"),
+		Epoch:      getOptionalInt64Field(messageData, "epoch"),
+	}
+
+	if err := f.persistMessage(topicName, partition, msg); err != nil {
+		util.Error("FSM failed to persist message: %v", err)
+		return errorAckResponse(fmt.Sprintf("persist failed: %v", err))
+	}
+
+	return types.AckResponse{
+		Status:        "OK",
+		LastOffset:    msg.Offset,
+		ProducerEpoch: msg.Epoch,
+		ProducerID:    msg.ProducerID,
+		SeqStart:      msg.SeqNum,
+		SeqEnd:        msg.SeqNum,
+	}
+}
+
+func (f *BrokerFSM) applyBatchMessage(messageData map[string]interface{}, messages []interface{}) interface{} {
+	if len(messages) == 0 {
+		return errorAckResponse("empty batch")
+	}
+
+	topicName, err := getStringField(messageData, "Topic")
+	if err != nil {
+		return errorAckResponse(err.Error())
+	}
+
+	partition, err := getIntField(messageData, "Partition")
+	if err != nil {
+		return errorAckResponse(err.Error())
+	}
+
+	batchMsgs := make([]types.Message, 0, len(messages))
+	for i, msgInterface := range messages {
+		msgData, ok := msgInterface.(map[string]interface{})
+		if !ok {
+			return errorAckResponse(fmt.Sprintf("invalid message at index %d", i))
+		}
+
+		batchMsgs = append(batchMsgs, types.Message{
+			Payload:    getOptionalStringField(msgData, "Payload"),
+			ProducerID: getOptionalStringField(msgData, "ProducerId"),
+			SeqNum:     getOptionalUint64Field(msgData, "SeqNum"),
+			Epoch:      getOptionalInt64Field(msgData, "Epoch"),
+		})
+	}
+
+	if err := f.persistBatch(topicName, partition, batchMsgs); err != nil {
+		util.Error("FSM failed to persist batch: %v", err)
+		return errorAckResponse(fmt.Sprintf("batch persist failed: %v", err))
+	}
+
+	lastOffset := batchMsgs[len(batchMsgs)-1].Offset
+	seqStart := batchMsgs[0].SeqNum
+	seqEnd := batchMsgs[len(batchMsgs)-1].SeqNum
+
+	return types.AckResponse{
+		Status:        "OK",
+		LastOffset:    lastOffset,
+		ProducerEpoch: batchMsgs[0].Epoch,
+		ProducerID:    batchMsgs[0].ProducerID,
+		SeqStart:      seqStart,
+		SeqEnd:        seqEnd,
+	}
 }

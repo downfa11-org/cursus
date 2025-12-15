@@ -6,7 +6,6 @@ import (
 	"fmt"
 )
 
-// DecodeBatchMessages decodes a batch encoded by EncodeBatchMessages
 func DecodeBatchMessages(data []byte) (*Batch, error) {
 	if len(data) < 2 || data[0] != 0xBA || data[1] != 0x7C {
 		return nil, fmt.Errorf("invalid batch header")
@@ -41,6 +40,18 @@ func DecodeBatchMessages(data []byte) (*Batch, error) {
 		return nil, err
 	}
 	partition := int(binary.BigEndian.Uint32(partBytes))
+
+	// acks
+	acksLenBytes, err := read(1)
+	if err != nil {
+		return nil, err
+	}
+	acksLen := int(acksLenBytes[0])
+	acksBytes, err := read(acksLen)
+	if err != nil {
+		return nil, err
+	}
+	acks := string(acksBytes)
 
 	// batch start/end
 	batchStartBytes, err := read(8)
@@ -134,6 +145,7 @@ func DecodeBatchMessages(data []byte) (*Batch, error) {
 		Partition:  partition,
 		BatchStart: batchStart,
 		BatchEnd:   batchEnd,
+		Acks:       acks,
 		Messages:   msgs,
 	}, nil
 }

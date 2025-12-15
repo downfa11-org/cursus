@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -170,6 +171,16 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 		return "ERROR: missing producerID parameter"
 	}
 
+	acks, ok := args["acks"]
+	if !ok || acks == "" {
+		acks = "1"
+	}
+
+	acksLower := strings.ToLower(acks)
+	if acksLower != "0" && acksLower != "1" && acksLower != "-1" && acksLower != "all" {
+		return fmt.Sprintf("ERROR: invalid acks value: %s. Expected -1 (all), 0, or 1", acks)
+	}
+
 	var seqNum uint64
 	if seqNumStr, ok := args["seqNum"]; ok {
 		seqNum, err = strconv.ParseUint(seqNumStr, 10, 64)
@@ -186,6 +197,7 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 		}
 	}
 
+	var ackResp types.AckResponse
 	if ch.Config.EnabledDistribution && ch.Router != nil {
 		if leader, err := ch.Router.GetCachedLeader(); err == nil && leader != "" {
 			if leader != ch.Router.GetLocalAddr() {
@@ -248,17 +260,73 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 		Epoch:      epoch,
 	}
 
-	if args["acks"] == "1" {
-		err = tm.PublishWithAck(topicName, msg) // sync
+	if ch.Config.EnabledDistribution && ch.ReplicationManager != nil {
+		partition := ch.TopicManager.GetTopic(topicName).GetPartitionForMessage(*msg)
+		messageData := map[string]interface{}{
+			"topic":      topicName,
+			"partition":  partition,
+			"payload":    message,
+			"producerId": producerID,
+			"seqNum":     seqNum,
+			"epoch":      epoch,
+			"acks":       acks,
+		}
+
+		jsonData, _ := json.Marshal(messageData)
+		timeout := 5 * time.Second
+		if acks == "0" {
+			timeout = 0
+		}
+
+		future := ch.ReplicationManager.GetRaft().Apply([]byte(fmt.Sprintf("MESSAGE:%s", jsonData)), timeout)
+		if acks != "0" {
+			if err := future.Error(); err != nil {
+				return ch.errorResponse(fmt.Sprintf("failed to replicate message with acks=%s: %v", acks, err))
+			}
+
+			if ackResponse, ok := future.Response().(types.AckResponse); ok {
+				ackResp = ackResponse
+			} else {
+				util.Warn("Raft FSM did not return a proper AckResponse for single message; using local message info.")
+				ackResp = types.AckResponse{
+					Status:        "ERROR",
+					ErrorMsg:      "Raft FSM failed to return acknowledgement",
+					LastOffset:    msg.Offset,
+					ProducerEpoch: epoch,
+					ProducerID:    producerID,
+					SeqStart:      seqNum,
+					SeqEnd:        seqNum,
+				}
+
+			}
+			goto Respond
+		}
 	} else {
-		err = tm.Publish(topicName, msg) // async
+		switch acks {
+		case "1", "-1", "all":
+			err = ch.TopicManager.PublishWithAck(topicName, msg) // sync
+		case "0":
+			err = ch.TopicManager.Publish(topicName, msg) // async
+		}
+
+		if (acks == "-1" || acksLower == "all") && !ch.Config.EnabledDistribution {
+			return ch.errorResponse("acks=-1 requires cluster")
+		}
+
+		if err != nil {
+			return ch.errorResponse(fmt.Sprintf("publish failed: %v", err))
+		}
 	}
 
 	if err != nil {
 		return ch.errorResponse(fmt.Sprintf("%v", err))
 	}
 
-	ackResp := types.AckResponse{
+	if acks == "0" {
+		return "OK"
+	}
+
+	ackResp = types.AckResponse{
 		Status:        "OK",
 		LastOffset:    msg.Offset,
 		ProducerEpoch: epoch,
@@ -267,6 +335,7 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 		SeqEnd:        seqNum,
 	}
 
+Respond:
 	if ch.Config.EnabledDistribution && ch.Router != nil {
 		if leader, err := ch.Router.GetCachedLeader(); err == nil && leader != "" {
 			if leader != ch.Router.GetLocalAddr() {
@@ -280,6 +349,142 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 		return fmt.Sprintf("ERROR: failed to marshal response: %v", err)
 	}
 	return string(respBytes)
+}
+
+// HandleBatchMessage processes PUBLISH of multiple messages.
+func (ch *CommandHandler) HandleBatchMessage(data []byte, conn net.Conn) (string, error) {
+	batch, err := util.DecodeBatchMessages(data)
+	if err != nil {
+		util.Error("Batch message decoding failed: %v", err)
+		return fmt.Sprintf("ERROR: %v", err), nil
+	}
+
+	if len(batch.Messages) == 0 {
+		return "ERROR: empty batch", nil
+	}
+
+	acks := batch.Acks
+	if acks == "" {
+		acks = "1"
+	}
+
+	acksLower := strings.ToLower(acks)
+	if acksLower != "0" && acksLower != "1" && acksLower != "-1" && acksLower != "all" {
+		return fmt.Sprintf("ERROR: invalid acks value in batch: %s. Expected -1 (all), 0, or 1", acks), nil
+	}
+
+	var respAck types.AckResponse
+	var lastMsg *types.Message
+	if ch.Config.EnabledDistribution && ch.Router != nil {
+		if leader, err := ch.Router.GetCachedLeader(); err == nil && leader != "" {
+			if leader != ch.Router.GetLocalAddr() {
+				const maxRetries = 3
+				const retryDelay = 200 * time.Millisecond
+				var lastErr error
+
+				for i := 0; i < maxRetries; i++ {
+					resp, forwardErr := ch.Router.ForwardDataToLeader(data)
+					if forwardErr == nil {
+						return resp, nil
+					}
+
+					util.Debug("Failed to forward BATCH to leader (%s). Retrying (Attempt %d/%d). Error: %v", leader, i+1, maxRetries, forwardErr)
+
+					if i < maxRetries-1 {
+						time.Sleep(retryDelay)
+					}
+					lastErr = forwardErr
+				}
+
+				return ch.errorResponse(fmt.Sprintf("failed to forward BATCH to leader after %d attempts: %v", maxRetries, lastErr)), nil
+			} else {
+				util.Debug("Processing BATCH locally as leader: %s", leader)
+			}
+		}
+	}
+
+	if ch.Config.EnabledDistribution && ch.ReplicationManager != nil {
+		batchData, _ := json.Marshal(batch)
+		timeout := 5 * time.Second
+
+		if acks == "0" {
+			timeout = 0
+		}
+
+		future := ch.ReplicationManager.GetRaft().Apply([]byte(fmt.Sprintf("BATCH:%s", batchData)), timeout)
+		if acks != "0" {
+			if err := future.Error(); err != nil {
+				return ch.errorResponse(fmt.Sprintf("failed to replicate batch message with acks=%s: %v", acks, err)), nil
+			}
+
+			tempMsg := batch.Messages[len(batch.Messages)-1]
+			lastMsg = &tempMsg
+
+			if ack, ok := future.Response().(types.AckResponse); ok {
+				respAck = ack
+				util.Debug("Raft FSM returned AckResponse.")
+			} else {
+				respAck = types.AckResponse{
+					Status:        "ERROR",
+					ErrorMsg:      "Raft FSM failed to return acknowledgement",
+					ProducerID:    lastMsg.ProducerID,
+					ProducerEpoch: lastMsg.Epoch,
+					SeqStart:      batch.Messages[0].SeqNum,
+					SeqEnd:        lastMsg.SeqNum,
+				}
+				util.Warn("Raft FSM did not return a proper AckResponse for BATCH; using local message info.")
+			}
+			goto Respond
+		} else {
+			return "OK", nil
+		}
+	}
+
+	switch acks {
+	case "1", "-1", "all":
+		err = ch.TopicManager.PublishBatchSync(batch.Topic, batch.Messages)
+	case "0":
+		err = ch.TopicManager.PublishBatchAsync(batch.Topic, batch.Messages)
+	}
+
+	if (acks == "-1" || acksLower == "all") && !ch.Config.EnabledDistribution {
+		return "ERROR: acks=-1 requires distributed clustering to be enabled", nil
+	}
+
+	if err != nil {
+		return fmt.Sprintf("ERROR: publish batch failed: %v", err), nil
+	}
+
+	if acks == "0" {
+		return "OK", nil
+	}
+
+	lastMsg = &batch.Messages[len(batch.Messages)-1]
+
+	respAck = types.AckResponse{
+		Status:        "OK",
+		LastOffset:    lastMsg.Offset,
+		SeqStart:      batch.Messages[0].SeqNum,
+		SeqEnd:        lastMsg.SeqNum,
+		ProducerID:    lastMsg.ProducerID,
+		ProducerEpoch: lastMsg.Epoch,
+	}
+
+Respond:
+	if ch.Config.EnabledDistribution && ch.Router != nil {
+		if leader, err := ch.Router.GetCachedLeader(); err == nil && leader != "" {
+			if leader != ch.Router.GetLocalAddr() {
+				respAck.Leader = leader
+			}
+		}
+	}
+
+	ackBytes, err := json.Marshal(respAck)
+	if err != nil {
+		util.Error("Failed to marshal AckResponse: %v", err)
+		return "ERROR: internal marshal error", nil
+	}
+	return string(ackBytes), nil
 }
 
 // handleRegisterGroup processes REGISTER_GROUP command

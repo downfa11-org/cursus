@@ -3,7 +3,6 @@ package server
 import (
 	"crypto/tls"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -23,7 +22,6 @@ import (
 	"github.com/downfa11-org/go-broker/pkg/metrics"
 	"github.com/downfa11-org/go-broker/pkg/stream"
 	"github.com/downfa11-org/go-broker/pkg/topic"
-	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
 	"github.com/hashicorp/raft"
 )
@@ -171,7 +169,7 @@ func HandleConnection(
 			return
 		}
 
-		shouldExit, err := processMessage(data, cmdHandler, ctx, conn, tm, cfg, rm)
+		shouldExit, err := processMessage(data, cmdHandler, ctx, conn)
 		if err != nil || shouldExit {
 			return
 		}
@@ -240,15 +238,17 @@ func processMessage(
 	cmdHandler *controller.CommandHandler,
 	ctx *controller.ClientContext,
 	conn net.Conn,
-	tm *topic.TopicManager,
-	cfg *config.Config,
-	rm *replication.RaftReplicationManager,
 ) (bool, error) {
 	if isBatchMessage(data) {
-		return false, handleBatchMessage(data, tm, conn, cfg, rm)
+		resp, err := cmdHandler.HandleBatchMessage(data, conn)
+		if err != nil {
+			return false, err
+		}
+		writeResponse(conn, resp)
+		return false, nil
 	}
 
-	topicName, payload, err := util.DecodeMessage(data)
+	_, payload, err := util.DecodeMessage(data)
 	if err != nil {
 		util.Error("⚠️ Decode error: %v [%s]", err, string(data))
 		return false, err
@@ -271,72 +271,10 @@ func processMessage(
 		return handleCommandMessage(payload, cmdHandler, ctx, conn)
 	}
 
-	if topicName == "" || payload == "" {
-		rawInput := strings.TrimSpace(string(data))
-		util.Debug("[%s] Received unrecognized input: %s", conn.RemoteAddr().String(), rawInput)
-		writeResponse(conn, "ERROR: malformed input - missing topic or payload")
-		return false, nil
-	}
-
-	return false, handleLegacyMessage(topicName, payload, tm, conn, cfg, rm)
-}
-
-func handleBatchMessage(
-	data []byte,
-	tm *topic.TopicManager,
-	conn net.Conn,
-	cfg *config.Config,
-	rm *replication.RaftReplicationManager,
-) error {
-	batch, err := util.DecodeBatchMessages(data)
-	if err != nil {
-		util.Error("Batch message decoding failed: %v", err)
-		writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
-		return nil
-	}
-
-	if len(batch.Messages) == 0 {
-		writeResponse(conn, "ERROR: empty batch")
-		return nil
-	}
-
-	if err := tm.PublishBatchSync(batch.Topic, batch.Messages); err != nil {
-		writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
-		return nil
-	}
-
-	var lastOffset uint64
-	var seqStart, seqEnd uint64
-	var producerID string
-	var producerEpoch int64
-
-	lastOffset = batch.Messages[len(batch.Messages)-1].Offset
-	seqStart = batch.Messages[0].SeqNum
-	seqEnd = batch.Messages[len(batch.Messages)-1].SeqNum
-	producerID = batch.Messages[0].ProducerID
-	producerEpoch = batch.Messages[0].Epoch
-
-	ackResp := types.AckResponse{
-		Status:        "OK",
-		LastOffset:    lastOffset,
-		ProducerID:    producerID,
-		ProducerEpoch: producerEpoch,
-		SeqStart:      seqStart,
-		SeqEnd:        seqEnd,
-	}
-
-	if cfg.EnabledDistribution && rm != nil && !rm.IsLeader("", 0) {
-		ackResp.Leader = getLeaderAddress(rm)
-	}
-
-	ackBytes, err := json.Marshal(ackResp)
-	if err != nil {
-		util.Error("Failed to marshal AckResponse: %v", err)
-		writeResponse(conn, "ERROR: internal marshal error")
-		return nil
-	}
-	writeResponse(conn, string(ackBytes))
-	return nil
+	rawInput := strings.TrimSpace(string(data))
+	util.Debug("[%s] Received unrecognized input: %s", conn.RemoteAddr().String(), rawInput)
+	writeResponse(conn, "ERROR: malformed input - missing topic or payload")
+	return false, nil
 }
 
 func handleCommandMessage(
@@ -363,52 +301,6 @@ func handleCommandMessage(
 		writeResponse(conn, resp)
 	}
 	return false, nil
-}
-
-func handleLegacyMessage(
-	topicName, payload string,
-	tm *topic.TopicManager,
-	conn net.Conn,
-	cfg *config.Config,
-	rm *replication.RaftReplicationManager,
-) error {
-	acks, message := extractAcksAndMessage(payload)
-	msg := &types.Message{Payload: message}
-
-	switch acks {
-	case "0":
-		if err := tm.Publish(topicName, msg); err != nil {
-			writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
-			return nil
-		}
-		writeResponse(conn, "OK")
-	case "1":
-		if cfg.EnabledDistribution && rm != nil {
-			if err := rm.ReplicateToLeader(topicName, 0, *msg); err != nil {
-				writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
-				return nil
-			}
-		} else {
-			if err := tm.PublishWithAck(topicName, msg); err != nil {
-				writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
-				return nil
-			}
-		}
-		writeResponse(conn, "OK")
-	case "-1", "all":
-		if cfg.EnabledDistribution && rm != nil {
-			if err := rm.ReplicateWithQuorum(topicName, 0, *msg, cfg.MinInSyncReplicas); err != nil {
-				writeResponse(conn, fmt.Sprintf("ERROR: %v", err))
-				return nil
-			}
-			writeResponse(conn, "OK")
-		} else {
-			writeResponse(conn, "ERROR: acks=all requires distributed clustering")
-		}
-	default:
-		writeResponse(conn, fmt.Sprintf("ERROR: invalid acks: %s", acks))
-	}
-	return nil
 }
 
 // writeResponseWithTimeout adds write timeout
@@ -451,20 +343,6 @@ func isBatchMessage(data []byte) bool {
 	return true
 }
 
-// extractAcksAndMessage parses acks level and message from payload
-func extractAcksAndMessage(payload string) (acks, message string) {
-	parts := strings.SplitN(payload, ";", 2)
-	if len(parts) == 2 && strings.HasPrefix(parts[0], "acks=") {
-		acks = strings.TrimPrefix(parts[0], "acks=")
-		message = strings.TrimPrefix(parts[1], "message=")
-		return
-	}
-	// Default for backward compatibility
-	acks = "0"
-	message = payload
-	return
-}
-
 func isCommand(s string) bool {
 	keywords := []string{"CREATE", "DELETE", "LIST", "PUBLISH", "CONSUME", "STREAM", "HELP",
 		"HEARTBEAT", "JOIN_GROUP", "LEAVE_GROUP", "COMMIT_OFFSET", "REGISTER_GROUP",
@@ -492,27 +370,9 @@ func writeResponse(conn net.Conn, msg string) {
 	}
 }
 
-func getLeaderAddress(rm *replication.RaftReplicationManager) string {
-	if rm == nil {
-		return ""
-	}
-	raft := rm.GetRaft()
-	if raft == nil {
-		return ""
-	}
-	return string(raft.Leader())
-}
-
 // startHealthCheckServer starts a simple HTTP server for health checks
-func startHealthCheckServer(
-	port int,
-	brokerReady *atomic.Bool,
-	isCluster bool,
-	rm *replication.RaftReplicationManager,
-	registrationComplete *atomic.Bool,
-) {
+func startHealthCheckServer(port int, brokerReady *atomic.Bool, isCluster bool, rm *replication.RaftReplicationManager, registrationComplete *atomic.Bool) {
 	mux := http.NewServeMux()
-
 	healthHandler := func(w http.ResponseWriter, r *http.Request) {
 		if !brokerReady.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)

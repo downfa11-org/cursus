@@ -25,6 +25,7 @@ type Batch struct {
 	Partition  int
 	BatchStart uint64
 	BatchEnd   uint64
+	Acks       string // "0", "1", "-1(=all)"
 	Messages   []Message
 }
 

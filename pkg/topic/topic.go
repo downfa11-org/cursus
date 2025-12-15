@@ -74,6 +74,18 @@ func NewPartition(id int, topic string, dh interface{}, sm *stream.StreamManager
 	return p
 }
 
+func (t *Topic) GetPartitionForMessage(msg types.Message) int {
+	partitionsLen := uint64(len(t.Partitions))
+
+	if msg.Key != "" {
+		keyID := util.GenerateID(msg.Key)
+		return int(keyID % partitionsLen)
+	}
+
+	oldCounter := atomic.AddUint64(&t.counter, 1) - 1
+	return int(oldCounter % partitionsLen)
+}
+
 // AddPartitions extends the topic with new partitions.
 func (t *Topic) AddPartitions(extra int, hp HandlerProvider) {
 	for i := 0; i < extra; i++ {
@@ -247,6 +259,7 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 	return nil
 }
 
+// EnqueueBatchSync pushes multiple messages into the partition queue synchronously.
 func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -270,6 +283,34 @@ func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
 		p.NotifyNewMessage()
 	} else {
 		return fmt.Errorf("disk handler does not support sync write")
+	}
+
+	for _, msg := range msgs {
+		p.broadcastToStreams(msg)
+	}
+	return nil
+}
+
+// EnqueueBatch pushes multiple messages into the partition queue asynchronously.
+func (p *Partition) EnqueueBatch(msgs []types.Message) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return fmt.Errorf("partition %d is closed", p.id)
+	}
+
+	if appender, ok := p.dh.(DiskAppender); ok {
+		for _, msg := range msgs {
+			serialized, err := util.SerializeMessage(msg)
+			if err != nil {
+				util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
+				return err
+			}
+			appender.AppendMessage(string(serialized))
+		}
+		p.NotifyNewMessage()
+	} else {
+		return fmt.Errorf("disk handler does not implement async write")
 	}
 
 	for _, msg := range msgs {
