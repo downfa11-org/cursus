@@ -70,6 +70,15 @@ func NewConsumer(cfg *config.ConsumerConfig) (*Consumer, error) {
 	return c, nil
 }
 
+func (c *Consumer) getLeaderConn() (net.Conn, error) {
+	conn, addr, err := c.client.ConnectWithFailover()
+	if err != nil {
+		return nil, err
+	}
+	util.Debug("Connected to broker: %s", addr)
+	return conn, nil
+}
+
 func (c *Consumer) Start() error {
 	gen, mid, assignments, err := c.joinGroup()
 	if err != nil {
@@ -103,6 +112,25 @@ func (c *Consumer) Start() error {
 	return nil
 }
 
+func (c *Consumer) isDistributedMode() bool {
+	return len(c.config.BrokerAddrs) > 1
+}
+
+func (c *Consumer) handleLeaderRedirection(resp string) {
+	if strings.Contains(resp, "LEADER_IS") {
+		// "ERROR NOT_LEADER LEADER_IS 192.168.0.10:9000"
+		parts := strings.Fields(resp)
+		for i, part := range parts {
+			if part == "LEADER_IS" && i+1 < len(parts) {
+				newLeader := parts[i+1]
+				c.client.UpdateLeader(newLeader)
+				util.Debug("update leader: %s", newLeader)
+				break
+			}
+		}
+	}
+}
+
 // heartbeatLoop runs in background; if coordinator indicates generation mismatch or error => trigger rejoin
 func (c *Consumer) heartbeatLoop() {
 	interval := time.Duration(c.config.HeartbeatIntervalMS) * time.Millisecond
@@ -116,14 +144,10 @@ func (c *Consumer) heartbeatLoop() {
 		case <-ticker.C:
 			c.hbMu.Lock()
 			if c.hbConn == nil {
-				var brokerAddr string
-				if len(c.config.BrokerAddrs) > 0 {
-					brokerAddr = c.config.BrokerAddrs[0]
-				}
-				conn, err := c.client.Connect(brokerAddr)
+				conn, err := c.getLeaderConn()
 				if err != nil {
 					c.hbMu.Unlock()
-					util.Error("heartbeat connection failed: %v", err)
+					util.Error("heartbeat could not get connection: %v", err)
 					continue
 				}
 				c.hbConn = conn
@@ -159,6 +183,15 @@ func (c *Consumer) heartbeatLoop() {
 			}
 		}
 	}
+}
+
+func (c *Consumer) resetHeartbeatConn() {
+	c.hbMu.Lock()
+	if c.hbConn != nil {
+		c.hbConn.Close()
+		c.hbConn = nil
+	}
+	c.hbMu.Unlock()
 }
 
 func (c *Consumer) handleRebalanceSignal() {
@@ -302,16 +335,9 @@ func (c *Consumer) joinGroup() (generation int64, memberID string, assignments [
 		return c.generation, c.memberID, assignments, nil
 	}
 
-	var brokerAddr string
-	if len(c.config.BrokerAddrs) > 0 {
-		brokerAddr = c.config.BrokerAddrs[0]
-	} else {
-		return 0, "", nil, fmt.Errorf("no broker addresses configured")
-	}
-
-	conn, err := c.client.Connect(brokerAddr)
+	conn, err := c.getLeaderConn()
 	if err != nil {
-		return 0, "", nil, fmt.Errorf("connect failed: %w", err)
+		return 0, "", nil, err
 	}
 	defer conn.Close()
 
@@ -376,16 +402,9 @@ func (c *Consumer) joinGroup() (generation int64, memberID string, assignments [
 }
 
 func (c *Consumer) syncGroup(generation int64, memberID string) ([]int, error) {
-	var brokerAddr string
-	if len(c.config.BrokerAddrs) > 0 {
-		brokerAddr = c.config.BrokerAddrs[0]
-	} else {
-		return nil, fmt.Errorf("no broker addresses configured")
-	}
-
-	conn, err := c.client.Connect(brokerAddr)
+	conn, err := c.getLeaderConn()
 	if err != nil {
-		return nil, fmt.Errorf("connect failed: %w", err)
+		return nil, err
 	}
 	defer conn.Close()
 
@@ -485,16 +504,9 @@ func (c *Consumer) processBatchSync(msgs []types.Message, partition int) error {
 }
 
 func (c *Consumer) directCommit(partition int, offset uint64) error {
-	var brokerAddr string
-	if len(c.config.BrokerAddrs) > 0 {
-		brokerAddr = c.config.BrokerAddrs[0]
-	} else {
-		return fmt.Errorf("no broker addresses configured")
-	}
-
-	conn, err := c.client.Connect(brokerAddr)
+	conn, err := c.getLeaderConn()
 	if err != nil {
-		return fmt.Errorf("direct commit connect failed: %v", err)
+		return err
 	}
 	defer conn.Close()
 
@@ -523,47 +535,32 @@ func (c *Consumer) directCommit(partition int, offset uint64) error {
 	return nil
 }
 
-func (c *Consumer) isDistributedMode() bool {
-	return len(c.config.BrokerAddrs) > 1
-}
-
 func (c *Consumer) Close() error {
 	c.closeMu.Lock()
-	defer c.closeMu.Unlock()
 	if c.closed {
+		c.closeMu.Unlock()
 		return nil
 	}
 	c.closed = true
-
-	c.hbMu.Lock()
-	if c.hbConn != nil {
-		c.hbConn.Close()
-		c.hbConn = nil
-	}
-	c.hbMu.Unlock()
-
-	if c.memberID != "" {
-		var brokerAddr string
-		if len(c.config.BrokerAddrs) > 0 {
-			brokerAddr = c.config.BrokerAddrs[0]
-		} else {
-			return fmt.Errorf("no broker addresses configured")
-		}
-
-		conn, err := c.client.Connect(brokerAddr)
-		if err == nil {
-			defer conn.Close()
-			leaveCmd := fmt.Sprintf("LEAVE_GROUP topic=%s group=%s consumer=%s",
-				c.config.Topic, c.config.GroupID, c.memberID)
-			if err := util.WriteWithLength(conn, util.EncodeMessage("", leaveCmd)); err == nil {
-				util.ReadWithLength(conn)
-			}
-		}
-	}
+	c.closeMu.Unlock()
 
 	close(c.doneCh)
-	c.sessionCancel()
+	if c.sessionCancel != nil {
+		c.sessionCancel()
+	}
 
+	c.resetHeartbeatConn()
+
+	if c.memberID != "" {
+		if conn, err := c.getLeaderConn(); err == nil {
+			leaveCmd := fmt.Sprintf("LEAVE_GROUP topic=%s group=%s consumer=%s",
+				c.config.Topic, c.config.GroupID, c.memberID)
+			_ = util.WriteWithLength(conn, util.EncodeMessage("", leaveCmd))
+			conn.Close()
+		}
+	}
+
+	c.mu.Lock()
 	for _, pc := range c.partitionConsumers {
 		pc.mu.Lock()
 		pc.closed = true
@@ -572,6 +569,7 @@ func (c *Consumer) Close() error {
 		}
 		pc.mu.Unlock()
 	}
+	c.mu.Unlock()
 
 	c.wg.Wait()
 	return nil

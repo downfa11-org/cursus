@@ -213,7 +213,7 @@ func (pc *ProducerClient) UpdateLeader(leaderAddr string) {
 	}
 }
 
-func (pc *ProducerClient) selectBrokerForPartition() string {
+func (pc *ProducerClient) selectBroker() string {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 
@@ -230,7 +230,7 @@ func (pc *ProducerClient) selectBrokerForPartition() string {
 
 func (pc *ProducerClient) ConnectPartition(idx int, addr string, useTLS bool, certPath, keyPath string) error {
 	if addr == "" {
-		addr = pc.selectBrokerForPartition()
+		addr = pc.selectBroker()
 	}
 	if addr == "" {
 		return fmt.Errorf("no broker address available for partition %d", idx)

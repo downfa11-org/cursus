@@ -24,6 +24,23 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		return 0, fmt.Errorf("missing topic parameter")
 	}
 
+	if ch.Config.EnabledDistribution && ch.Router != nil {
+		leader, err := ch.Router.GetCachedLeader()
+		if err == nil && leader != "" && leader != ch.Router.GetLocalAddr() {
+			serviceLeader := leader
+			if host, _, splitErr := net.SplitHostPort(leader); splitErr == nil {
+				serviceLeader = net.JoinHostPort(host, strconv.Itoa(ch.Config.BrokerPort))
+			}
+
+			errResp := fmt.Sprintf("ERROR: NOT_LEADER LEADER_IS %s", serviceLeader)
+			util.Warn("consume warn: %s", errResp)
+			if err := util.WriteWithLength(conn, []byte(errResp)); err != nil {
+				return 0, fmt.Errorf("send consume failed: %w", err)
+			}
+			return 0, nil
+		}
+	}
+
 	matchedTopics, err := ch.matchTopicPattern(topicPattern)
 	if err != nil {
 		return 0, err
@@ -272,6 +289,24 @@ func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx 
 			requestedOffset = parsed
 		}
 	}
+
+	if ch.Config.EnabledDistribution && ch.Router != nil {
+		leader, err := ch.Router.GetCachedLeader()
+		if err == nil && leader != "" && leader != ch.Router.GetLocalAddr() {
+			serviceLeader := leader
+			if host, _, splitErr := net.SplitHostPort(leader); splitErr == nil {
+				serviceLeader = net.JoinHostPort(host, strconv.Itoa(ch.Config.BrokerPort))
+			}
+
+			errResp := fmt.Sprintf("ERROR: NOT_LEADER LEADER_IS %s", serviceLeader)
+			util.Warn("consume warn: %s", errResp)
+			if err := util.WriteWithLength(conn, []byte(errResp)); err != nil {
+				return fmt.Errorf("send stream failed: %w", err)
+			}
+			return nil
+		}
+	}
+
 	actualOffset, err := ch.resolveOffset(topicName, partition, requestedOffset, groupName, args["autoOffsetReset"])
 	if err != nil {
 		return err

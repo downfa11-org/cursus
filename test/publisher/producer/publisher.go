@@ -91,7 +91,7 @@ func NewPublisher(cfg *config.PublisherConfig) (*Publisher, error) {
 	connectedCount := 0
 	for i := 0; i < cfg.Partitions; i++ {
 		p.buffers[i] = newPartitionBuffer()
-		brokerAddr := p.producer.selectBrokerForPartition()
+		brokerAddr := p.producer.selectBroker()
 		if err := p.producer.ConnectPartition(i, brokerAddr, cfg.UseTLS, cfg.TLSCertPath, cfg.TLSKeyPath); err != nil {
 			util.Error("Failed to connect partition %d: %v", i, err)
 		} else {
@@ -373,7 +373,7 @@ func (p *Publisher) sendWithRetry(payload []byte, batch []types.Message, part in
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		conn := p.producer.GetConn(part)
 		if conn == nil {
-			brokerAddr := p.producer.selectBrokerForPartition()
+			brokerAddr := p.producer.selectBroker()
 			if err := p.producer.ReconnectPartition(part, brokerAddr, p.config.UseTLS, p.config.TLSCertPath, p.config.TLSKeyPath); err != nil {
 				lastErr = fmt.Errorf("reconnect failed: %w", err)
 				time.Sleep(time.Duration(backoff) * time.Millisecond)
@@ -392,7 +392,7 @@ func (p *Publisher) sendWithRetry(payload []byte, batch []types.Message, part in
 		_ = conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.WriteTimeoutMS) * time.Millisecond))
 		if _, err := conn.Write(payload); err != nil {
 			lastErr = fmt.Errorf("write failed: %w", err)
-			brokerAddr := p.producer.selectBrokerForPartition()
+			brokerAddr := p.producer.selectBroker()
 			_ = p.producer.ReconnectPartition(part, brokerAddr, p.config.UseTLS, p.config.TLSCertPath, p.config.TLSKeyPath)
 			time.Sleep(time.Duration(backoff) * time.Millisecond)
 			backoff = min(backoff*2, p.config.MaxBackoffMS)
@@ -487,8 +487,7 @@ func (p *Publisher) parseAckResponse(resp []byte) (*types.AckResponse, error) {
 
 	if ackResp.Leader != "" && ackResp.Leader != p.producer.leaderAddr {
 		p.producer.mu.Lock()
-		p.producer.leaderAddr = ackResp.Leader
-		p.producer.lastLeaderUpdate = time.Now()
+		p.producer.UpdateLeader(ackResp.Leader)
 		p.producer.mu.Unlock()
 		util.Info("Updated leader address to %s", ackResp.Leader)
 	}

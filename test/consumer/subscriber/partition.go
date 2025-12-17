@@ -25,22 +25,12 @@ func (pc *PartitionConsumer) ensureConnection() error {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 
+	if pc.conn != nil {
+		return nil
+	}
+
 	if pc.closed {
 		return fmt.Errorf("partition consumer closed")
-	}
-	if pc.conn != nil {
-		pc.conn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
-		_, err := pc.conn.Read(make([]byte, 1))
-		if err == nil {
-			pc.conn.SetReadDeadline(time.Time{})
-			return nil
-		}
-		if ne, ok := err.(net.Error); ok && ne.Timeout() {
-			pc.conn.SetReadDeadline(time.Time{})
-			return nil
-		}
-		pc.conn.Close()
-		pc.conn = nil
 	}
 
 	var err error
@@ -83,12 +73,27 @@ func (pc *PartitionConsumer) pollAndProcess() {
 
 	if err := util.WriteWithLength(conn, util.EncodeMessage(pc.consumer.config.Topic, consumeCmd)); err != nil {
 		util.Error("Partition [%d] send command failed: %v", pc.partitionID, err)
+		pc.closeConnection()
 		return
 	}
 
 	batchData, err := util.ReadWithLength(conn)
 	if err != nil {
 		util.Error("Partition [%d] read batch error: %v", pc.partitionID, err)
+		pc.closeConnection()
+		return
+	}
+
+	respStr := string(batchData)
+	if strings.HasPrefix(respStr, "ERROR:") {
+		util.Warn("Partition [%d] received error from broker: %s", pc.partitionID, respStr)
+
+		if strings.Contains(respStr, "NOT_LEADER") {
+			pc.consumer.handleLeaderRedirection(respStr)
+		}
+
+		pc.closeConnection()
+		time.Sleep(time.Duration(pc.partitionID*100) * time.Millisecond) // jitter
 		return
 	}
 
@@ -187,6 +192,19 @@ func (pc *PartitionConsumer) startStreamLoop() {
 
 			if len(batchData) == 0 {
 				continue // keepalive
+			}
+
+			respStr := string(batchData)
+			if strings.HasPrefix(respStr, "ERROR:") {
+				util.Warn("Partition [%d] received error from broker: %s", pc.partitionID, respStr)
+
+				if strings.Contains(respStr, "NOT_LEADER") {
+					pc.consumer.handleLeaderRedirection(respStr)
+				}
+
+				pc.closeConnection()
+				time.Sleep(time.Duration(pc.partitionID*100) * time.Millisecond) // jitter
+				return
 			}
 
 			batch, err := types.DecodeBatchMessages(batchData)
