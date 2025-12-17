@@ -218,6 +218,20 @@ func (f *BrokerFSM) applyGroupSyncCommand(jsonData string) interface{} {
 
 	switch cmd.Type {
 	case "JOIN":
+		if f.cd.GetGroup(cmd.Group) == nil {
+			util.Info("FSM: Group '%s' not found, creating implicitly for topic '%s'", cmd.Group, cmd.Topic)
+
+			partitionCount := 4 // default
+			if t := f.tm.GetTopic(cmd.Topic); t != nil {
+				partitionCount = len(t.Partitions)
+			}
+
+			if err := f.cd.RegisterGroup(cmd.Topic, cmd.Group, partitionCount); err != nil {
+				util.Error("FSM: Failed to implicitly register group: %v", err)
+				return err
+			}
+		}
+
 		_, err := f.cd.AddConsumer(cmd.Group, cmd.Member)
 		if err != nil {
 			util.Error("FSM: Failed to sync JOIN for member %s: %v", cmd.Member, err)
