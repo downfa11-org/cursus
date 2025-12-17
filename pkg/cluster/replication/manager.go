@@ -1,6 +1,7 @@
 package replication
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -14,7 +15,9 @@ import (
 	"github.com/downfa11-org/go-broker/pkg/cluster/replication/fsm"
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/disk"
+	"github.com/downfa11-org/go-broker/pkg/metrics"
 	"github.com/downfa11-org/go-broker/pkg/topic"
+	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
 	"github.com/hashicorp/raft"
 )
@@ -230,6 +233,96 @@ func (rm *RaftReplicationManager) AddVoter(brokerID, addr string) error {
 
 	util.Info("Successfully added voter %s", brokerID)
 	return nil
+}
+
+// ReplicateWithQuorum processes a single message, ensuring required ISR count is met.
+func (rm *RaftReplicationManager) ReplicateWithQuorum(topic string, partition int, msg types.Message, minISR int) (types.AckResponse, error) {
+	util.Debug("Replicating with quorum for topic %s partition %d (min ISR: %d)", topic, partition, minISR)
+
+	if rm.isrManager != nil {
+		if !rm.isrManager.HasQuorum(topic, partition, minISR) {
+			metrics.QuorumOperations.WithLabelValues("write", "failure").Inc()
+			util.Error("Insufficient in-sync replicas for topic %s partition %d (min ISR: %d)", topic, partition, minISR)
+			return types.AckResponse{}, fmt.Errorf("not enough in-sync replicas for topic %s partition %d but min ISR %d", topic, partition, minISR)
+		}
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		util.Error("Failed to marshal message for quorum replication: %v", err)
+		return types.AckResponse{}, fmt.Errorf("failed to marshal message: %w", err)
+	}
+
+	future := rm.raft.Apply([]byte(fmt.Sprintf("MESSAGE:%s", string(data))), 5*time.Second)
+	if err := future.Error(); err != nil {
+		metrics.QuorumOperations.WithLabelValues("write", "failure").Inc()
+		util.Error("Failed to replicate with quorum for topic %s partition %d: %v", topic, partition, err)
+		return types.AckResponse{}, fmt.Errorf("failed to replicate with quorum: %w", err)
+	}
+
+	ackResponse, ok := future.Response().(types.AckResponse)
+	if !ok {
+		metrics.QuorumOperations.WithLabelValues("write", "failure").Inc()
+		return types.AckResponse{}, fmt.Errorf("raft FSM returned invalid response type")
+	}
+
+	metrics.QuorumOperations.WithLabelValues("write", "success").Inc()
+	util.Debug("Successfully replicated with quorum for topic %s partition %d", topic, partition)
+
+	return ackResponse, nil
+}
+
+// ReplicateBatchWithQuorum processes a batch of messages, ensuring they are replicated
+func (rm *RaftReplicationManager) ReplicateBatchWithQuorum(topic string, partition int, messages []types.Message, minISR int) (types.AckResponse, error) {
+	if len(messages) == 0 {
+		return types.AckResponse{}, nil
+	}
+
+	util.Debug("Replicating batch with quorum for topic %s partition %d (min ISR: %d, messages: %d)", topic, partition, minISR, len(messages))
+
+	if rm.isrManager != nil {
+		if !rm.isrManager.HasQuorum(topic, partition, minISR) {
+			metrics.QuorumOperations.WithLabelValues("batch_write", "failure").Inc()
+			util.Error("Insufficient in-sync replicas for batch on topic %s partition %d (min ISR: %d)", topic, partition, minISR)
+			return types.AckResponse{}, fmt.Errorf("not enough in-sync replicas for topic %s partition %d but min ISR %d", topic, partition, minISR)
+		}
+	}
+
+	batchStart := messages[0].SeqNum
+	batchEnd := messages[len(messages)-1].SeqNum
+	acks := "-1"
+
+	batchData := types.Batch{
+		Topic:      topic,
+		Partition:  partition,
+		BatchStart: batchStart,
+		BatchEnd:   batchEnd,
+		Acks:       acks,
+		Messages:   messages,
+	}
+
+	data, err := json.Marshal(batchData)
+	if err != nil {
+		util.Error("Failed to marshal batch messages for quorum replication: %v", err)
+		return types.AckResponse{}, fmt.Errorf("failed to marshal batch messages: %w", err)
+	}
+
+	future := rm.raft.Apply([]byte(fmt.Sprintf("BATCH:%s", string(data))), 5*time.Second)
+	if err := future.Error(); err != nil {
+		metrics.QuorumOperations.WithLabelValues("batch_write", "failure").Inc()
+		util.Error("Failed to replicate batch with quorum for topic %s partition %d: %v", topic, partition, err)
+		return types.AckResponse{}, fmt.Errorf("failed to replicate batch with quorum: %w", err)
+	}
+
+	ackResponse, ok := future.Response().(types.AckResponse)
+	if !ok {
+		metrics.QuorumOperations.WithLabelValues("batch_write", "failure").Inc()
+		return types.AckResponse{}, fmt.Errorf("raft FSM returned invalid response type for batch")
+	}
+
+	metrics.QuorumOperations.WithLabelValues("batch_write", "success").Inc()
+	util.Debug("Successfully replicated batch with quorum for topic %s partition %d (Count: %d)", topic, partition, len(messages))
+	return ackResponse, nil
 }
 
 func (rm *RaftReplicationManager) Shutdown() error {

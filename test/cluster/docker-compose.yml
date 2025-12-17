@@ -101,27 +101,27 @@ services:
     networks:  
       - cluster-net  
   
-  # consumer:  
-  #   build:  
-  #     context: ../consumer  
-  #     dockerfile: Dockerfile  
-  #   container_name: broker-consumer  
-  #   depends_on:  
-  #     broker-1:  
-  #       condition: service_healthy  
-  #     broker-2:  
-  #       condition: service_healthy  
-  #     broker-3:  
-  #       condition: service_healthy  
-  #     publisher:  
-  #       condition: service_started  
-  #   volumes:  
-  #     - ./consumer-config.yaml:/config.yaml:ro  
-  #   environment:  
-  #     - BROKER_ADDRS=broker-1:9000,broker-2:9000,broker-3:9000  
-  #   command: ["./consumer", "-config", "/config.yaml"]  
-  #   networks:  
-  #     - cluster-net  
+  consumer:  
+    build:  
+      context: ../consumer  
+      dockerfile: Dockerfile  
+    container_name: broker-consumer  
+    depends_on:  
+      broker-1:  
+        condition: service_healthy  
+      broker-2:  
+        condition: service_healthy  
+      broker-3:  
+        condition: service_healthy  
+      publisher:  
+        condition: service_started  
+    volumes:  
+      - ./consumer-config.yaml:/config.yaml:ro  
+    environment:  
+      - BROKER_ADDRS=broker-1:9000,broker-2:9000,broker-3:9000  
+    command: ["./consumer", "-config", "/config.yaml"]  
+    networks:  
+      - cluster-net  
   
   # prometheus:  
   #   image: prom/prometheus:latest  

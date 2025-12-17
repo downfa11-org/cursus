@@ -262,44 +262,57 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 
 	if ch.Config.EnabledDistribution && ch.ReplicationManager != nil {
 		partition := ch.TopicManager.GetTopic(topicName).GetPartitionForMessage(*msg)
-		messageData := map[string]interface{}{
-			"topic":      topicName,
-			"partition":  partition,
-			"payload":    message,
-			"producerId": producerID,
-			"seqNum":     seqNum,
-			"epoch":      epoch,
-			"acks":       acks,
-		}
 
-		jsonData, _ := json.Marshal(messageData)
-		timeout := 5 * time.Second
-		if acks == "0" {
-			timeout = 0
-		}
+		if acks == "-1" || acksLower == "all" {
+			ackResp, err = ch.ReplicationManager.ReplicateWithQuorum(topicName, partition, *msg, ch.Config.MinInSyncReplicas)
 
-		future := ch.ReplicationManager.GetRaft().Apply([]byte(fmt.Sprintf("MESSAGE:%s", jsonData)), timeout)
-		if acks != "0" {
-			if err := future.Error(); err != nil {
-				return ch.errorResponse(fmt.Sprintf("failed to replicate message with acks=%s: %v", acks, err))
-			}
-
-			if ackResponse, ok := future.Response().(types.AckResponse); ok {
-				ackResp = ackResponse
-			} else {
-				util.Warn("Raft FSM did not return a proper AckResponse for single message; using local message info.")
-				ackResp = types.AckResponse{
-					Status:        "ERROR",
-					ErrorMsg:      "Raft FSM failed to return acknowledgement",
-					LastOffset:    msg.Offset,
-					ProducerEpoch: epoch,
-					ProducerID:    producerID,
-					SeqStart:      seqNum,
-					SeqEnd:        seqNum,
-				}
-
+			if err != nil {
+				return ch.errorResponse(fmt.Sprintf("failed to replicate with quorum (acks=-1): %v", err))
 			}
 			goto Respond
+
+		} else {
+			messageData := map[string]interface{}{
+				"topic":      topicName,
+				"partition":  partition,
+				"payload":    message,
+				"producerId": producerID,
+				"seqNum":     seqNum,
+				"epoch":      epoch,
+				"acks":       acks,
+			}
+
+			jsonData, _ := json.Marshal(messageData)
+			timeout := 5 * time.Second
+			if acks == "0" {
+				timeout = 0
+			}
+
+			future := ch.ReplicationManager.GetRaft().Apply([]byte(fmt.Sprintf("MESSAGE:%s", jsonData)), timeout)
+			if acks != "0" {
+				if err := future.Error(); err != nil {
+					return ch.errorResponse(fmt.Sprintf("failed to replicate message with acks=%s: %v", acks, err))
+				}
+
+				if ackResponse, ok := future.Response().(types.AckResponse); ok {
+					ackResp = ackResponse
+				} else {
+					util.Warn("Raft FSM did not return a proper AckResponse for single message; using local message info.")
+					ackResp = types.AckResponse{
+						Status:        "ERROR",
+						ErrorMsg:      "Raft FSM failed to return acknowledgement",
+						LastOffset:    msg.Offset,
+						ProducerEpoch: epoch,
+						ProducerID:    producerID,
+						SeqStart:      seqNum,
+						SeqEnd:        seqNum,
+					}
+
+				}
+				goto Respond
+			} else {
+				return "OK" // acks=0
+			}
 		}
 	} else {
 		switch acks {
@@ -312,14 +325,10 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 		if (acks == "-1" || acksLower == "all") && !ch.Config.EnabledDistribution {
 			return ch.errorResponse("acks=-1 requires cluster")
 		}
-
-		if err != nil {
-			return ch.errorResponse(fmt.Sprintf("publish failed: %v", err))
-		}
 	}
 
 	if err != nil {
-		return ch.errorResponse(fmt.Sprintf("%v", err))
+		return ch.errorResponse(fmt.Sprintf("publish failed: %v", err))
 	}
 
 	if acks == "0" {
@@ -404,45 +413,63 @@ func (ch *CommandHandler) HandleBatchMessage(data []byte, conn net.Conn) (string
 	}
 
 	if ch.Config.EnabledDistribution && ch.ReplicationManager != nil {
-		batchData, _ := json.Marshal(batch)
 		timeout := 5 * time.Second
 
 		if acks == "0" {
 			timeout = 0
 		}
+		if acks == "-1" || acksLower == "all" {
+			var err error
+			respAck, err = ch.ReplicationManager.ReplicateBatchWithQuorum(batch.Topic, batch.Partition, batch.Messages, ch.Config.MinInSyncReplicas)
 
-		future := ch.ReplicationManager.GetRaft().Apply([]byte(fmt.Sprintf("BATCH:%s", batchData)), timeout)
-		if acks != "0" {
-			if err := future.Error(); err != nil {
-				respAck := types.AckResponse{
+			if err != nil {
+				errorAck := types.AckResponse{
 					Status:        "ERROR",
-					ErrorMsg:      fmt.Sprintf("failed to replicate batch message with acks=%s: %v", acks, err),
+					ErrorMsg:      fmt.Sprintf("failed to replicate batch with quorum: %v", err),
 					ProducerID:    batch.Messages[0].ProducerID,
 					ProducerEpoch: batch.Messages[0].Epoch,
 					SeqStart:      batch.Messages[0].SeqNum,
 					SeqEnd:        batch.Messages[len(batch.Messages)-1].SeqNum,
 				}
-				ackBytes, _ := json.Marshal(respAck)
+				ackBytes, _ := json.Marshal(errorAck)
 				return string(ackBytes), nil
-			}
-
-			if ack, ok := future.Response().(types.AckResponse); ok {
-				respAck = ack
-				util.Debug("Raft FSM returned AckResponse: %v", respAck)
-			} else {
-				respAck = types.AckResponse{
-					Status:        "ERROR",
-					ErrorMsg:      "Raft FSM failed to return acknowledgement",
-					ProducerID:    batch.Messages[0].ProducerID,
-					ProducerEpoch: batch.Messages[0].Epoch,
-					SeqStart:      batch.Messages[0].SeqNum,
-					SeqEnd:        batch.Messages[len(batch.Messages)-1].SeqNum,
-				}
-				util.Warn("Raft FSM did not return a proper AckResponse for BATCH; using local message info.")
 			}
 			goto Respond
 		} else {
-			return "OK", nil
+			batchData, _ := json.Marshal(batch)
+			future := ch.ReplicationManager.GetRaft().Apply([]byte(fmt.Sprintf("BATCH:%s", batchData)), timeout)
+			if acks != "0" {
+				if err := future.Error(); err != nil {
+					respAck := types.AckResponse{
+						Status:        "ERROR",
+						ErrorMsg:      fmt.Sprintf("failed to replicate batch message with acks=%s: %v", acks, err),
+						ProducerID:    batch.Messages[0].ProducerID,
+						ProducerEpoch: batch.Messages[0].Epoch,
+						SeqStart:      batch.Messages[0].SeqNum,
+						SeqEnd:        batch.Messages[len(batch.Messages)-1].SeqNum,
+					}
+					ackBytes, _ := json.Marshal(respAck)
+					return string(ackBytes), nil
+				}
+
+				if ack, ok := future.Response().(types.AckResponse); ok {
+					respAck = ack
+					util.Debug("Raft FSM returned AckResponse: %v", respAck)
+				} else {
+					respAck = types.AckResponse{
+						Status:        "ERROR",
+						ErrorMsg:      "Raft FSM failed to return acknowledgement",
+						ProducerID:    batch.Messages[0].ProducerID,
+						ProducerEpoch: batch.Messages[0].Epoch,
+						SeqStart:      batch.Messages[0].SeqNum,
+						SeqEnd:        batch.Messages[len(batch.Messages)-1].SeqNum,
+					}
+					util.Warn("Raft FSM did not return a proper AckResponse for BATCH; using local message info.")
+				}
+				goto Respond
+			} else {
+				return "OK", nil
+			}
 		}
 	}
 
