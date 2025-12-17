@@ -4,8 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/downfa11-org/go-broker/pkg/cluster/controller"
-	"github.com/downfa11-org/go-broker/pkg/cluster/replication"
+	clusterController "github.com/downfa11-org/go-broker/pkg/cluster/controller"
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/disk"
@@ -25,9 +24,7 @@ type CommandHandler struct {
 	Coordinator   *coordinator.Coordinator
 	StreamManager *stream.StreamManager
 
-	// cluster
-	Router             *controller.ClusterRouter
-	ReplicationManager *replication.RaftReplicationManager
+	Cluster *clusterController.ClusterController
 }
 
 type ConsumeArgs struct {
@@ -42,17 +39,15 @@ func NewCommandHandler(
 	cfg *config.Config,
 	cd *coordinator.Coordinator,
 	sm *stream.StreamManager,
-	router *controller.ClusterRouter,
-	rm *replication.RaftReplicationManager,
+	cc *clusterController.ClusterController,
 ) *CommandHandler {
 	return &CommandHandler{
-		TopicManager:       tm,
-		DiskManager:        dm,
-		Config:             cfg,
-		Coordinator:        cd,
-		StreamManager:      sm,
-		Router:             router,
-		ReplicationManager: rm,
+		TopicManager:  tm,
+		DiskManager:   dm,
+		Config:        cfg,
+		Coordinator:   cd,
+		StreamManager: sm,
+		Cluster:       cc,
 	}
 }
 

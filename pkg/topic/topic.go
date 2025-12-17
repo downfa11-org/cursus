@@ -38,8 +38,8 @@ type Partition struct {
 }
 
 type DiskAppender interface {
-	AppendMessage(msg string)
-	AppendMessageSync(msg string) error
+	AppendMessage(topic string, partition int, offset uint64, payload string)
+	AppendMessageSync(topic string, partition int, offset uint64, payload string) error
 }
 
 // NewTopic initializes a topic with partitions.
@@ -223,7 +223,11 @@ func (p *Partition) Enqueue(msg types.Message) {
 			util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
 			return
 		}
-		appender.AppendMessage(string(serialized))
+
+		if handler, ok := p.dh.(interface{ GetAbsoluteOffset() uint64 }); ok {
+			offset := handler.GetAbsoluteOffset()
+			appender.AppendMessage(p.topic, p.id, offset, string(serialized))
+		}
 		p.NotifyNewMessage()
 	} else {
 		util.Warn("⚠️ DiskHandler does not implement AppendMessage [partition-%d]\n", p.id)
@@ -306,7 +310,11 @@ func (p *Partition) EnqueueBatch(msgs []types.Message) error {
 				util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
 				return err
 			}
-			appender.AppendMessage(string(serialized))
+
+			if handler, ok := p.dh.(interface{ GetAbsoluteOffset() uint64 }); ok {
+				offset := handler.GetAbsoluteOffset()
+				appender.AppendMessage(p.topic, p.id, offset, string(serialized))
+			}
 		}
 		p.NotifyNewMessage()
 	} else {

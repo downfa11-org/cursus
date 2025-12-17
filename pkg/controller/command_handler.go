@@ -5,14 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
-	"net"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
-	"github.com/hashicorp/raft"
 )
 
 // handleHelp processes HELP command
@@ -54,34 +51,9 @@ func (ch *CommandHandler) handleCreate(cmd string) string {
 
 	tm := ch.TopicManager
 
-	if ch.Config.EnabledDistribution && ch.ReplicationManager != nil {
-		if ch.ReplicationManager.GetRaft().State() != raft.Leader {
-			if ch.Router == nil {
-				return "ERROR: not the leader, and router is nil"
-			}
-
-			const maxRetries = 5
-			const retryDelay = 500 * time.Millisecond
-			var leader string
-			var err error
-
-			encodedCmd := string(util.EncodeMessage(topicName, cmd))
-			for i := 0; i < maxRetries; i++ {
-
-				resp, forwardErr := ch.Router.ForwardToLeader(encodedCmd)
-				if forwardErr == nil {
-					return resp
-				}
-
-				leader, _ = ch.Router.GetCachedLeader()
-				util.Debug("Failed to forward CREATE to leader (%s). Retrying (Attempt %d/%d). Error: %v", leader, i+1, maxRetries, forwardErr)
-
-				if i < maxRetries-1 {
-					time.Sleep(retryDelay)
-				}
-				err = forwardErr
-			}
-			return ch.errorResponse(fmt.Sprintf("failed to forward CREATE to leader: %v", err))
+	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
+		if resp, forwarded, _ := ch.isLeaderAndForward(cmd); forwarded {
+			return resp
 		}
 
 		topicData := map[string]interface{}{
@@ -90,12 +62,8 @@ func (ch *CommandHandler) handleCreate(cmd string) string {
 		}
 		data, _ := json.Marshal(topicData)
 
-		future := ch.ReplicationManager.GetRaft().Apply(
-			[]byte(fmt.Sprintf("TOPIC:%s", string(data))),
-			5*time.Second,
-		)
-
-		if err := future.Error(); err != nil {
+		err := ch.Cluster.RaftManager.ApplyCommand("TOPIC", data)
+		if err != nil {
 			return fmt.Sprintf("ERROR: failed to replicate topic: %v", err)
 		}
 
@@ -134,8 +102,19 @@ func (ch *CommandHandler) handleDelete(cmd string) string {
 		return "ERROR: missing topic parameter. Expected: DELETE topic=<name>"
 	}
 
-	tm := ch.TopicManager
-	if tm.DeleteTopic(topicName) {
+	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
+		if resp, forwarded, _ := ch.isLeaderAndForward(cmd); forwarded {
+			return resp
+		}
+
+		err := ch.Cluster.RaftManager.ApplyCommand("TOPIC_DELETE", []byte(topicName))
+		if err != nil {
+			return fmt.Sprintf("ERROR: %v", err)
+		}
+		return fmt.Sprintf("🗑️ Topic '%s' deleted across cluster", topicName)
+	}
+
+	if ch.TopicManager.DeleteTopic(topicName) {
 		return fmt.Sprintf("🗑️ Topic '%s' deleted", topicName)
 	}
 	return fmt.Sprintf("ERROR: topic '%s' not found", topicName)
@@ -149,375 +128,6 @@ func (ch *CommandHandler) handleList() string {
 		return "(no topics)"
 	}
 	return strings.Join(names, ", ")
-}
-
-// handlePublish processes PUBLISH command
-func (ch *CommandHandler) handlePublish(cmd string) string {
-	args := parseKeyValueArgs(cmd[8:])
-	var err error
-
-	topicName, ok := args["topic"]
-	if !ok || topicName == "" {
-		return "ERROR: missing topic parameter"
-	}
-
-	message, ok := args["message"]
-	if !ok || message == "" {
-		return "ERROR: missing message parameter"
-	}
-
-	producerID, ok := args["producerId"]
-	if !ok || producerID == "" {
-		return "ERROR: missing producerID parameter"
-	}
-
-	acks, ok := args["acks"]
-	if !ok || acks == "" {
-		acks = "1"
-	}
-
-	acksLower := strings.ToLower(acks)
-	if acksLower != "0" && acksLower != "1" && acksLower != "-1" && acksLower != "all" {
-		return fmt.Sprintf("ERROR: invalid acks value: %s. Expected -1 (all), 0, or 1", acks)
-	}
-
-	var seqNum uint64
-	if seqNumStr, ok := args["seqNum"]; ok {
-		seqNum, err = strconv.ParseUint(seqNumStr, 10, 64)
-		if err != nil {
-			return fmt.Sprintf("ERROR: invalid seqNum: %v", err)
-		}
-	}
-
-	var epoch int64
-	if epochStr, ok := args["epoch"]; ok {
-		epoch, err = strconv.ParseInt(epochStr, 10, 64)
-		if err != nil {
-			return fmt.Sprintf("ERROR: invalid epoch: %v", err)
-		}
-	}
-
-	var ackResp types.AckResponse
-	if ch.Config.EnabledDistribution && ch.Router != nil {
-		if leader, err := ch.Router.GetCachedLeader(); err == nil && leader != "" {
-			if leader != ch.Router.GetLocalAddr() {
-				const maxRetries = 3
-				const retryDelay = 200 * time.Millisecond
-				var lastErr error
-
-				encodedCmd := string(util.EncodeMessage(topicName, cmd))
-				for i := 0; i < maxRetries; i++ {
-					resp, forwardErr := ch.Router.ForwardToLeader(encodedCmd)
-					if forwardErr == nil {
-						return resp
-					}
-
-					util.Debug("Failed to forward PUBLISH to leader (%s). Retrying (Attempt %d/%d). Error: %v", leader, i+1, maxRetries, forwardErr)
-
-					if i < maxRetries-1 {
-						time.Sleep(retryDelay)
-					}
-					lastErr = forwardErr
-				}
-				return ch.errorResponse(fmt.Sprintf("failed to forward PUBLISH to leader after %d attempts: %v", maxRetries, lastErr))
-			} else {
-				util.Debug("Processing PUBLISH locally as leader: %s", leader)
-			}
-		}
-	}
-
-	if ch.Router != nil {
-		util.Info("router nil.")
-	}
-	tm := ch.TopicManager
-	t := tm.GetTopic(topicName)
-	if t == nil {
-		const maxRetries = 5
-		const retryDelay = 100 * time.Millisecond
-
-		util.Warn("Topic '%s' not found. Checking if creation is pending...", topicName)
-
-		found := false
-		for i := 0; i < maxRetries; i++ {
-			t = tm.GetTopic(topicName)
-			if t != nil {
-				found = true
-				break
-			}
-			time.Sleep(retryDelay)
-		}
-
-		if !found {
-			util.Warn("ch publish: topic '%s' does not exist after retries", topicName)
-			return fmt.Sprintf("ERROR: topic '%s' does not exist", topicName)
-		}
-	}
-
-	msg := &types.Message{
-		Payload:    message,
-		ProducerID: producerID,
-		SeqNum:     seqNum,
-		Epoch:      epoch,
-	}
-
-	if ch.Config.EnabledDistribution && ch.ReplicationManager != nil {
-		partition := ch.TopicManager.GetTopic(topicName).GetPartitionForMessage(*msg)
-
-		if acks == "-1" || acksLower == "all" {
-			ackResp, err = ch.ReplicationManager.ReplicateWithQuorum(topicName, partition, *msg, ch.Config.MinInSyncReplicas)
-
-			if err != nil {
-				return ch.errorResponse(fmt.Sprintf("failed to replicate with quorum (acks=-1): %v", err))
-			}
-			goto Respond
-
-		} else {
-			messageData := map[string]interface{}{
-				"topic":      topicName,
-				"partition":  partition,
-				"payload":    message,
-				"producerId": producerID,
-				"seqNum":     seqNum,
-				"epoch":      epoch,
-				"acks":       acks,
-			}
-
-			jsonData, _ := json.Marshal(messageData)
-			timeout := 5 * time.Second
-			if acks == "0" {
-				timeout = 0
-			}
-
-			future := ch.ReplicationManager.GetRaft().Apply([]byte(fmt.Sprintf("MESSAGE:%s", jsonData)), timeout)
-			if acks != "0" {
-				if err := future.Error(); err != nil {
-					return ch.errorResponse(fmt.Sprintf("failed to replicate message with acks=%s: %v", acks, err))
-				}
-
-				if ackResponse, ok := future.Response().(types.AckResponse); ok {
-					ackResp = ackResponse
-				} else {
-					util.Warn("Raft FSM did not return a proper AckResponse for single message; using local message info.")
-					ackResp = types.AckResponse{
-						Status:        "ERROR",
-						ErrorMsg:      "Raft FSM failed to return acknowledgement",
-						LastOffset:    msg.Offset,
-						ProducerEpoch: epoch,
-						ProducerID:    producerID,
-						SeqStart:      seqNum,
-						SeqEnd:        seqNum,
-					}
-
-				}
-				goto Respond
-			} else {
-				return "OK" // acks=0
-			}
-		}
-	} else {
-		switch acks {
-		case "1", "-1", "all":
-			err = ch.TopicManager.PublishWithAck(topicName, msg) // sync
-		case "0":
-			err = ch.TopicManager.Publish(topicName, msg) // async
-		}
-
-		if (acks == "-1" || acksLower == "all") && !ch.Config.EnabledDistribution {
-			return ch.errorResponse("acks=-1 requires cluster")
-		}
-	}
-
-	if err != nil {
-		return ch.errorResponse(fmt.Sprintf("publish failed: %v", err))
-	}
-
-	if acks == "0" {
-		return "OK"
-	}
-
-	ackResp = types.AckResponse{
-		Status:        "OK",
-		LastOffset:    msg.Offset,
-		ProducerEpoch: epoch,
-		ProducerID:    producerID,
-		SeqStart:      seqNum,
-		SeqEnd:        seqNum,
-	}
-
-Respond:
-	if ch.Config.EnabledDistribution && ch.Router != nil {
-		if leader, err := ch.Router.GetCachedLeader(); err == nil && leader != "" {
-			if leader != ch.Router.GetLocalAddr() {
-				ackResp.Leader = leader
-			}
-		}
-	}
-
-	respBytes, err := json.Marshal(ackResp)
-	if err != nil {
-		return fmt.Sprintf("ERROR: failed to marshal response: %v", err)
-	}
-	return string(respBytes)
-}
-
-// HandleBatchMessage processes PUBLISH of multiple messages.
-func (ch *CommandHandler) HandleBatchMessage(data []byte, conn net.Conn) (string, error) {
-	batch, err := util.DecodeBatchMessages(data)
-	if err != nil {
-		util.Error("Batch message decoding failed: %v", err)
-		return fmt.Sprintf("ERROR: %v", err), nil
-	}
-
-	if len(batch.Messages) == 0 {
-		return "ERROR: empty batch", nil
-	}
-
-	acks := batch.Acks
-	if acks == "" {
-		acks = "1"
-	}
-
-	acksLower := strings.ToLower(acks)
-	if acksLower != "0" && acksLower != "1" && acksLower != "-1" && acksLower != "all" {
-		return fmt.Sprintf("ERROR: invalid acks value in batch: %s. Expected -1 (all), 0, or 1", acks), nil
-	}
-
-	var respAck types.AckResponse
-	var lastMsg *types.Message
-	if ch.Config.EnabledDistribution && ch.Router != nil {
-		if leader, err := ch.Router.GetCachedLeader(); err == nil && leader != "" {
-			if leader != ch.Router.GetLocalAddr() {
-				const maxRetries = 3
-				const retryDelay = 200 * time.Millisecond
-				var lastErr error
-
-				for i := 0; i < maxRetries; i++ {
-					resp, forwardErr := ch.Router.ForwardDataToLeader(data)
-					if forwardErr == nil {
-						return resp, nil
-					}
-
-					util.Debug("Failed to forward BATCH to leader (%s). Retrying (Attempt %d/%d). Error: %v", leader, i+1, maxRetries, forwardErr)
-
-					if i < maxRetries-1 {
-						time.Sleep(retryDelay)
-					}
-					lastErr = forwardErr
-				}
-
-				return ch.errorResponse(fmt.Sprintf("failed to forward BATCH to leader after %d attempts: %v", maxRetries, lastErr)), nil
-			} else {
-				util.Debug("Processing BATCH locally as leader: %s", leader)
-			}
-		}
-	}
-
-	if ch.Config.EnabledDistribution && ch.ReplicationManager != nil {
-		timeout := 5 * time.Second
-
-		if acks == "0" {
-			timeout = 0
-		}
-		if acks == "-1" || acksLower == "all" {
-			var err error
-			respAck, err = ch.ReplicationManager.ReplicateBatchWithQuorum(batch.Topic, batch.Partition, batch.Messages, ch.Config.MinInSyncReplicas)
-
-			if err != nil {
-				errorAck := types.AckResponse{
-					Status:        "ERROR",
-					ErrorMsg:      fmt.Sprintf("failed to replicate batch with quorum: %v", err),
-					ProducerID:    batch.Messages[0].ProducerID,
-					ProducerEpoch: batch.Messages[0].Epoch,
-					SeqStart:      batch.Messages[0].SeqNum,
-					SeqEnd:        batch.Messages[len(batch.Messages)-1].SeqNum,
-				}
-				ackBytes, _ := json.Marshal(errorAck)
-				return string(ackBytes), nil
-			}
-			goto Respond
-		} else {
-			batchData, _ := json.Marshal(batch)
-			future := ch.ReplicationManager.GetRaft().Apply([]byte(fmt.Sprintf("BATCH:%s", batchData)), timeout)
-			if acks != "0" {
-				if err := future.Error(); err != nil {
-					respAck := types.AckResponse{
-						Status:        "ERROR",
-						ErrorMsg:      fmt.Sprintf("failed to replicate batch message with acks=%s: %v", acks, err),
-						ProducerID:    batch.Messages[0].ProducerID,
-						ProducerEpoch: batch.Messages[0].Epoch,
-						SeqStart:      batch.Messages[0].SeqNum,
-						SeqEnd:        batch.Messages[len(batch.Messages)-1].SeqNum,
-					}
-					ackBytes, _ := json.Marshal(respAck)
-					return string(ackBytes), nil
-				}
-
-				if ack, ok := future.Response().(types.AckResponse); ok {
-					respAck = ack
-					util.Debug("Raft FSM returned AckResponse: %v", respAck)
-				} else {
-					respAck = types.AckResponse{
-						Status:        "ERROR",
-						ErrorMsg:      "Raft FSM failed to return acknowledgement",
-						ProducerID:    batch.Messages[0].ProducerID,
-						ProducerEpoch: batch.Messages[0].Epoch,
-						SeqStart:      batch.Messages[0].SeqNum,
-						SeqEnd:        batch.Messages[len(batch.Messages)-1].SeqNum,
-					}
-					util.Warn("Raft FSM did not return a proper AckResponse for BATCH; using local message info.")
-				}
-				goto Respond
-			} else {
-				return "OK", nil
-			}
-		}
-	}
-
-	switch acks {
-	case "1", "-1", "all":
-		err = ch.TopicManager.PublishBatchSync(batch.Topic, batch.Messages)
-	case "0":
-		err = ch.TopicManager.PublishBatchAsync(batch.Topic, batch.Messages)
-	}
-
-	if (acks == "-1" || acksLower == "all") && !ch.Config.EnabledDistribution {
-		return "ERROR: acks=-1 requires distributed clustering to be enabled", nil
-	}
-
-	if err != nil {
-		return fmt.Sprintf("ERROR: publish batch failed: %v", err), nil
-	}
-
-	if acks == "0" {
-		return "OK", nil
-	}
-
-	lastMsg = &batch.Messages[len(batch.Messages)-1]
-
-	respAck = types.AckResponse{
-		Status:        "OK",
-		LastOffset:    lastMsg.Offset,
-		SeqStart:      batch.Messages[0].SeqNum,
-		SeqEnd:        lastMsg.SeqNum,
-		ProducerID:    lastMsg.ProducerID,
-		ProducerEpoch: lastMsg.Epoch,
-	}
-
-Respond:
-	if ch.Config.EnabledDistribution && ch.Router != nil {
-		if leader, err := ch.Router.GetCachedLeader(); err == nil && leader != "" {
-			if leader != ch.Router.GetLocalAddr() {
-				respAck.Leader = leader
-			}
-		}
-	}
-
-	ackBytes, err := json.Marshal(respAck)
-	if err != nil {
-		util.Error("Failed to marshal AckResponse: %v", err)
-		return "ERROR: internal marshal error", nil
-	}
-	return string(ackBytes), nil
 }
 
 // handleRegisterGroup processes REGISTER_GROUP command
@@ -564,10 +174,6 @@ func (ch *CommandHandler) handleJoinGroup(cmd string, ctx *ClientContext) string
 		return "ERROR: JOIN_GROUP requires member parameter"
 	}
 
-	if ch.Coordinator == nil {
-		return "ERROR: coordinator not available"
-	}
-
 	n, err := rand.Int(rand.Reader, big.NewInt(10000))
 	var randSuffix string
 	if err != nil {
@@ -578,31 +184,37 @@ func (ch *CommandHandler) handleJoinGroup(cmd string, ctx *ClientContext) string
 	}
 	consumerID = fmt.Sprintf("%s-%s", consumerID, randSuffix)
 
-	assignments, err := ch.Coordinator.AddConsumer(groupName, consumerID)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			t := ch.TopicManager.GetTopic(topicName)
-			if t == nil {
-				util.Warn("ch joinGroup: topic '%s' does not exist", topicName)
-				return fmt.Sprintf("ERROR: topic '%s' does not exist", topicName)
-			}
+	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
+		if resp, forwarded, _ := ch.isLeaderAndForward(cmd); forwarded {
+			return resp
+		}
 
-			if regErr := ch.Coordinator.RegisterGroup(topicName, groupName, len(t.Partitions)); regErr != nil {
-				util.Debug("register group error, %v", regErr)
-				return fmt.Sprintf("ERROR: failed to create group: %v", regErr)
-			}
-			assignments, err = ch.Coordinator.AddConsumer(groupName, consumerID)
+		joinData := map[string]interface{}{
+			"type":   "JOIN",
+			"group":  groupName,
+			"member": consumerID,
+			"topic":  topicName,
+		}
+		data, _ := json.Marshal(joinData)
+
+		err = ch.Cluster.RaftManager.ApplyCommand("GROUP_SYNC", data)
+		if err != nil {
+			return fmt.Sprintf("ERROR: failed to replicate group operation: %v", err)
+		}
+	} else {
+		if ch.Coordinator != nil {
+			_, err := ch.Coordinator.AddConsumer(groupName, consumerID)
 			if err != nil {
-				return fmt.Sprintf("ERROR: failed to join after group creation: %v", err)
+				util.Error("failed to join %s: %v", groupName, err)
 			}
 		} else {
-			return fmt.Sprintf("ERROR: %v", err)
+			return "ERROR: coordinator not available"
 		}
 	}
 
 	ctx.MemberID = consumerID
 	ctx.Generation = ch.Coordinator.GetGeneration(groupName)
-
+	assignments := ch.Coordinator.GetAssignments(groupName)[consumerID]
 	util.Debug("✅ Joined group '%s' member '%s' generation '%d' with partitions: %v", groupName, ctx.MemberID, ctx.Generation, assignments)
 	return fmt.Sprintf("OK generation=%d member=%s assignments=%v", ctx.Generation, ctx.MemberID, assignments)
 }
@@ -626,6 +238,12 @@ func (ch *CommandHandler) handleSyncGroup(cmd string) string {
 
 	if ch.Coordinator == nil {
 		return "ERROR: coordinator not available"
+	}
+
+	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
+		if resp, forwarded, _ := ch.isLeaderAndForward(cmd); forwarded {
+			return resp
+		}
 	}
 
 	assignments := ch.Coordinator.GetAssignments(groupName)
@@ -654,16 +272,34 @@ func (ch *CommandHandler) handleLeaveGroup(cmd string) string {
 		return "ERROR: LEAVE_GROUP requires member parameter"
 	}
 
-	if ch.Coordinator != nil {
-		err := ch.Coordinator.RemoveConsumer(groupName, consumerID)
+	if groupName == "" || consumerID == "" {
+		return "ERROR: LEAVE_GROUP requires group and member parameters"
+	}
+
+	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
+		if resp, forwarded, _ := ch.isLeaderAndForward(cmd); forwarded {
+			return resp
+		}
+
+		leaveData := map[string]interface{}{
+			"type":   "LEAVE",
+			"group":  groupName,
+			"member": consumerID,
+		}
+		data, _ := json.Marshal(leaveData)
+
+		err := ch.Cluster.RaftManager.ApplyCommand("GROUP_SYNC", data)
 		if err != nil {
-			return fmt.Sprintf("ERROR: %v", err)
-		} else {
-			return fmt.Sprintf("✅ Left group '%s'", groupName)
+			return fmt.Sprintf("ERROR: failed to replicate leave operation: %v", err)
 		}
 	} else {
-		return "ERROR: coordinator not available"
+		if ch.Coordinator != nil {
+			if err := ch.Coordinator.RemoveConsumer(groupName, consumerID); err != nil {
+				return fmt.Sprintf("ERROR: %v", err)
+			}
+		}
 	}
+	return fmt.Sprintf("✅ Left group '%s'", groupName)
 }
 
 // handleFetchOffset processes FETCH_OFFSET command
@@ -685,6 +321,15 @@ func (ch *CommandHandler) handleFetchOffset(cmd string) string {
 	groupName, ok := args["group"]
 	if !ok || groupName == "" {
 		return "ERROR: FETCH_OFFSET requires group parameter"
+	}
+
+	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
+		if resp, forwarded, _ := ch.isLeaderAndForward(cmd); forwarded {
+			return resp
+		}
+		if !ch.isAuthorizedForPartition(topicName, partition) {
+			return fmt.Sprintf("ERROR: NOT_AUTHORIZED_FOR_PARTITION %s:%d", topicName, partition)
+		}
 	}
 
 	if ch.Coordinator != nil {
@@ -709,6 +354,12 @@ func (ch *CommandHandler) handleGroupStatus(cmd string) string {
 
 	if ch.Coordinator == nil {
 		return "ERROR: coordinator not available"
+	}
+
+	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
+		if resp, forwarded, _ := ch.isLeaderAndForward(cmd); forwarded {
+			return resp
+		}
 	}
 
 	status, err := ch.Coordinator.GetGroupStatus(groupName)
@@ -738,6 +389,12 @@ func (ch *CommandHandler) handleHeartbeat(cmd string) string {
 	consumerID, ok := args["member"]
 	if !ok || consumerID == "" {
 		return "ERROR: HEARTBEAT requires member parameter"
+	}
+
+	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
+		if resp, forwarded, _ := ch.isLeaderAndForward(cmd); forwarded {
+			return resp
+		}
 	}
 
 	if ch.Coordinator != nil {
@@ -781,6 +438,31 @@ func (ch *CommandHandler) handleCommitOffset(cmd string) string {
 		return "ERROR: invalid offset"
 	}
 
+	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
+		if resp, forwarded, _ := ch.isLeaderAndForward(cmd); forwarded {
+			return resp
+		}
+
+		if !ch.isAuthorizedForPartition(topicName, partition) {
+			return fmt.Sprintf("ERROR: NOT_AUTHORIZED_FOR_PARTITION %s:%d", topicName, partition)
+		}
+
+		commitData := map[string]interface{}{
+			"type":      "COMMIT",
+			"group":     args["group"],
+			"topic":     args["topic"],
+			"partition": partition,
+			"offset":    offset,
+		}
+		data, _ := json.Marshal(commitData)
+
+		err = ch.Cluster.RaftManager.ApplyCommand("OFFSET_SYNC", data)
+		if err != nil {
+			return fmt.Sprintf("ERROR: offset replication failed: %v", err)
+		}
+		return "OK"
+	}
+
 	if ch.Coordinator != nil {
 		err := ch.Coordinator.CommitOffset(groupID, topicName, partition, offset)
 		if err != nil {
@@ -788,19 +470,12 @@ func (ch *CommandHandler) handleCommitOffset(cmd string) string {
 		} else {
 			return "OK"
 		}
-	} else {
-		return "ERROR: offset manager not available"
 	}
+	return "ERROR: offset manager not available"
 }
 
 // resolveOffset determines the starting offset for a consumer
-func (ch *CommandHandler) resolveOffset(
-	topicName string,
-	partition int,
-	requestedOffset uint64,
-	groupName string,
-	autoOffsetReset string,
-) (uint64, error) {
+func (ch *CommandHandler) resolveOffset(topicName string, partition int, requestedOffset uint64, groupName string, autoOffsetReset string) (uint64, error) {
 	dh, err := ch.DiskManager.GetHandler(topicName, partition)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get disk handler: %w", err)

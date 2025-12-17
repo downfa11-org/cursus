@@ -232,8 +232,11 @@ func (pc *PartitionConsumer) startStreamLoop() {
 }
 
 func (pc *PartitionConsumer) printConsumedMessage(batch *types.Batch) {
-	util.Info("📥 Partition [%d] Batch Received: Topic='%s', TotalMessages=%d",
-		pc.partitionID, batch.Topic, len(batch.Messages))
+	if len(batch.Messages) == 0 {
+		return
+	}
+
+	util.Info("📥 Partition [%d] Batch Received: Topic='%s', TotalMessages=%d", pc.partitionID, batch.Topic, len(batch.Messages))
 
 	if len(batch.Messages) > 0 {
 		util.Info("   ├─ Message Details (First 5 messages):")

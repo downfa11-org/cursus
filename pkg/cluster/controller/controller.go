@@ -4,33 +4,55 @@ import (
 	"fmt"
 
 	"github.com/downfa11-org/go-broker/pkg/cluster/replication"
-	"github.com/downfa11-org/go-broker/pkg/topic"
+	"github.com/downfa11-org/go-broker/pkg/config"
 )
 
 type ClusterController struct {
-	raftManager *replication.RaftReplicationManager
-	discovery   ServiceDiscovery
-
-	topicManager *topic.TopicManager
+	RaftManager *replication.RaftReplicationManager
+	Discovery   *ServiceDiscovery
+	Election    *ControllerElection
+	Router      *ClusterRouter
 }
 
-func NewClusterController(rm *replication.RaftReplicationManager, sd ServiceDiscovery, tm *topic.TopicManager) *ClusterController {
-	return &ClusterController{
-		raftManager:  rm,
-		discovery:    sd,
-		topicManager: tm,
+func NewClusterController(cfg *config.Config, rm *replication.RaftReplicationManager, sd *ServiceDiscovery) *ClusterController {
+	brokerID := fmt.Sprintf("%s-%d", cfg.AdvertisedHost, cfg.BrokerPort)
+	localAddr := fmt.Sprintf("%s:%d", cfg.AdvertisedHost, cfg.BrokerPort)
+
+	cc := &ClusterController{
+		RaftManager: rm,
+		Discovery:   sd,
+		Election:    NewControllerElection(rm),
+		Router:      NewClusterRouter(brokerID, localAddr, nil, rm, cfg.BrokerPort),
 	}
+	cc.Start()
+	return cc
+}
+
+func (cc *ClusterController) Start() {
+	cc.Election.Start()
 }
 
 func (cc *ClusterController) GetClusterLeader() (string, error) {
-	if cc.raftManager != nil {
-		raft := cc.raftManager.GetRaft()
-		if raft != nil {
-			leader := string(raft.Leader())
-			if leader != "" {
-				return leader, nil
-			}
-		}
+	leader := cc.RaftManager.GetLeaderAddress()
+	if leader == "" {
+		return "", fmt.Errorf("no cluster leader available")
 	}
-	return "", fmt.Errorf("no cluster leader available")
+	return leader, nil
+}
+
+func (cc *ClusterController) JoinNewBroker(id, addr string) error {
+	_, err := cc.Discovery.AddNode(id, addr)
+	return err
+}
+
+func (cc *ClusterController) IsLeader() bool {
+	if cc.RaftManager != nil {
+		return cc.RaftManager.IsLeader()
+	}
+	return true
+}
+
+// todo. Delegate authorization to partition-level leader checks in future releases.
+func (cc *ClusterController) IsAuthorized(topic string, partition int) bool {
+	return cc.IsLeader()
 }

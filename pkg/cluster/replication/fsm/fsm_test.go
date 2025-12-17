@@ -12,7 +12,7 @@ import (
 )
 
 func TestBrokerFSM_Apply_Register(t *testing.T) {
-	fsm := NewBrokerFSM(nil, nil)
+	fsm := NewBrokerFSM(nil, nil, nil)
 	brokerInfo := BrokerInfo{ID: "b1", Addr: "127.0.0.1:9092", Status: "active", LastSeen: time.Now()}
 	data, _ := json.Marshal(brokerInfo)
 
@@ -30,7 +30,7 @@ func TestBrokerFSM_Apply_Register(t *testing.T) {
 }
 
 func TestBrokerFSM_Apply_Deregister(t *testing.T) {
-	fsm := NewBrokerFSM(nil, nil)
+	fsm := NewBrokerFSM(nil, nil, nil)
 	fsm.brokers["b1"] = &BrokerInfo{ID: "b1"}
 
 	log := &raft.Log{Data: []byte("DEREGISTER:b1"), Index: 2}
@@ -42,7 +42,7 @@ func TestBrokerFSM_Apply_Deregister(t *testing.T) {
 }
 
 func TestBrokerFSM_Apply_Partition(t *testing.T) {
-	fsm := NewBrokerFSM(nil, nil)
+	fsm := NewBrokerFSM(nil, nil, nil)
 	metadata := PartitionMetadata{Leader: "l1", Replicas: []string{"r1"}, LeaderEpoch: 1}
 	data, _ := json.Marshal(metadata)
 	key := "t1-0"
@@ -61,7 +61,7 @@ func TestBrokerFSM_Apply_Partition(t *testing.T) {
 }
 
 func TestBrokerFSM_Snapshot_Restore(t *testing.T) {
-	fsm := NewBrokerFSM(nil, nil)
+	fsm := NewBrokerFSM(nil, nil, nil)
 	fsm.brokers["b1"] = &BrokerInfo{ID: "b1", Addr: "a1"}
 	fsm.partitionMetadata["t1-0"] = &PartitionMetadata{Leader: "l1"}
 	fsm.logs[5] = &ReplicationEntry{Topic: "t1"}
@@ -78,7 +78,7 @@ func TestBrokerFSM_Snapshot_Restore(t *testing.T) {
 		t.Fatalf("Persist failed: %v", err)
 	}
 
-	newFSM := NewBrokerFSM(nil, nil)
+	newFSM := NewBrokerFSM(nil, nil, nil)
 	rc := io.NopCloser(bytes.NewReader(buf.Bytes()))
 
 	if err := newFSM.Restore(rc); err != nil {

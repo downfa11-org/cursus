@@ -3,17 +3,18 @@ package replication
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/cluster/client"
 	"github.com/downfa11-org/go-broker/pkg/cluster/replication/fsm"
 	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/disk"
 	"github.com/downfa11-org/go-broker/pkg/metrics"
 	"github.com/downfa11-org/go-broker/pkg/topic"
@@ -23,55 +24,38 @@ import (
 )
 
 type RaftInterface interface {
-	BootstrapCluster(raft.Configuration) raft.Future
 	Apply([]byte, time.Duration) raft.ApplyFuture
 	AddVoter(raft.ServerID, raft.ServerAddress, uint64, time.Duration) raft.IndexFuture
-	State() raft.RaftState
-	Shutdown() raft.Future
-	GetConfiguration() raft.ConfigurationFuture
 	RemoveServer(raft.ServerID, uint64, time.Duration) raft.IndexFuture
 	Leader() raft.ServerAddress
-}
-
-type BrokerFSMInterface interface {
-	Apply(*raft.Log) interface{}
-	Restore(io.ReadCloser) error
-	Snapshot() (raft.FSMSnapshot, error)
-	GetBrokers() []fsm.BrokerInfo
-	GetPartitionMetadata(string) *fsm.PartitionMetadata
+	State() raft.RaftState
+	GetConfiguration() raft.ConfigurationFuture
+	BootstrapCluster(raft.Configuration) raft.Future
+	Shutdown() raft.Future
 }
 
 type ISRManagerInterface interface {
-	HasQuorum(string, int, int) bool
+	HasQuorum(topic string, partition int, minISR int) bool
+	UpdateHeartbeat(brokerID string)
+	GetISR() []string
 }
 
 type RaftReplicationManager struct {
 	raft       RaftInterface
-	fsm        BrokerFSMInterface
+	fsm        *fsm.BrokerFSM
 	isrManager ISRManagerInterface
 
 	brokerID  string
 	localAddr string
 	peers     map[string]string // brokerID -> addr
 	mu        sync.RWMutex
+
+	isLeader atomic.Bool
+	leaderCh chan bool
 }
 
-func (rm *RaftReplicationManager) GetRaft() *raft.Raft {
-	if r, ok := rm.raft.(*raft.Raft); ok {
-		return r
-	}
-	return nil
-}
-
-func (rm *RaftReplicationManager) GetFSM() *fsm.BrokerFSM {
-	if f, ok := rm.fsm.(*fsm.BrokerFSM); ok {
-		return f
-	}
-	return nil
-}
-
-func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager *disk.DiskManager, topicManager *topic.TopicManager, client client.TCPClusterClient) (*RaftReplicationManager, error) {
-	fsm := fsm.NewBrokerFSM(diskManager, topicManager)
+func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager *disk.DiskManager, topicManager *topic.TopicManager, coordinator *coordinator.Coordinator, client client.TCPClusterClient) (*RaftReplicationManager, error) {
+	fsm := fsm.NewBrokerFSM(diskManager, topicManager, coordinator)
 
 	localAddr := fmt.Sprintf("%s:%d", cfg.AdvertisedHost, cfg.RaftPort)
 	config := raft.DefaultConfig()
@@ -82,6 +66,9 @@ func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager 
 	config.ElectionTimeout = 1500 * time.Millisecond
 	config.CommitTimeout = 100 * time.Millisecond
 	config.LogLevel = "Debug"
+
+	notifyCh := make(chan bool, 10)
+	config.NotifyCh = notifyCh
 
 	if len(cfg.StaticClusterMembers) >= 3 {
 		config.PreVoteDisabled = true
@@ -191,11 +178,14 @@ func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager 
 
 	manager := &RaftReplicationManager{
 		raft:      r,
+		fsm:       fsm,
 		brokerID:  brokerID,
 		localAddr: localAddr,
 		peers:     make(map[string]string),
-		fsm:       fsm,
+		leaderCh:  make(chan bool, 10),
 	}
+
+	go manager.observeLeadership(notifyCh)
 
 	if cfg.LogLevel == util.LogLevelDebug {
 		go func() {
@@ -218,21 +208,59 @@ func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager 
 	return manager, nil
 }
 
-func (rm *RaftReplicationManager) AddVoter(brokerID, addr string) error {
-	util.Info("Adding voter %s at %s", brokerID, addr)
+func (rm *RaftReplicationManager) observeLeadership(notifyCh <-chan bool) {
+	for isLeader := range notifyCh {
+		rm.isLeader.Store(isLeader)
+		select {
+		case rm.leaderCh <- isLeader:
+		default:
+		}
+	}
+}
 
-	configFuture := rm.raft.AddVoter(raft.ServerID(brokerID), raft.ServerAddress(addr), 0, 10*time.Second)
-	if err := configFuture.Error(); err != nil {
-		util.Error("Failed to add voter %s: %v", brokerID, err)
-		return fmt.Errorf("failed to add voter: %w", err)
+func (rm *RaftReplicationManager) IsLeader() bool {
+	return rm.isLeader.Load()
+}
+
+func (rm *RaftReplicationManager) LeaderCh() <-chan bool {
+	return rm.leaderCh
+}
+
+func (rm *RaftReplicationManager) GetLeaderAddress() string {
+	return string(rm.raft.Leader())
+}
+
+func (rm *RaftReplicationManager) GetFSM() *fsm.BrokerFSM {
+	return rm.fsm
+}
+
+func (rm *RaftReplicationManager) ApplyCommand(prefix string, data []byte) error {
+	fullCmd := []byte(fmt.Sprintf("%s:%s", prefix, string(data)))
+	future := rm.raft.Apply(fullCmd, 5*time.Second)
+	return future.Error()
+}
+
+func (rm *RaftReplicationManager) AddVoter(id string, addr string) error {
+	util.Info("Adding voter %s at %s", id, addr)
+	future := rm.raft.AddVoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 10*time.Second)
+	if err := future.Error(); err != nil {
+		return err
 	}
 
 	rm.mu.Lock()
-	rm.peers[brokerID] = addr
+	rm.peers[id] = addr
 	rm.mu.Unlock()
-
-	util.Info("Successfully added voter %s", brokerID)
 	return nil
+}
+
+func (rm *RaftReplicationManager) RemoveServer(id string) error {
+	future := rm.raft.RemoveServer(raft.ServerID(id), 0, 10*time.Second)
+	if err := future.Error(); err == nil {
+		rm.mu.Lock()
+		delete(rm.peers, id)
+		rm.mu.Unlock()
+	}
+	return future.Error()
 }
 
 // ReplicateWithQuorum processes a single message, ensuring required ISR count is met.
@@ -323,6 +351,22 @@ func (rm *RaftReplicationManager) ReplicateBatchWithQuorum(topic string, partiti
 	metrics.QuorumOperations.WithLabelValues("batch_write", "success").Inc()
 	util.Debug("Successfully replicated batch with quorum for topic %s partition %d (Count: %d)", topic, partition, len(messages))
 	return ackResponse, nil
+}
+
+func (rm *RaftReplicationManager) ApplyResponse(prefix string, data []byte, timeout time.Duration) (types.AckResponse, error) {
+	fullCmd := []byte(fmt.Sprintf("%s:%s", prefix, string(data)))
+
+	future := rm.raft.Apply(fullCmd, timeout)
+	if err := future.Error(); err != nil {
+		return types.AckResponse{}, err
+	}
+
+	resp, ok := future.Response().(types.AckResponse)
+	if !ok {
+		return types.AckResponse{}, fmt.Errorf("invalid response type from FSM")
+	}
+
+	return resp, nil
 }
 
 func (rm *RaftReplicationManager) Shutdown() error {

@@ -10,7 +10,7 @@ import (
 )
 
 type PartitionMetadata struct {
-	Leader         string
+	Leader         string // todo
 	Replicas       []string
 	ISR            []string
 	LeaderEpoch    int64
@@ -39,6 +39,7 @@ func (f *BrokerFSM) applyTopicCommand(data string) interface{} {
 	var topicCmd struct {
 		Name       string `json:"name"`
 		Partitions int    `json:"partitions"`
+		LeaderID   string `json:"leader_id"`
 	}
 
 	if err := json.Unmarshal([]byte(data), &topicCmd); err != nil {
@@ -46,9 +47,18 @@ func (f *BrokerFSM) applyTopicCommand(data string) interface{} {
 		return err
 	}
 
+	leader := topicCmd.LeaderID
+	if leader == "" {
+		leader = f.getCurrentRaftLeaderID()
+	}
+
+	f.mu.Lock()
 	f.partitionMetadata[topicCmd.Name] = &PartitionMetadata{
 		PartitionCount: topicCmd.Partitions,
+		Leader:         leader,
+		LeaderEpoch:    1,
 	}
+	f.mu.Unlock()
 
 	if f.tm != nil {
 		f.tm.CreateTopic(topicCmd.Name, topicCmd.Partitions)
@@ -186,4 +196,68 @@ func (f *BrokerFSM) applyBatchMessage(messageData map[string]interface{}, messag
 		SeqStart:      seqStart,
 		SeqEnd:        seqEnd,
 	}
+}
+
+func (f *BrokerFSM) applyGroupSyncCommand(jsonData string) interface{} {
+	var cmd struct {
+		Type   string `json:"type"` // JOIN or LEAVE
+		Group  string `json:"group"`
+		Member string `json:"member"`
+		Topic  string `json:"topic"`
+	}
+
+	if err := json.Unmarshal([]byte(jsonData), &cmd); err != nil {
+		util.Error("Failed to unmarshal group sync: %v", err)
+		return err
+	}
+
+	if f.cd == nil {
+		util.Warn("Coordinator not set in FSM, skipping group sync")
+		return nil
+	}
+
+	switch cmd.Type {
+	case "JOIN":
+		_, err := f.cd.AddConsumer(cmd.Group, cmd.Member)
+		if err != nil {
+			util.Error("FSM: Failed to sync JOIN for member %s: %v", cmd.Member, err)
+		} else {
+			util.Info("FSM: Synced JOIN group=%s member=%s", cmd.Group, cmd.Member)
+		}
+	case "LEAVE":
+		err := f.cd.RemoveConsumer(cmd.Group, cmd.Member)
+		if err != nil {
+			util.Warn("FSM: LEAVE failed (potentially already removed): %v", err)
+		} else {
+			util.Info("FSM: Synced LEAVE group=%s member=%s", cmd.Group, cmd.Member)
+		}
+	}
+	return nil
+}
+
+func (f *BrokerFSM) applyOffsetSyncCommand(jsonData string) interface{} {
+	var cmd struct {
+		Group     string `json:"group"`
+		Topic     string `json:"topic"`
+		Partition int    `json:"partition"`
+		Offset    uint64 `json:"offset"`
+	}
+
+	if err := json.Unmarshal([]byte(jsonData), &cmd); err != nil {
+		util.Error("Failed to unmarshal offset sync: %v", err)
+		return err
+	}
+
+	if f.cd == nil {
+		return nil
+	}
+
+	err := f.cd.CommitOffset(cmd.Group, cmd.Topic, cmd.Partition, cmd.Offset)
+	if err != nil {
+		util.Error("FSM: Failed to sync offset: %v", err)
+		return err
+	}
+
+	util.Debug("FSM: Synced OFFSET group=%s topic=%s p=%d o=%d", cmd.Group, cmd.Topic, cmd.Partition, cmd.Offset)
+	return nil
 }

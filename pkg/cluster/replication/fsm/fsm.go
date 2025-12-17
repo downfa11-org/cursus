@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/disk"
 	"github.com/downfa11-org/go-broker/pkg/topic"
 	"github.com/downfa11-org/go-broker/pkg/types"
@@ -38,15 +39,17 @@ type BrokerFSM struct {
 
 	dm *disk.DiskManager
 	tm *topic.TopicManager
+	cd *coordinator.Coordinator
 }
 
-func NewBrokerFSM(dm *disk.DiskManager, tm *topic.TopicManager) *BrokerFSM {
+func NewBrokerFSM(dm *disk.DiskManager, tm *topic.TopicManager, cd *coordinator.Coordinator) *BrokerFSM {
 	return &BrokerFSM{
 		logs:              make(map[uint64]*ReplicationEntry),
 		brokers:           make(map[string]*BrokerInfo),
 		partitionMetadata: make(map[string]*PartitionMetadata),
 		dm:                dm,
 		tm:                tm,
+		cd:                cd,
 	}
 }
 
@@ -59,6 +62,12 @@ func (f *BrokerFSM) GetBrokers() []BrokerInfo {
 		brokers = append(brokers, *broker)
 	}
 	return brokers
+}
+
+func (f *BrokerFSM) SetCoordinator(cd *coordinator.Coordinator) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cd = cd
 }
 
 func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
@@ -78,6 +87,10 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 		return f.applyTopicCommand(data[6:])
 	case strings.HasPrefix(data, "PARTITION:"):
 		return f.applyPartitionCommand(data)
+	case strings.HasPrefix(data, "GROUP_SYNC:"):
+		return f.applyGroupSyncCommand(data[11:])
+	case strings.HasPrefix(data, "OFFSET_SYNC:"):
+		return f.applyOffsetSyncCommand(data[12:])
 	default:
 		return f.handleUnknownCommand(data)
 	}
@@ -191,4 +204,15 @@ func (f *BrokerFSM) GetPartitionMetadata(key string) *PartitionMetadata {
 		return &copy
 	}
 	return nil
+}
+
+// todo.
+func (f *BrokerFSM) getCurrentRaftLeaderID() string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	for id := range f.brokers {
+		return id
+	}
+	return "unknown-leader"
 }

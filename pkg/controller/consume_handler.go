@@ -24,20 +24,37 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		return 0, fmt.Errorf("missing topic parameter")
 	}
 
-	if ch.Config.EnabledDistribution && ch.Router != nil {
-		leader, err := ch.Router.GetCachedLeader()
-		if err == nil && leader != "" && leader != ch.Router.GetLocalAddr() {
-			serviceLeader := leader
-			if host, _, splitErr := net.SplitHostPort(leader); splitErr == nil {
-				serviceLeader = net.JoinHostPort(host, strconv.Itoa(ch.Config.BrokerPort))
-			}
+	partitionStr, ok := args["partition"]
+	if !ok {
+		return 0, fmt.Errorf("missing partition parameter")
+	}
+	partition, err := strconv.Atoi(partitionStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid partition ID: %w", err)
+	}
 
-			errResp := fmt.Sprintf("ERROR: NOT_LEADER LEADER_IS %s", serviceLeader)
-			util.Warn("consume warn: %s", errResp)
-			if err := util.WriteWithLength(conn, []byte(errResp)); err != nil {
-				return 0, fmt.Errorf("send consume failed: %w", err)
+	if ch.Config.EnabledDistribution && ch.Cluster.Router != nil {
+		if !ch.Cluster.RaftManager.IsLeader() {
+			leaderAddr := ch.Cluster.RaftManager.GetLeaderAddress()
+			if leaderAddr != "" {
+				serviceLeader := leaderAddr
+				if host, _, splitErr := net.SplitHostPort(leaderAddr); splitErr == nil {
+					serviceLeader = net.JoinHostPort(host, strconv.Itoa(ch.Config.BrokerPort))
+				}
+
+				errResp := fmt.Sprintf("ERROR: NOT_LEADER LEADER_IS %s", serviceLeader)
+				util.Warn("consume warn: %s", errResp)
+				if err := util.WriteWithLength(conn, []byte(errResp)); err != nil {
+					return 0, fmt.Errorf("send consume failed: %w", err)
+				}
+				return 0, nil
 			}
-			return 0, nil
+		}
+
+		if !strings.ContainsAny(topicPattern, "*?") {
+			if !ch.isAuthorizedForPartition(topicPattern, partition) {
+				return 0, fmt.Errorf("ERROR: NOT_AUTHORIZED_FOR_PARTITION %s:%d", topicPattern, partition)
+			}
 		}
 	}
 
@@ -58,15 +75,6 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 
 	if len(matchedTopics) == 0 {
 		return 0, fmt.Errorf("no assigned topics match pattern '%s'", topicPattern)
-	}
-
-	partitionStr, ok := args["partition"]
-	if !ok {
-		return 0, fmt.Errorf("missing partition parameter")
-	}
-	partition, err := strconv.Atoi(partitionStr)
-	if err != nil {
-		return 0, fmt.Errorf("invalid partition ID: %w", err)
 	}
 
 	totalStreamed := 0
@@ -290,20 +298,26 @@ func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx 
 		}
 	}
 
-	if ch.Config.EnabledDistribution && ch.Router != nil {
-		leader, err := ch.Router.GetCachedLeader()
-		if err == nil && leader != "" && leader != ch.Router.GetLocalAddr() {
-			serviceLeader := leader
-			if host, _, splitErr := net.SplitHostPort(leader); splitErr == nil {
-				serviceLeader = net.JoinHostPort(host, strconv.Itoa(ch.Config.BrokerPort))
-			}
+	if ch.Config.EnabledDistribution && ch.Cluster.Router != nil {
+		if !ch.Cluster.RaftManager.IsLeader() {
+			leaderAddr := ch.Cluster.RaftManager.GetLeaderAddress()
+			if leaderAddr != "" {
+				serviceLeader := leaderAddr
+				if host, _, splitErr := net.SplitHostPort(leaderAddr); splitErr == nil {
+					serviceLeader = net.JoinHostPort(host, strconv.Itoa(ch.Config.BrokerPort))
+				}
 
-			errResp := fmt.Sprintf("ERROR: NOT_LEADER LEADER_IS %s", serviceLeader)
-			util.Warn("consume warn: %s", errResp)
-			if err := util.WriteWithLength(conn, []byte(errResp)); err != nil {
-				return fmt.Errorf("send stream failed: %w", err)
+				errResp := fmt.Sprintf("ERROR: NOT_LEADER LEADER_IS %s", serviceLeader)
+				util.Warn("consume warn: %s", errResp)
+				if err := util.WriteWithLength(conn, []byte(errResp)); err != nil {
+					return fmt.Errorf("send stream failed: %w", err)
+				}
+				return nil
 			}
-			return nil
+		}
+
+		if !ch.isAuthorizedForPartition(topicName, partition) {
+			return fmt.Errorf("ERROR: NOT_AUTHORIZED_FOR_PARTITION %s:%d", topicName, partition)
 		}
 	}
 

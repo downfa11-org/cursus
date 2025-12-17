@@ -23,7 +23,6 @@ import (
 	"github.com/downfa11-org/go-broker/pkg/stream"
 	"github.com/downfa11-org/go-broker/pkg/topic"
 	"github.com/downfa11-org/go-broker/util"
-	"github.com/hashicorp/raft"
 )
 
 const (
@@ -32,16 +31,9 @@ const (
 )
 
 var brokerReady = &atomic.Bool{}
-var registrationComplete = &atomic.Bool{}
 
 // RunServer starts the broker with optional TLS and gzip
-func RunServer(
-	cfg *config.Config,
-	tm *topic.TopicManager,
-	dm *disk.DiskManager,
-	cd *coordinator.Coordinator,
-	sm *stream.StreamManager,
-) error {
+func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager, cd *coordinator.Coordinator, sm *stream.StreamManager) error {
 
 	if cfg.EnableExporter {
 		metrics.StartMetricsServer(cfg.ExporterPort)
@@ -74,8 +66,7 @@ func RunServer(
 		util.Info("🔄 Coordinator started with heartbeat monitoring")
 	}
 
-	var sd clusterController.ServiceDiscovery
-	var rm *replication.RaftReplicationManager
+	var cc *clusterController.ClusterController
 	if cfg.EnabledDistribution {
 		brokerID := fmt.Sprintf("%s-%d", cfg.AdvertisedHost, cfg.BrokerPort)
 		localAddr := fmt.Sprintf("%s:%d", cfg.AdvertisedHost, cfg.RaftPort)
@@ -83,38 +74,33 @@ func RunServer(
 
 		var err error
 		clusterClient := client.TCPClusterClient{}
-		rm, err = replication.NewRaftReplicationManager(cfg, raftServerID, dm, tm, clusterClient)
+		rm, err := replication.NewRaftReplicationManager(cfg, raftServerID, dm, tm, cd, clusterClient)
 		if err != nil {
 			return fmt.Errorf("failed to create raft replication manager: %w", err)
 		}
 
-		fsm := rm.GetFSM()
-		sd = clusterController.NewServiceDiscovery(fsm, brokerID, localAddr, rm.GetRaft())
+		sDiscovery := clusterController.NewServiceDiscovery(rm, brokerID, localAddr)
+		sd := &sDiscovery
 
 		discoveryAddr := fmt.Sprintf(":%d", cfg.DiscoveryPort)
-		cs := cluster.NewClusterServer(sd)
+		cs := cluster.NewClusterServer(*sd)
 		go func() {
 			if _, err := cs.Start(discoveryAddr); err != nil {
 				util.Error("discovery-server start error: %v", err)
 			}
 		}()
 
-		sd.SetRaftManager(rm)
-
-		clusterController.NewClusterController(rm, sd, tm)
-		controllerElection := clusterController.NewControllerElection(rm)
-		controllerElection.Start()
+		cc = clusterController.NewClusterController(cfg, rm, sd)
 
 		go func() {
 			util.Info("🔄 Starting cluster leader election monitor...")
-			for isLeader := range controllerElection.LeaderCh() {
+			for isLeader := range rm.LeaderCh() {
 				if isLeader {
 					util.Info("🎉 Became cluster leader! Registering self and starting controller.")
 					if regErr := sd.Register(); regErr != nil {
 						util.Error("❌ Failed to register as leader: %v", regErr)
 						continue
 					}
-					registrationComplete.Store(true)
 					util.Info("✅ Cluster registration completed")
 				} else {
 					util.Info("💀 Lost cluster leadership. Stopping controller functions.")
@@ -129,12 +115,12 @@ func RunServer(
 	if healthPort == 0 {
 		healthPort = DefaultHealthCheckPort
 	}
-	startHealthCheckServer(healthPort, brokerReady, cfg.EnabledDistribution, rm, registrationComplete)
+	startHealthCheckServer(healthPort, brokerReady)
 	workerCh := make(chan net.Conn, maxWorkers)
 	for i := 0; i < maxWorkers; i++ {
 		go func() {
 			for conn := range workerCh {
-				HandleConnection(conn, tm, dm, cfg, cd, sm, rm)
+				HandleConnection(conn, tm, dm, cfg, cd, sm, cc)
 			}
 		}()
 	}
@@ -150,18 +136,10 @@ func RunServer(
 }
 
 // HandleConnection processes a single client connection
-func HandleConnection(
-	conn net.Conn,
-	tm *topic.TopicManager,
-	dm *disk.DiskManager,
-	cfg *config.Config,
-	cd *coordinator.Coordinator,
-	sm *stream.StreamManager,
-	rm *replication.RaftReplicationManager,
-) {
+func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, cd *coordinator.Coordinator, sm *stream.StreamManager, cc *clusterController.ClusterController) {
 	defer conn.Close()
 
-	cmdHandler, ctx := initializeConnection(cfg, rm, tm, dm, cd, sm)
+	cmdHandler, ctx := initializeConnection(cfg, tm, dm, cd, sm, cc)
 
 	for {
 		data, err := readMessage(conn, cfg.CompressionType)
@@ -176,27 +154,8 @@ func HandleConnection(
 	}
 }
 
-func initializeConnection(
-	cfg *config.Config,
-	rm *replication.RaftReplicationManager,
-	tm *topic.TopicManager,
-	dm *disk.DiskManager,
-	cd *coordinator.Coordinator,
-	sm *stream.StreamManager,
-) (*controller.CommandHandler, *controller.ClientContext) {
-	var router *clusterController.ClusterRouter
-	if cfg.EnabledDistribution {
-		brokerID := fmt.Sprintf("%s-%d", cfg.AdvertisedHost, cfg.BrokerPort)
-		localAddr := fmt.Sprintf("%s:%d", cfg.AdvertisedHost, cfg.BrokerPort)
-		router = clusterController.NewClusterRouter(brokerID, localAddr, nil, rm.GetRaft(), cfg.BrokerPort)
-	}
-
-	cmdHandler := controller.NewCommandHandler(tm, dm, cfg, cd, sm, router, rm)
-	if router != nil {
-		router.SetLocalProcessor(cmdHandler)
-		router.StartLeaderRefresh()
-	}
-
+func initializeConnection(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager, cd *coordinator.Coordinator, sm *stream.StreamManager, cc *clusterController.ClusterController) (*controller.CommandHandler, *controller.ClientContext) {
+	cmdHandler := controller.NewCommandHandler(tm, dm, cfg, cd, sm, cc)
 	ctx := controller.NewClientContext("default-group", 0)
 	return cmdHandler, ctx
 }
@@ -233,12 +192,7 @@ func readMessage(conn net.Conn, compressionType string) ([]byte, error) {
 	return data, nil
 }
 
-func processMessage(
-	data []byte,
-	cmdHandler *controller.CommandHandler,
-	ctx *controller.ClientContext,
-	conn net.Conn,
-) (bool, error) {
+func processMessage(data []byte, cmdHandler *controller.CommandHandler, ctx *controller.ClientContext, conn net.Conn) (bool, error) {
 	if isBatchMessage(data) {
 		resp, err := cmdHandler.HandleBatchMessage(data, conn)
 		if err != nil {
@@ -261,7 +215,8 @@ func processMessage(
 	}
 
 	if strings.HasPrefix(strings.ToUpper(payload), "JOIN_GROUP") ||
-		strings.HasPrefix(strings.ToUpper(payload), "SYNC_GROUP") {
+		strings.HasPrefix(strings.ToUpper(payload), "SYNC_GROUP") ||
+		strings.HasPrefix(strings.ToUpper(payload), "LEAVE_GROUP") {
 		resp := cmdHandler.HandleCommand(payload, ctx)
 		writeResponse(conn, resp)
 		return false, nil
@@ -277,12 +232,7 @@ func processMessage(
 	return false, nil
 }
 
-func handleCommandMessage(
-	payload string,
-	cmdHandler *controller.CommandHandler,
-	ctx *controller.ClientContext,
-	conn net.Conn,
-) (bool, error) {
+func handleCommandMessage(payload string, cmdHandler *controller.CommandHandler, ctx *controller.ClientContext, conn net.Conn) (bool, error) {
 	resp := cmdHandler.HandleCommand(payload, ctx)
 	if resp == controller.STREAM_DATA_SIGNAL {
 		if strings.HasPrefix(strings.ToUpper(payload), "STREAM ") {
@@ -371,7 +321,7 @@ func writeResponse(conn net.Conn, msg string) {
 }
 
 // startHealthCheckServer starts a simple HTTP server for health checks
-func startHealthCheckServer(port int, brokerReady *atomic.Bool, isCluster bool, rm *replication.RaftReplicationManager, registrationComplete *atomic.Bool) {
+func startHealthCheckServer(port int, brokerReady *atomic.Bool) {
 	mux := http.NewServeMux()
 	healthHandler := func(w http.ResponseWriter, r *http.Request) {
 		if !brokerReady.Load() {
@@ -380,26 +330,6 @@ func startHealthCheckServer(port int, brokerReady *atomic.Bool, isCluster bool, 
 				util.Error("⚠️ Health check response write error: %v", err)
 			}
 			return
-		}
-
-		if isCluster && rm != nil {
-			raftState := rm.GetRaft().State()
-			isRaftLeader := (raftState == raft.Leader)
-			if isRaftLeader && !registrationComplete.Load() {
-				w.WriteHeader(http.StatusServiceUnavailable)
-				if _, err := w.Write([]byte("Leader not ready: Cluster registration incomplete")); err != nil {
-					util.Error("⚠️ Health check response write error: %v", err)
-				}
-				return
-			}
-
-			if !isRaftLeader && raftState != raft.Follower { // 503: candidate, shutdown
-				w.WriteHeader(http.StatusServiceUnavailable)
-				if _, err := w.Write([]byte(fmt.Sprintf("Cluster not stable: Raft state is %s", raftState))); err != nil {
-					util.Error("⚠️ Health check response write error: %v", err)
-				}
-				return
-			}
 		}
 
 		w.WriteHeader(http.StatusOK)

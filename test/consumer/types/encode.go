@@ -8,7 +8,7 @@ import (
 
 func DecodeBatchMessages(data []byte) (*Batch, error) {
 	if len(data) < 2 || data[0] != 0xBA || data[1] != 0x7C {
-		return nil, fmt.Errorf("invalid batch header")
+		return nil, fmt.Errorf("invalid batch header: %s", string(data))
 	}
 	data = data[2:]
 

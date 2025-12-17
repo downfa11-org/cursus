@@ -3,11 +3,9 @@ package controller
 import (
 	"fmt"
 	"net"
-	"sync"
 	"time"
 
-	"github.com/downfa11-org/go-broker/util"
-	"github.com/hashicorp/raft"
+	"github.com/downfa11-org/go-broker/pkg/cluster/replication"
 )
 
 type LocalProcessor interface {
@@ -15,86 +13,31 @@ type LocalProcessor interface {
 }
 
 type ClusterRouter struct {
+	LocalAddr      string
 	brokerID       string
-	localAddr      string
-	leaderAddr     string
-	leaderAddrMu   sync.RWMutex
+	rm             *replication.RaftReplicationManager
+	clientPort     int
 	timeout        time.Duration
 	localProcessor LocalProcessor
-	raft           *raft.Raft
-	clientPort     int
 }
 
-func NewClusterRouter(brokerID, localAddr string, processor LocalProcessor, raft *raft.Raft, clientPort int) *ClusterRouter {
-	router := &ClusterRouter{
+func NewClusterRouter(brokerID, localAddr string, processor LocalProcessor, rm *replication.RaftReplicationManager, clientPort int) *ClusterRouter {
+	return &ClusterRouter{
 		brokerID:       brokerID,
-		localAddr:      localAddr,
+		LocalAddr:      localAddr,
+		rm:             rm,
+		clientPort:     clientPort,
 		timeout:        5 * time.Second,
 		localProcessor: processor,
-		raft:           raft,
-		clientPort:     clientPort,
 	}
-
-	go func() {
-		time.Sleep(2 * time.Second)
-		if _, err := router.getLeader(); err != nil {
-			util.Debug("Initial leader discovery failed: %v", err)
-		}
-	}()
-
-	return router
-}
-
-func (r *ClusterRouter) SetLocalProcessor(processor LocalProcessor) {
-	r.localProcessor = processor
-}
-
-func (r *ClusterRouter) StartLeaderRefresh() {
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			if _, err := r.getLeader(); err != nil {
-				util.Debug("Periodic leader refresh failed: %v", err)
-			}
-		}
-	}()
 }
 
 func (r *ClusterRouter) getLeader() (string, error) {
-	if r.raft != nil {
-		currentLeaderAddr := string(r.raft.Leader())
-		if currentLeaderAddr != "" {
-			r.leaderAddrMu.Lock()
-
-			if r.leaderAddr != currentLeaderAddr {
-				util.Info("✅ Raft Leader changed: %s -> %s", r.leaderAddr, currentLeaderAddr)
-				r.leaderAddr = currentLeaderAddr
-			}
-
-			r.leaderAddrMu.Unlock()
-			return currentLeaderAddr, nil
-		}
+	leader := r.rm.GetLeaderAddress()
+	if leader == "" {
+		return "", fmt.Errorf("no leader available from Raft")
 	}
-	return "", fmt.Errorf("no leader available from Raft")
-}
-
-func (r *ClusterRouter) GetCachedLeader() (string, error) {
-	r.leaderAddrMu.RLock()
-	defer r.leaderAddrMu.RUnlock()
-	return r.leaderAddr, nil
-}
-
-func (r *ClusterRouter) GetLocalAddr() string {
-	return r.localAddr
-}
-
-func (r *ClusterRouter) processLocally(req string) string {
-	if r.localProcessor != nil {
-		return r.localProcessor.ProcessCommand(req)
-	}
-	return "ERROR: no local processor configured"
+	return leader, nil
 }
 
 func (r *ClusterRouter) ForwardToLeader(req string) (string, error) {
@@ -103,8 +46,7 @@ func (r *ClusterRouter) ForwardToLeader(req string) (string, error) {
 		return "", err
 	}
 
-	if leader == r.localAddr {
-		util.Info("you're leader node.")
+	if r.rm.IsLeader() || leader == r.LocalAddr {
 		return r.processLocally(req), nil
 	}
 
@@ -114,20 +56,16 @@ func (r *ClusterRouter) ForwardToLeader(req string) (string, error) {
 	}
 
 	clientLeaderAddr := fmt.Sprintf("%s:%d", host, r.clientPort)
-	resp, err := r.sendRequest(clientLeaderAddr, req)
-	util.Info("Forwarding [%s] to leader: %s -> %s", req, r.GetLocalAddr(), clientLeaderAddr)
-	return resp, err
+	return r.sendRequest(clientLeaderAddr, req)
 }
 
-// ForwardDataToLeader forwards a binary data packet (like a batch message) to the cluster leader.
 func (r *ClusterRouter) ForwardDataToLeader(data []byte) (string, error) {
 	leader, err := r.getLeader()
 	if err != nil {
 		return "", err
 	}
 
-	if leader == r.localAddr {
-		util.Warn("Attempted to forward data to self as leader.")
+	if r.rm.IsLeader() || leader == r.LocalAddr {
 		return "", fmt.Errorf("internal routing error: cannot forward batch data to self")
 	}
 
@@ -137,9 +75,14 @@ func (r *ClusterRouter) ForwardDataToLeader(data []byte) (string, error) {
 	}
 
 	clientLeaderAddr := fmt.Sprintf("%s:%d", host, r.clientPort)
-	resp, err := r.sendDataRequest(clientLeaderAddr, data)
-	util.Info("Forwarding data to leader: %s -> %s (Data size: %d)", r.GetLocalAddr(), clientLeaderAddr, len(data))
-	return resp, err
+	return r.sendDataRequest(clientLeaderAddr, data)
+}
+
+func (r *ClusterRouter) processLocally(req string) string {
+	if r.localProcessor != nil {
+		return r.localProcessor.ProcessCommand(req)
+	}
+	return "ERROR: no local processor configured"
 }
 
 func (r *ClusterRouter) sendRequest(addr, command string) (string, error) {
