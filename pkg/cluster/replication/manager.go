@@ -355,7 +355,6 @@ func (rm *RaftReplicationManager) ReplicateBatchWithQuorum(topic string, partiti
 
 func (rm *RaftReplicationManager) ApplyResponse(prefix string, data []byte, timeout time.Duration) (types.AckResponse, error) {
 	fullCmd := []byte(fmt.Sprintf("%s:%s", prefix, string(data)))
-
 	future := rm.raft.Apply(fullCmd, timeout)
 	if err := future.Error(); err != nil {
 		return types.AckResponse{}, err

@@ -91,18 +91,25 @@ func getOptionalStringField(data map[string]interface{}, key string) string {
 	return ""
 }
 
-func getOptionalUint64Field(data map[string]interface{}, key string) uint64 {
-	if val, ok := data[key]; ok {
-		switch v := val.(type) {
-		case float64:
-			return uint64(v)
-		case uint64:
-			return v
-		case int64:
-			return uint64(v)
-		}
+func getOptionalUint64Field(m map[string]interface{}, key string) uint64 {
+	val, ok := m[key]
+	if !ok || val == nil {
+		return 0
 	}
-	return 0
+
+	switch v := val.(type) {
+	case uint64:
+		return v
+	case int64:
+		return uint64(v)
+	case float64:
+		return uint64(v)
+	case json.Number:
+		i, _ := v.Int64()
+		return uint64(i)
+	default:
+		return 0
+	}
 }
 
 func getOptionalInt64Field(data map[string]interface{}, key string) int64 {

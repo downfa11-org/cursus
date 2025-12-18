@@ -15,40 +15,32 @@ import (
 )
 
 type ProducerState struct {
-	ProducerID   string         `json:"producer_id"`
-	LastSeqNums  map[int]uint64 `json:"last_seq_nums"`
-	Epoch        int64          `json:"epoch"`
-	GlobalSeqNum uint64         `json:"global_seq_num"`
+	ProducerID  string         `json:"producer_id"`
+	LastSeqNums map[int]uint64 `json:"last_seq_nums"`
+	Epoch       int64          `json:"epoch"`
 }
 
 type ProducerClient struct {
-	ID           string
-	seqNums      []atomic.Uint64
-	globalSeqNum atomic.Uint64
-	Epoch        int64
-	mu           sync.RWMutex
-	conns        atomic.Pointer[[]net.Conn]
-	config       *config.PublisherConfig
+	ID      string
+	seqNums []atomic.Uint64
+	Epoch   int64
+	mu      sync.RWMutex
+	conns   atomic.Pointer[[]net.Conn]
+	config  *config.PublisherConfig
 
 	leaderAddr       string
 	lastLeaderUpdate time.Time
-}
-
-func (pc *ProducerClient) ReserveSeqRange(partition int, count int) (uint64, uint64) {
-	if count <= 0 {
-		panic(fmt.Sprintf("invalid count for ReserveSeqRange: %d", count))
-	}
-
-	start := pc.globalSeqNum.Add(uint64(count)) - uint64(count-1)
-	end := start + uint64(count-1)
-	return start, end
 }
 
 func (pc *ProducerClient) CommitSeqRange(partition int, endSeq uint64) {
 	if partition < 0 || partition >= len(pc.seqNums) {
 		panic(fmt.Sprintf("invalid partition index in CommitSeqRange: %d", partition))
 	}
-	pc.seqNums[partition].Store(endSeq)
+
+	current := pc.seqNums[partition].Load()
+	if endSeq > current {
+		pc.seqNums[partition].Store(endSeq)
+	}
 }
 
 func NewProducerClient(partitions int, config *config.PublisherConfig) *ProducerClient {
@@ -80,7 +72,6 @@ func (pc *ProducerClient) loadState() error {
 
 	pc.ID = state.ProducerID
 	pc.Epoch = state.Epoch
-	pc.globalSeqNum.Store(state.GlobalSeqNum)
 
 	for partition, seq := range state.LastSeqNums {
 		if partition < len(pc.seqNums) {
@@ -92,9 +83,9 @@ func (pc *ProducerClient) loadState() error {
 
 func (pc *ProducerClient) NextSeqNum(partition int) uint64 {
 	if partition < 0 || partition >= len(pc.seqNums) {
-		panic(fmt.Sprintf("invalid partition index in NextSeqNum: %d", partition))
+		panic(fmt.Sprintf("invalid partition index: %d", partition))
 	}
-	return pc.globalSeqNum.Add(1)
+	return pc.seqNums[partition].Add(1)
 }
 
 func (pc *ProducerClient) connectPartitionLocked(idx int, addr string, useTLS bool, certPath, keyPath string) error {
@@ -172,14 +163,10 @@ func (pc *ProducerClient) Close() error {
 	return nil
 }
 
-func (pc *ProducerClient) GetCachedLeader() string {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-
-	if pc.leaderAddr != "" && time.Since(pc.lastLeaderUpdate) < 30*time.Second {
-		return pc.leaderAddr
-	}
-	return ""
+func (pc *ProducerClient) GetLeaderAddr() string {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	return pc.leaderAddr
 }
 
 func (pc *ProducerClient) UpdateLeader(leaderAddr string) {
