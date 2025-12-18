@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"sync"
@@ -27,8 +26,8 @@ type ProducerClient struct {
 	seqNums      []atomic.Uint64
 	globalSeqNum atomic.Uint64
 	Epoch        int64
-	mu           sync.Mutex
-	conns        []net.Conn
+	mu           sync.RWMutex
+	conns        atomic.Pointer[[]net.Conn]
 	config       *config.PublisherConfig
 
 	leaderAddr       string
@@ -91,46 +90,6 @@ func (pc *ProducerClient) loadState() error {
 	return nil
 }
 
-func (pc *ProducerClient) SaveState() error {
-	lastSeqNums := make(map[int]uint64)
-	for i := range pc.seqNums {
-		lastSeqNums[i] = pc.seqNums[i].Load()
-	}
-
-	state := ProducerState{
-		ProducerID:   pc.ID,
-		LastSeqNums:  lastSeqNums,
-		Epoch:        pc.Epoch,
-		GlobalSeqNum: pc.globalSeqNum.Load(),
-	}
-
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal state: %w", err)
-	}
-
-	tmpFile := "producer_state.json.tmp"
-	f, err := os.Create(tmpFile)
-	if err != nil {
-		return err
-	}
-
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tmpFile)
-		return err
-	}
-
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmpFile)
-		return err
-	}
-
-	f.Close()
-	return os.Rename(tmpFile, "producer_state.json")
-}
-
 func (pc *ProducerClient) NextSeqNum(partition int) uint64 {
 	if partition < 0 || partition >= len(pc.seqNums) {
 		panic(fmt.Sprintf("invalid partition index in NextSeqNum: %d", partition))
@@ -163,20 +122,32 @@ func (pc *ProducerClient) connectPartitionLocked(idx int, addr string, useTLS bo
 		}
 	}
 
-	if len(pc.conns) <= idx {
-		tmp := make([]net.Conn, idx+1)
-		copy(tmp, pc.conns)
-		pc.conns = tmp
+	var currentConns []net.Conn
+	if ptr := pc.conns.Load(); ptr != nil {
+		currentConns = *ptr
 	}
-	pc.conns[idx] = conn
+
+	newSize := idx + 1
+	if len(currentConns) > newSize {
+		newSize = len(currentConns)
+	}
+
+	tmp := make([]net.Conn, newSize)
+	copy(tmp, currentConns)
+	tmp[idx] = conn
+
+	pc.conns.Store(&tmp)
 	return nil
 }
 
 func (pc *ProducerClient) GetConn(part int) net.Conn {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-	if part >= 0 && part < len(pc.conns) {
-		return pc.conns[part]
+	ptr := pc.conns.Load()
+	if ptr == nil {
+		return nil
+	}
+	conns := *ptr
+	if part >= 0 && part < len(conns) {
+		return conns[part]
 	}
 	return nil
 }
@@ -184,12 +155,20 @@ func (pc *ProducerClient) GetConn(part int) net.Conn {
 func (pc *ProducerClient) Close() error {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
-	for i, c := range pc.conns {
+
+	ptr := pc.conns.Swap(nil)
+	if ptr == nil {
+		return nil
+	}
+
+	conns := *ptr
+	for i, c := range conns {
 		if c != nil {
 			_ = c.Close()
-			pc.conns[i] = nil
+			conns[i] = nil
 		}
 	}
+
 	return nil
 }
 
@@ -243,35 +222,13 @@ func (pc *ProducerClient) ConnectPartition(idx int, addr string, useTLS bool, ce
 }
 
 func (pc *ProducerClient) ReconnectPartition(idx int, addr string, useTLS bool, certPath, keyPath string) error {
-	pc.mu.Lock()
-	if idx < len(pc.conns) && pc.conns[idx] != nil {
-		_ = pc.conns[idx].Close()
-		pc.conns[idx] = nil
-	}
-	pc.mu.Unlock()
-
-	err := pc.ConnectPartition(idx, addr, useTLS, certPath, keyPath)
-	if err == nil {
-		return nil
-	}
-
-	log.Printf("Failed to reconnect to %s, trying other brokers: %v", addr, err)
-
-	if pc.config == nil {
-		return fmt.Errorf("failed to reconnect to %s (no config for fallback): %w", addr, err)
-	}
-
-	for _, brokerAddr := range pc.config.BrokerAddrs {
-		if brokerAddr == addr {
-			continue
+	oldPtr := pc.conns.Load()
+	if oldPtr != nil {
+		conns := *oldPtr
+		if idx < len(conns) && conns[idx] != nil {
+			_ = conns[idx].Close()
 		}
-
-		if err = pc.ConnectPartition(idx, brokerAddr, useTLS, certPath, keyPath); err == nil {
-			log.Printf("Successfully reconnected partition %d to broker %s", idx, brokerAddr)
-			return nil
-		}
-		log.Printf("Failed to reconnect to %s: %v", brokerAddr, err)
 	}
 
-	return fmt.Errorf("failed to reconnect to any broker: %w", err)
+	return pc.ConnectPartition(idx, addr, useTLS, certPath, keyPath)
 }

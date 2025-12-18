@@ -175,6 +175,11 @@ func (p *Publisher) partitionSender(part int) {
 	buf := p.buffers[part]
 	linger := time.Duration(p.config.LingerMS) * time.Millisecond
 
+	timer := time.NewTimer(linger)
+	if !timer.Stop() {
+		<-timer.C
+	}
+
 	for {
 		buf.mu.Lock()
 
@@ -182,29 +187,37 @@ func (p *Publisher) partitionSender(part int) {
 			buf.cond.Wait()
 		}
 
-		if buf.closed && len(buf.msgs) == 0 {
+		if (buf.closed || atomic.LoadInt32(&p.closed) == 1) && len(buf.msgs) == 0 {
 			buf.mu.Unlock()
 			return
 		}
 
+		var batch []types.Message
+
+		// 1. 배치 사이즈를 채웠는지 확인
 		if len(buf.msgs) >= p.config.BatchSize {
-			batch := p.extract(buf)
+			batch = p.extract(buf)
 			buf.mu.Unlock()
-			go p.sendBatch(part, batch)
-			continue
+		} else {
+			// 2. 안 채워졌다면 Linger 대기
+			buf.mu.Unlock()
+			timer.Reset(linger)
+
+			select {
+			case <-timer.C:
+				buf.mu.Lock()
+				if len(buf.msgs) > 0 {
+					batch = p.extractAny(buf)
+				}
+				buf.mu.Unlock()
+			case <-p.done:
+				return
+			}
 		}
 
-		buf.mu.Unlock()
-		time.Sleep(linger)
-		buf.mu.Lock()
-
-		if len(buf.msgs) > 0 {
-			util.Debug("Linger timeout. Sending partial batch from partition %d (size=%d)", part, len(buf.msgs))
-			batch := p.extractAny(buf)
-			buf.mu.Unlock()
-			go p.sendBatch(part, batch)
-		} else {
-			buf.mu.Unlock()
+		// 3. 추출된 배치가 있다면 전송 (고루틴 생성 없이 직접 호출 = Worker 방식)
+		if len(batch) > 0 {
+			p.sendBatch(part, batch)
 		}
 	}
 }
@@ -459,7 +472,6 @@ func (p *Publisher) markBatchAckedByID(batchID string) {
 
 	part := state.Partition
 	p.producer.CommitSeqRange(part, state.EndSeqNum)
-	p.producer.SaveState()
 
 	elapsed := time.Since(sentTime)
 	p.bmMu.Lock()
