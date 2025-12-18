@@ -53,8 +53,9 @@ type Publisher struct {
 	rr       uint32
 	inFlight []int32
 
-	sentMu   sync.Mutex
-	sentSeqs map[uint64]struct{}
+	partitionSentMus  []sync.Mutex
+	partitionSentSeqs []map[uint64]struct{}
+	ackedCount        atomic.Uint64
 
 	partitionBatchStates []map[string]*BatchState
 	partitionBatchMus    []sync.Mutex
@@ -75,12 +76,17 @@ func NewPublisher(cfg *config.PublisherConfig) (*Publisher, error) {
 		producer:     NewProducerClient(cfg.Partitions, cfg),
 		partitions:   cfg.Partitions,
 		buffers:      make([]*partitionBuffer, cfg.Partitions),
-		sentSeqs:     make(map[uint64]struct{}),
 		done:         make(chan struct{}),
 		bmTotalTime:  make(map[int]time.Duration),
 		bmTotalCount: make(map[int]int),
 		inFlight:     make([]int32, cfg.Partitions),
 		gcTicker:     time.NewTicker(1 * time.Minute),
+	}
+
+	p.partitionSentSeqs = make([]map[uint64]struct{}, cfg.Partitions)
+	p.partitionSentMus = make([]sync.Mutex, cfg.Partitions)
+	for i := 0; i < cfg.Partitions; i++ {
+		p.partitionSentSeqs[i] = make(map[uint64]struct{})
 	}
 
 	p.partitionBatchStates = make([]map[string]*BatchState, cfg.Partitions)
@@ -318,12 +324,11 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 
 	switch ackResp.Status {
 	case "OK":
-		p.sentMu.Lock()
+		p.partitionSentMus[part].Lock()
 		for _, m := range batch {
-			uniqueKey := uint64(part)<<32 | m.SeqNum
-			p.sentSeqs[uniqueKey] = struct{}{}
+			p.partitionSentSeqs[part][m.SeqNum] = struct{}{}
 		}
-		p.sentMu.Unlock()
+		p.partitionSentMus[part].Unlock()
 		p.markBatchAckedByID(part, batchID)
 	case "PARTIAL":
 		util.Warn("Partial success for batch %s", batchID)
@@ -349,15 +354,15 @@ func (p *Publisher) handleSendFailure(part int, batch []types.Message) {
 	buf.mu.Lock()
 	defer buf.mu.Unlock()
 
-	p.sentMu.Lock()
+	p.partitionSentMus[part].Lock()
 	var retryBatch []types.Message
 	for _, msg := range batch {
-		if _, exists := p.sentSeqs[msg.SeqNum]; !exists {
+		if _, exists := p.partitionSentSeqs[part][msg.SeqNum]; !exists {
 			msg.Retry = true
 			retryBatch = append(retryBatch, msg)
 		}
 	}
-	p.sentMu.Unlock()
+	p.partitionSentMus[part].Unlock()
 
 	allMsgs := append(buf.msgs, retryBatch...)
 	sort.Slice(allMsgs, func(i, j int) bool {
@@ -472,6 +477,8 @@ func (p *Publisher) markBatchAckedByID(part int, batchID string) {
 	delete(p.partitionBatchStates[part], batchID)
 	p.partitionBatchMus[part].Unlock()
 
+	p.ackedCount.Add(uint64(state.EndSeqNum - state.StartSeqNum + 1))
+
 	sentTime := state.SentTime
 	p.producer.CommitSeqRange(part, state.EndSeqNum)
 
@@ -523,14 +530,18 @@ func (p *Publisher) parseAckResponse(resp []byte) (*types.AckResponse, error) {
 }
 
 func (p *Publisher) VerifySentSequences(expectedCount int) error {
-	p.sentMu.Lock()
-	defer p.sentMu.Unlock()
-
-	if len(p.sentSeqs) != expectedCount {
-		return fmt.Errorf("expected %d messages sent, got %d", expectedCount, len(p.sentSeqs))
+	totalSent := 0
+	for part := 0; part < p.partitions; part++ {
+		p.partitionSentMus[part].Lock()
+		totalSent += len(p.partitionSentSeqs[part])
+		p.partitionSentMus[part].Unlock()
 	}
 
-	util.Info("All %d sequences sent successfully", expectedCount)
+	if totalSent != expectedCount {
+		return fmt.Errorf("expected %d messages sent, got %d", expectedCount, totalSent)
+	}
+
+	util.Info("All %d sequences sent successfully across all partitions", expectedCount)
 	return nil
 }
 
@@ -676,9 +687,7 @@ func (p *Publisher) GetPartitionStats() []bench.PartitionStat {
 
 // GetSentMessageCount returns the number of successfully sent messages
 func (p *Publisher) GetSentMessageCount() int {
-	p.sentMu.Lock()
-	defer p.sentMu.Unlock()
-	return len(p.sentSeqs)
+	return int(p.ackedCount.Load())
 }
 
 // GetPartitionCount returns the number of partitions
