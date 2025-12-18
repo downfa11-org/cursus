@@ -26,14 +26,19 @@ type Consumer struct {
 	generation int64
 	memberID   string
 
-	commitCh       chan commitEntry
+	commitConn net.Conn
+	commitCh   chan commitEntry
+	commitMu   sync.Mutex
+
 	currentOffsets map[int]uint64
 	offsetsMu      sync.Mutex
 
 	wg            sync.WaitGroup
 	sessionCtx    context.Context
 	sessionCancel context.CancelFunc
-	rebalancing   int32
+
+	rebalancing  int32
+	rebalanceSig chan struct{}
 
 	offsets map[int]uint64
 	doneCh  chan struct{}
@@ -62,6 +67,7 @@ func NewConsumer(cfg *config.ConsumerConfig) (*Consumer, error) {
 		partitionConsumers: make(map[int]*PartitionConsumer),
 		offsets:            make(map[int]uint64),
 		currentOffsets:     make(map[int]uint64),
+		rebalanceSig:       make(chan struct{}, 1),
 		doneCh:             make(chan struct{}),
 	}
 
@@ -108,13 +114,15 @@ func (c *Consumer) Start() error {
 		c.partitionConsumers[pid] = pc
 	}
 
+	c.startCommitWorker()
+	go c.rebalanceMonitorLoop()
+
 	if c.config.Mode != config.ModePolling {
 		c.startStreaming()
 	} else {
 		c.startConsuming()
+		<-c.doneCh
 	}
-	// c.startCommitLoop()
-	c.startCommitWorker()
 	return nil
 }
 
@@ -143,6 +151,17 @@ func (c *Consumer) startCommitWorker() {
 	}()
 }
 
+func (c *Consumer) rebalanceMonitorLoop() {
+	for {
+		select {
+		case <-c.doneCh:
+			return
+		case <-c.rebalanceSig:
+			c.handleRebalanceSignal()
+		}
+	}
+}
+
 func (c *Consumer) flushOffsets() {
 	c.offsetsMu.Lock()
 	if len(c.currentOffsets) == 0 {
@@ -150,11 +169,11 @@ func (c *Consumer) flushOffsets() {
 		return
 	}
 
-	toCommit := make(map[int]uint64)
+	toCommit := make(map[int]uint64, len(c.currentOffsets))
 	for k, v := range c.currentOffsets {
 		toCommit[k] = v
 	}
-	c.currentOffsets = make(map[int]uint64)
+	c.currentOffsets = make(map[int]uint64, len(toCommit))
 	c.offsetsMu.Unlock()
 
 	c.sendBatchCommit(toCommit)
@@ -222,7 +241,10 @@ func (c *Consumer) heartbeatLoop() {
 			respStr := string(resp)
 			if strings.Contains(respStr, "REBALANCE_REQUIRED") || strings.Contains(respStr, "GEN_MISMATCH") {
 				util.Warn("heartbeat indicated rebalance/mismatch: %s", respStr)
-				c.handleRebalanceSignal()
+				select {
+				case c.rebalanceSig <- struct{}{}:
+				default:
+				}
 				return
 			}
 		}
@@ -495,17 +517,22 @@ func (c *Consumer) startStreaming() {
 }
 
 func (c *Consumer) sendBatchCommit(offsets map[int]uint64) {
-	conn, err := c.getLeaderConn()
-	if err != nil {
-		util.Error("Batch commit failed to get connection: %v", err)
-		return
+	c.commitMu.Lock()
+	if c.commitConn == nil {
+		conn, err := c.getLeaderConn()
+		if err != nil {
+			c.commitMu.Unlock()
+			util.Error("Batch commit failed to get connection: %v", err)
+			return
+		}
+		c.commitConn = conn
 	}
-	defer conn.Close()
+	conn := c.commitConn
+	c.commitMu.Unlock()
 
 	// BATCH_COMMIT topic=test group=g1 P0:10,P1:20,P2:30...
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("BATCH_COMMIT topic=%s group=%s generation=%d member=%s ",
-		c.config.Topic, c.config.GroupID, c.generation, c.memberID))
+	sb.WriteString(fmt.Sprintf("BATCH_COMMIT topic=%s group=%s generation=%d member=%s ", c.config.Topic, c.config.GroupID, c.generation, c.memberID))
 
 	parts := []string{}
 	for pid, off := range offsets {
@@ -515,10 +542,20 @@ func (c *Consumer) sendBatchCommit(offsets map[int]uint64) {
 
 	if err := util.WriteWithLength(conn, util.EncodeMessage("", sb.String())); err != nil {
 		util.Error("Batch commit send failed: %v", err)
+		c.commitMu.Lock()
+		conn.Close()
+		c.commitConn = nil
+		c.commitMu.Unlock()
+		return
 	}
+
 	resp, err := util.ReadWithLength(conn)
 	if err != nil {
 		util.Error("Batch commit response read failed: %v", err)
+		c.commitMu.Lock()
+		conn.Close()
+		c.commitConn = nil
+		c.commitMu.Unlock()
 		return
 	}
 
@@ -530,7 +567,11 @@ func (c *Consumer) sendBatchCommit(offsets map[int]uint64) {
 
 		if strings.Contains(respStr, "GEN_MISMATCH") || strings.Contains(respStr, "REBALANCE_REQUIRED") {
 			util.Warn("Generation mismatch in batch commit, triggering rebalance...")
-			go c.handleRebalanceSignal()
+			select {
+			case c.rebalanceSig <- struct{}{}:
+				util.Debug("Rebalance signal sent")
+			default:
+			}
 		}
 	}
 }

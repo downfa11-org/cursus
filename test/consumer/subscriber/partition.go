@@ -3,7 +3,6 @@ package subscriber
 import (
 	"fmt"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,38 +18,48 @@ type PartitionConsumer struct {
 	conn        net.Conn
 	mu          sync.Mutex
 	closed      bool
+
+	dataCh chan []byte
+	once   sync.Once
 }
 
-func (pc *PartitionConsumer) ensureConnection() error {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
+func (pc *PartitionConsumer) initWorker() {
+	pc.once.Do(func() {
+		pc.dataCh = make(chan []byte, 1000)
+		go pc.runWorker()
+	})
+}
 
-	if pc.conn != nil {
-		return nil
-	}
+func (pc *PartitionConsumer) runWorker() {
+	for {
+		select {
+		case <-pc.consumer.doneCh:
+			return
+		case batchData := <-pc.dataCh:
+			batch, err := types.DecodeBatchMessages(batchData)
+			if err != nil {
+				util.Error("Partition [%d] decode error: %v", pc.partitionID, err)
+				continue
+			}
 
-	if pc.closed {
-		return fmt.Errorf("partition consumer closed")
-	}
+			if len(batch.Messages) > 0 {
+				if pc.consumer.config.EnableBenchmark {
+				} else {
+					pc.printConsumedMessage(batch)
+				}
 
-	var err error
-	for attempt := 0; attempt < pc.consumer.config.MaxConnectRetries; attempt++ {
-		conn, broker, connectErr := pc.consumer.client.ConnectWithFailover()
-		if connectErr == nil {
-			pc.conn = conn
-			util.Info("Partition [%d] connected to %s", pc.partitionID, broker)
-			return nil
+				if err := pc.consumer.processBatchSync(batch.Messages, pc.partitionID); err != nil {
+					util.Error("Partition [%d] process error: %v", pc.partitionID, err)
+				}
+				pc.updateOffsetAndCommit(batch.Messages)
+			}
 		}
-		err = connectErr
-		util.Info("Partition [%d] connect attempt %d failed: %v", pc.partitionID, attempt+1, err)
-
-		duration := time.Duration(pc.consumer.config.ConnectRetryBackoffMS) * time.Millisecond
-		time.Sleep(duration)
 	}
-	return fmt.Errorf("failed to connect after retries: %w", err)
 }
 
 func (pc *PartitionConsumer) pollAndProcess() {
+	pc.initWorker()
+
 	if err := pc.ensureConnection(); err != nil {
 		util.Warn("Partition [%d] cannot poll: %v", pc.partitionID, err)
 		return
@@ -58,15 +67,16 @@ func (pc *PartitionConsumer) pollAndProcess() {
 
 	pc.mu.Lock()
 	conn := pc.conn
-	currentOffset := pc.offset
+	currentOffset := atomic.LoadUint64(&pc.offset)
 	pc.mu.Unlock()
 
 	util.Debug("Partition [%d] Polling at offset %d", pc.partitionID, currentOffset)
 
-	pc.consumer.mu.RLock()
-	memberID := pc.consumer.memberID
-	generation := pc.consumer.generation
-	pc.consumer.mu.RUnlock()
+	c := pc.consumer
+	c.mu.RLock()
+	memberID := c.memberID
+	generation := c.generation
+	c.mu.RUnlock()
 
 	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d group=%s generation=%d member=%s",
 		pc.consumer.config.Topic, pc.partitionID, currentOffset, pc.consumer.config.GroupID, generation, memberID)
@@ -83,78 +93,56 @@ func (pc *PartitionConsumer) pollAndProcess() {
 		pc.closeConnection()
 		return
 	}
-
-	respStr := string(batchData)
-	if strings.HasPrefix(respStr, "ERROR:") {
-		util.Warn("Partition [%d] received error from broker: %s", pc.partitionID, respStr)
-
-		if strings.Contains(respStr, "NOT_LEADER") {
-			pc.consumer.handleLeaderRedirection(respStr)
-		}
-
-		pc.closeConnection()
-		time.Sleep(time.Duration(pc.partitionID*10) * time.Millisecond) // jitter
+	if pc.handleBrokerError(batchData) {
 		return
 	}
 
-	batch, err := types.DecodeBatchMessages(batchData)
-	if err != nil {
-		util.Error("Partition [%d] decode batch error: %v", pc.partitionID, err)
-		return
-	}
-
-	if pc.consumer.config.EnableBenchmark {
-		pc.printConsumedMessage(batch)
-	}
-
-	if len(batch.Messages) > 0 {
-		// first := batch.Messages[0], last := batch.Messages[len(batch.Messages)-1]
-		util.Debug("Partition [%d] Received %d messages, offsets %d to %d",
-			pc.partitionID, len(batch.Messages),
-			batch.Messages[0].Offset, batch.Messages[len(batch.Messages)-1].Offset)
-
-		if err := pc.consumer.processBatchSync(batch.Messages, pc.partitionID); err != nil {
-			util.Error("Partition [%d] batch processing error: %v", pc.partitionID, err)
-		}
-		pc.updateOffsetAndCommit(batch.Messages)
-	} else {
-		util.Debug("Partition [%d] No messages received at offset %d", pc.partitionID, currentOffset)
+	if len(batchData) > 0 {
+		pc.dataCh <- batchData
 	}
 }
 
 func (pc *PartitionConsumer) startStreamLoop() {
+	pc.initWorker()
 	pid := pc.partitionID
 	c := pc.consumer
-	retryDelay := time.Duration(c.config.StreamingRetryIntervalMS) * time.Millisecond
+
+	pc.consumer.wg.Add(1)
+	go pc.workerLoop()
+
+	minRetry := time.Duration(c.config.StreamingRetryIntervalMS) * time.Millisecond
+	bo := newBackoff(minRetry, 30*time.Second)
 
 	for {
 		select {
 		case <-c.doneCh:
 			pc.closeConnection()
+			close(pc.dataCh)
 			return
 		default:
 		}
 
 		if atomic.LoadInt32(&c.rebalancing) == 1 {
 			pc.closeConnection()
-			time.Sleep(1 * time.Second)
+			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
 		if err := pc.ensureConnection(); err != nil {
 			util.Warn("Partition [%d] streaming connection failed, retrying: %v", pid, err)
-			time.Sleep(retryDelay)
+			time.Sleep(bo.duration())
 			continue
 		}
 
+		bo.reset()
+
 		pc.mu.Lock()
 		conn := pc.conn
-		currentOffset := pc.offset
+		currentOffset := atomic.LoadUint64(&pc.offset)
 		pc.mu.Unlock()
 
 		c.mu.RLock()
-		memberID := c.memberID
-		generation := c.generation
+		memberID, generation := c.memberID, c.generation
 		c.mu.RUnlock()
 
 		streamCmd := fmt.Sprintf("STREAM topic=%s partition=%d group=%s offset=%d generation=%d member=%s",
@@ -164,17 +152,14 @@ func (pc *PartitionConsumer) startStreamLoop() {
 		if err := util.WriteWithLength(conn, util.EncodeMessage("", streamCmd)); err != nil {
 			util.Error("Partition [%d] STREAM command send failed: %v", pid, err)
 			pc.closeConnection()
-			time.Sleep(retryDelay)
+			time.Sleep(bo.duration())
 			continue
 		}
 
 		idleTimeout := time.Duration(c.config.StreamingReadDeadlineMS) * time.Millisecond
-
 		for {
-			select {
-			case <-c.doneCh:
-				return
-			default:
+			if atomic.LoadInt32(&c.rebalancing) == 1 {
+				break
 			}
 
 			conn.SetReadDeadline(time.Now().Add(idleTimeout))
@@ -194,148 +179,36 @@ func (pc *PartitionConsumer) startStreamLoop() {
 				continue // keepalive
 			}
 
-			respStr := string(batchData)
-			if strings.HasPrefix(respStr, "ERROR:") {
-				util.Warn("Partition [%d] received error from broker: %s", pc.partitionID, respStr)
-
-				if strings.Contains(respStr, "NOT_LEADER") {
-					pc.consumer.handleLeaderRedirection(respStr)
-				}
-
-				pc.closeConnection()
-				time.Sleep(time.Duration(pc.partitionID*10) * time.Millisecond) // jitter
-				return
-			}
-
-			batch, err := types.DecodeBatchMessages(batchData)
-			if err != nil {
-				util.Error("Partition [%d] Failed to decode batch message: %v", pid, err)
-				pc.closeConnection()
+			if pc.handleBrokerError(batchData) {
 				break
 			}
 
-			if len(batch.Messages) > 0 {
-				if err := c.processBatchSync(batch.Messages, pid); err != nil {
-					util.Error("Partition [%d] Failed to process stream batch: %v", pid, err)
-					pc.closeConnection()
-					break
-				}
-
-				pc.updateOffsetAndCommit(batch.Messages)
-				lastOffset := batch.Messages[len(batch.Messages)-1].Offset
-				util.Debug("Partition [%d] Processed batch of %d messages, last offset: %d", pid, len(batch.Messages), lastOffset)
+			select {
+			case pc.dataCh <- batchData:
+			case <-c.doneCh:
+				return
 			}
+			bo.reset()
 		}
-
-		time.Sleep(retryDelay)
+		time.Sleep(bo.duration())
 	}
 }
 
-func (pc *PartitionConsumer) printConsumedMessage(batch *types.Batch) {
-	if len(batch.Messages) == 0 {
-		return
-	}
-
-	util.Info("📥 Partition [%d] Batch Received: Topic='%s', TotalMessages=%d", pc.partitionID, batch.Topic, len(batch.Messages))
-
-	if len(batch.Messages) > 0 {
-		util.Info("   ├─ Message Details (First 5 messages):")
-
-		limit := 5
-		if len(batch.Messages) < limit {
-			limit = len(batch.Messages)
+func (pc *PartitionConsumer) workerLoop() {
+	defer pc.consumer.wg.Done()
+	for data := range pc.dataCh {
+		batch, err := types.DecodeBatchMessages(data)
+		if err != nil {
+			util.Error("Decode error on P[%d]: %v", pc.partitionID, err)
+			continue
 		}
 
-		for i := 0; i < limit; i++ {
-			msg := batch.Messages[i]
+		pc.consumer.processBatchSync(batch.Messages, pc.partitionID)
 
-			payload := msg.Payload
-			if len(payload) > 50 {
-				payload = payload[:50] + "..."
-			}
-
-			if msg.Key == "" {
-				util.Info("   │  └─ Msg %d: Payload='%s'", i, payload)
-			} else {
-				util.Info("   │  └─ Msg %d: Key=%s, Payload='%s'", i, msg.Key, payload)
-			}
+		if len(batch.Messages) > 0 {
+			lastOffset := batch.Messages[len(batch.Messages)-1].Offset
+			atomic.StoreUint64(&pc.offset, lastOffset+1)
+			pc.consumer.commitCh <- commitEntry{pc.partitionID, lastOffset + 1}
 		}
-
-		if len(batch.Messages) > 5 {
-			util.Info("   └─ ... and %d more messages.", len(batch.Messages)-5)
-		} else {
-			util.Info("   └─ All messages listed above.")
-		}
-	}
-}
-
-func (pc *PartitionConsumer) updateOffsetAndCommit(msgs []types.Message) {
-	if len(msgs) == 0 {
-		return
-	}
-
-	lastOffset := msgs[len(msgs)-1].Offset
-
-	pc.mu.Lock()
-	pc.offset = lastOffset + 1
-	pc.mu.Unlock()
-
-	select {
-	case pc.consumer.commitCh <- commitEntry{
-		partition: pc.partitionID,
-		offset:    lastOffset,
-	}:
-	default:
-		util.Warn("Partition [%d] commit channel full. falling back to directCommit for offset %d", pc.partitionID, lastOffset)
-		if err := pc.commitOffsetWithRetry(lastOffset); err != nil {
-			util.Error("Partition [%d] critical: directCommit failed after retries: %v", pc.partitionID, err)
-		}
-	}
-}
-
-func (pc *PartitionConsumer) commitOffsetWithRetry(offset uint64) error {
-	const maxRetries = 3
-	var lastErr error
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		select {
-		case pc.consumer.commitCh <- commitEntry{
-			partition: pc.partitionID,
-			offset:    offset,
-		}:
-			return nil
-		default:
-			if err := pc.consumer.directCommit(pc.partitionID, offset); err != nil {
-				lastErr = err
-				util.Warn("Partition [%d] Direct commit attempt %d failed: %v", pc.partitionID, attempt+1, err)
-				time.Sleep(time.Duration(100*(attempt+1)) * time.Millisecond)
-				continue
-			}
-			return nil
-		}
-	}
-
-	return fmt.Errorf("commit failed after %d attempts: %w", maxRetries, lastErr)
-}
-
-func (pc *PartitionConsumer) close() {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-	if pc.closed {
-		return
-	}
-	pc.closed = true
-	if pc.conn != nil {
-		pc.conn.Close()
-		pc.conn = nil
-	}
-}
-
-func (pc *PartitionConsumer) closeConnection() {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-	if pc.conn != nil {
-		pc.conn.Close()
-		pc.conn = nil
 	}
 }

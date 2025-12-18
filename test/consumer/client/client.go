@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/downfa11-org/go-broker/consumer/config"
@@ -11,29 +12,34 @@ import (
 	"github.com/google/uuid"
 )
 
+type leaderInfo struct {
+	addr    string
+	updated time.Time
+}
+
 type ConsumerClient struct {
 	ID     string
 	config *config.ConsumerConfig
 	mu     sync.RWMutex
 
-	leaderAddr       string
-	lastLeaderUpdate time.Time
+	leader atomic.Value
 }
 
 func NewConsumerClient(cfg *config.ConsumerConfig) *ConsumerClient {
-	return &ConsumerClient{
+	c := &ConsumerClient{
 		ID:     uuid.New().String(),
 		config: cfg,
 	}
+	c.leader.Store(&leaderInfo{addr: "", updated: time.Time{}})
+	return c
 }
 
 func (c *ConsumerClient) selectBroker() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if c.leaderAddr != "" && time.Since(c.lastLeaderUpdate) < 30*time.Second {
-		return c.leaderAddr
+	info := c.leader.Load().(*leaderInfo)
+	if info.addr != "" && time.Since(info.updated) < 30*time.Second {
+		return info.addr
 	}
+
 	if len(c.config.BrokerAddrs) > 0 {
 		return c.config.BrokerAddrs[0]
 	}
@@ -41,12 +47,13 @@ func (c *ConsumerClient) selectBroker() string {
 }
 
 func (c *ConsumerClient) UpdateLeader(addr string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.leaderAddr != addr {
-		c.leaderAddr = addr
-		c.lastLeaderUpdate = time.Now()
-		util.Info("📍 Leader updated to: %s", addr)
+	oldInfo := c.leader.Load().(*leaderInfo)
+	if oldInfo.addr != addr {
+		c.leader.Store(&leaderInfo{
+			addr:    addr,
+			updated: time.Now(),
+		})
+		util.Info("📍 Leader updated to: %s (Lock-free update)", addr)
 	}
 }
 
@@ -61,8 +68,12 @@ func (c *ConsumerClient) Connect(addr string) (net.Conn, error) {
 	}
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetNoDelay(true)
 		tcpConn.SetKeepAlive(true)
 		tcpConn.SetKeepAlivePeriod(30 * time.Second)
+
+		tcpConn.SetReadBuffer(2 * 1024 * 1024)  // 2MB
+		tcpConn.SetWriteBuffer(2 * 1024 * 1024) // 2MB
 	}
 
 	return conn, nil
@@ -91,6 +102,7 @@ func (c *ConsumerClient) ConnectWithFailover() (net.Conn, string, error) {
 
 		conn, err := c.Connect(addr)
 		if err == nil {
+			c.UpdateLeader(addr)
 			return conn, addr, nil
 		}
 		lastErr = err
