@@ -295,7 +295,7 @@ func isBatchMessage(data []byte) bool {
 
 func isCommand(s string) bool {
 	keywords := []string{"CREATE", "DELETE", "LIST", "PUBLISH", "CONSUME", "STREAM", "HELP",
-		"HEARTBEAT", "JOIN_GROUP", "LEAVE_GROUP", "COMMIT_OFFSET", "REGISTER_GROUP",
+		"HEARTBEAT", "JOIN_GROUP", "LEAVE_GROUP", "COMMIT_OFFSET", "BATCH_COMMIT", "REGISTER_GROUP",
 		"GROUP_STATUS", "FETCH_OFFSET", "LIST_GROUPS", "SYNC_GROUP"}
 	for _, k := range keywords {
 		if strings.HasPrefix(strings.ToUpper(s), k) {

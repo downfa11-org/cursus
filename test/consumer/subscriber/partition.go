@@ -93,7 +93,7 @@ func (pc *PartitionConsumer) pollAndProcess() {
 		}
 
 		pc.closeConnection()
-		time.Sleep(time.Duration(pc.partitionID*100) * time.Millisecond) // jitter
+		time.Sleep(time.Duration(pc.partitionID*10) * time.Millisecond) // jitter
 		return
 	}
 
@@ -203,7 +203,7 @@ func (pc *PartitionConsumer) startStreamLoop() {
 				}
 
 				pc.closeConnection()
-				time.Sleep(time.Duration(pc.partitionID*100) * time.Millisecond) // jitter
+				time.Sleep(time.Duration(pc.partitionID*10) * time.Millisecond) // jitter
 				return
 			}
 
@@ -280,13 +280,16 @@ func (pc *PartitionConsumer) updateOffsetAndCommit(msgs []types.Message) {
 	pc.offset = lastOffset + 1
 	pc.mu.Unlock()
 
-	if pc.consumer.isDistributedMode() {
+	select {
+	case pc.consumer.commitCh <- commitEntry{
+		partition: pc.partitionID,
+		offset:    lastOffset,
+	}:
+	default:
+		util.Warn("Partition [%d] commit channel full. falling back to directCommit for offset %d", pc.partitionID, lastOffset)
 		if err := pc.commitOffsetWithRetry(lastOffset); err != nil {
-			util.Error("Partition [%d] Failed to commit offset %d: %v", pc.partitionID, lastOffset, err)
-			return
+			util.Error("Partition [%d] critical: directCommit failed after retries: %v", pc.partitionID, err)
 		}
-	} else {
-		pc.commitOffsetAt(lastOffset)
 	}
 }
 
@@ -313,75 +316,6 @@ func (pc *PartitionConsumer) commitOffsetWithRetry(offset uint64) error {
 	}
 
 	return fmt.Errorf("commit failed after %d attempts: %w", maxRetries, lastErr)
-}
-
-func (pc *PartitionConsumer) commitOffsetAt(offset uint64) {
-	select {
-	case pc.consumer.commitCh <- commitEntry{
-		partition: pc.partitionID,
-		offset:    offset,
-	}:
-	default:
-		go func() {
-			if atomic.LoadInt32(&pc.consumer.rebalancing) == 1 {
-				return
-			}
-			if err := pc.consumer.directCommit(pc.partitionID, offset); err != nil {
-				util.Error("Partition [%d] direct commit failed: %v", pc.partitionID, err)
-				if strings.Contains(err.Error(), "GEN_MISMATCH") {
-					util.Warn("Generation mismatch detected, waiting for commitWorker to handle")
-					return
-				}
-				util.Error("Direct commit failed, retrying async commit")
-				select {
-				case pc.consumer.commitCh <- commitEntry{
-					partition: pc.partitionID,
-					offset:    offset,
-				}:
-				default:
-					util.Error("Async commit also failed for partition [%d]", pc.partitionID)
-				}
-			}
-		}()
-	}
-}
-
-func (pc *PartitionConsumer) commitOffset() {
-	pc.mu.Lock()
-	if pc.offset == 0 {
-		pc.mu.Unlock()
-		return // nothing to commit yet
-	}
-	currentOffset := pc.offset - 1
-	pc.mu.Unlock()
-
-	conn, _, err := pc.consumer.client.ConnectWithFailover()
-	if err != nil {
-		util.Error("Partition [%d] commit connect failed: %v", pc.partitionID, err)
-		return
-	}
-	defer conn.Close()
-
-	commitCmd := fmt.Sprintf("COMMIT_OFFSET topic=%s partition=%d group=%s offset=%d",
-		pc.consumer.config.Topic, pc.partitionID, pc.consumer.config.GroupID, currentOffset)
-	if err := util.WriteWithLength(conn, util.EncodeMessage(pc.consumer.config.Topic, commitCmd)); err != nil {
-		util.Error("Partition [%d] commit send failed: %v", pc.partitionID, err)
-		return
-	}
-
-	resp, err := util.ReadWithLength(conn)
-	if err != nil {
-		util.Error("Partition [%d] commit response failed: %v", pc.partitionID, err)
-		return
-	}
-
-	if strings.Contains(string(resp), "ERROR:") {
-		util.Error("Partition [%d] commit error: %s", pc.partitionID, string(resp))
-	}
-
-	pc.consumer.mu.Lock()
-	pc.consumer.offsets[pc.partitionID] = currentOffset
-	pc.consumer.mu.Unlock()
 }
 
 func (pc *PartitionConsumer) close() {

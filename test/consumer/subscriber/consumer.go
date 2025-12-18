@@ -23,9 +23,13 @@ type Consumer struct {
 	client             *client.ConsumerClient
 	partitionConsumers map[int]*PartitionConsumer
 
-	generation    int64
-	memberID      string
-	commitCh      chan commitEntry
+	generation int64
+	memberID   string
+
+	commitCh       chan commitEntry
+	currentOffsets map[int]uint64
+	offsetsMu      sync.Mutex
+
 	wg            sync.WaitGroup
 	sessionCtx    context.Context
 	sessionCancel context.CancelFunc
@@ -57,6 +61,7 @@ func NewConsumer(cfg *config.ConsumerConfig) (*Consumer, error) {
 		client:             client,
 		partitionConsumers: make(map[int]*PartitionConsumer),
 		offsets:            make(map[int]uint64),
+		currentOffsets:     make(map[int]uint64),
 		doneCh:             make(chan struct{}),
 	}
 
@@ -108,12 +113,51 @@ func (c *Consumer) Start() error {
 	} else {
 		c.startConsuming()
 	}
-	c.startCommitLoop()
+	// c.startCommitLoop()
+	c.startCommitWorker()
 	return nil
 }
 
-func (c *Consumer) isDistributedMode() bool {
-	return len(c.config.BrokerAddrs) > 1
+func (c *Consumer) startCommitWorker() {
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		ticker := time.NewTicker(c.config.AutoCommitInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case entry := <-c.commitCh:
+				c.offsetsMu.Lock()
+				c.currentOffsets[entry.partition] = entry.offset
+				c.offsetsMu.Unlock()
+
+			case <-ticker.C:
+				c.flushOffsets()
+
+			case <-c.doneCh:
+				c.flushOffsets()
+				return
+			}
+		}
+	}()
+}
+
+func (c *Consumer) flushOffsets() {
+	c.offsetsMu.Lock()
+	if len(c.currentOffsets) == 0 {
+		c.offsetsMu.Unlock()
+		return
+	}
+
+	toCommit := make(map[int]uint64)
+	for k, v := range c.currentOffsets {
+		toCommit[k] = v
+	}
+	c.currentOffsets = make(map[int]uint64)
+	c.offsetsMu.Unlock()
+
+	c.sendBatchCommit(toCommit)
 }
 
 func (c *Consumer) handleLeaderRedirection(resp string) {
@@ -304,25 +348,6 @@ func (c *Consumer) TriggerBenchmarkStop() {
 	os.Exit(0)
 }
 
-func (c *Consumer) startCommitLoop() {
-	go func() {
-		ticker := time.NewTicker(c.config.AutoCommitInterval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				if c.config.EnableAutoCommit {
-					c.commitAllOffsets()
-				}
-			case <-c.doneCh:
-				c.commitAllOffsets()
-				return
-			}
-		}
-	}()
-}
-
 func (c *Consumer) joinGroup() (generation int64, memberID string, assignments []int, err error) {
 	if c.memberID != "" {
 		c.mu.RLock()
@@ -469,16 +494,44 @@ func (c *Consumer) startStreaming() {
 	<-c.doneCh
 }
 
-func (c *Consumer) commitAllOffsets() {
-	c.mu.RLock()
-	consumers := make([]*PartitionConsumer, 0, len(c.partitionConsumers))
-	for _, pc := range c.partitionConsumers {
-		consumers = append(consumers, pc)
+func (c *Consumer) sendBatchCommit(offsets map[int]uint64) {
+	conn, err := c.getLeaderConn()
+	if err != nil {
+		util.Error("Batch commit failed to get connection: %v", err)
+		return
 	}
-	c.mu.RUnlock()
+	defer conn.Close()
 
-	for _, pc := range consumers {
-		pc.commitOffset()
+	// BATCH_COMMIT topic=test group=g1 P0:10,P1:20,P2:30...
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("BATCH_COMMIT topic=%s group=%s generation=%d member=%s ",
+		c.config.Topic, c.config.GroupID, c.generation, c.memberID))
+
+	parts := []string{}
+	for pid, off := range offsets {
+		parts = append(parts, fmt.Sprintf("%d:%d", pid, off))
+	}
+	sb.WriteString(strings.Join(parts, ","))
+
+	if err := util.WriteWithLength(conn, util.EncodeMessage("", sb.String())); err != nil {
+		util.Error("Batch commit send failed: %v", err)
+	}
+	resp, err := util.ReadWithLength(conn)
+	if err != nil {
+		util.Error("Batch commit response read failed: %v", err)
+		return
+	}
+
+	respStr := string(resp)
+	if strings.HasPrefix(respStr, "OK") {
+		util.Debug("✅ Batch commit success: %s", respStr)
+	} else if strings.Contains(respStr, "ERROR") {
+		util.Error("❌ Batch commit error from broker: %s", respStr)
+
+		if strings.Contains(respStr, "GEN_MISMATCH") || strings.Contains(respStr, "REBALANCE_REQUIRED") {
+			util.Warn("Generation mismatch in batch commit, triggering rebalance...")
+			go c.handleRebalanceSignal()
+		}
 	}
 }
 
@@ -553,7 +606,7 @@ func (c *Consumer) Close() error {
 
 	if c.memberID != "" {
 		if conn, err := c.getLeaderConn(); err == nil {
-			leaveCmd := fmt.Sprintf("LEAVE_GROUP topic=%s group=%s consumer=%s",
+			leaveCmd := fmt.Sprintf("LEAVE_GROUP topic=%s group=%s member=%s",
 				c.config.Topic, c.config.GroupID, c.memberID)
 			_ = util.WriteWithLength(conn, util.EncodeMessage("", leaveCmd))
 			conn.Close()

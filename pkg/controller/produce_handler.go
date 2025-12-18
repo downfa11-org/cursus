@@ -84,7 +84,6 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 		} else {
 			leaderAddr := ch.Cluster.RaftManager.GetLeaderAddress()
 			util.Debug("Processing PUBLISH locally as leader: %s", leaderAddr)
-			util.Debug("Processing PUBLISH locally as leader: %s", leaderAddr)
 		}
 	}
 
@@ -248,7 +247,6 @@ func (ch *CommandHandler) HandleBatchMessage(data []byte, conn net.Conn) (string
 			return ch.errorResponse(fmt.Sprintf("failed to forward BATCH to leader after %d attempts: %v", maxRetries, lastErr)), nil
 		} else {
 			leaderAddr := ch.Cluster.RaftManager.GetLeaderAddress()
-			util.Debug("Processing PUBLISH locally as leader: %s", leaderAddr)
 			util.Debug("Processing BATCH locally as leader: %s", leaderAddr)
 		}
 
@@ -321,5 +319,8 @@ Respond:
 		util.Error("Failed to marshal AckResponse: %v", err)
 		return "ERROR: internal marshal error", nil
 	}
-	return string(ackBytes), nil
+
+	responseStr := string(ackBytes)
+	util.Debug("Broker Sending Batch Ack (Topic: %s): %s", batch.Topic, responseStr)
+	return responseStr, nil
 }

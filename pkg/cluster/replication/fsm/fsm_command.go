@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
 )
@@ -273,5 +274,32 @@ func (f *BrokerFSM) applyOffsetSyncCommand(jsonData string) interface{} {
 	}
 
 	util.Debug("FSM: Synced OFFSET group=%s topic=%s p=%d o=%d", cmd.Group, cmd.Topic, cmd.Partition, cmd.Offset)
+	return nil
+}
+
+func (f *BrokerFSM) applyBatchOffsetSyncCommand(jsonData string) interface{} {
+	var cmd struct {
+		Group   string                   `json:"group"`
+		Topic   string                   `json:"topic"`
+		Offsets []coordinator.OffsetItem `json:"offsets"`
+	}
+
+	if err := json.Unmarshal([]byte(jsonData), &cmd); err != nil {
+		util.Error("Failed to unmarshal batch offset sync: %v", err)
+		return err
+	}
+
+	if f.cd == nil {
+		return nil
+	}
+
+	err := f.cd.CommitOffsetsBulk(cmd.Group, cmd.Topic, cmd.Offsets)
+	if err != nil {
+		util.Error("FSM: Failed to sync batch offsets: %v", err)
+		return err
+	}
+
+	util.Debug("FSM: Synced BATCH_OFFSET group=%s topic=%s count=%d",
+		cmd.Group, cmd.Topic, len(cmd.Offsets))
 	return nil
 }

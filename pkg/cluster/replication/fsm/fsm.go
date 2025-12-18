@@ -91,6 +91,8 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 		return f.applyGroupSyncCommand(data[11:])
 	case strings.HasPrefix(data, "OFFSET_SYNC:"):
 		return f.applyOffsetSyncCommand(data[12:])
+	case strings.HasPrefix(data, "BATCH_OFFSET_SYNC:"):
+		return f.applyBatchOffsetSyncCommand(data[18:])
 	default:
 		return f.handleUnknownCommand(data)
 	}

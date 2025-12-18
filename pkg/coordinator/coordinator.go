@@ -71,6 +71,11 @@ type OffsetCommitMessage struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+type OffsetItem struct {
+	Partition int    `json:"partition"`
+	Offset    uint64 `json:"offset"`
+}
+
 // NewCoordinator creates a new Coordinator instance.
 func NewCoordinator(cfg *config.Config, publisher OffsetPublisher) *Coordinator {
 	if publisher == nil {
@@ -331,6 +336,42 @@ func (c *Coordinator) CommitOffset(group, topic string, partition int, offset ui
 	}
 
 	c.storeOffsetInMemory(group, topic, partition, offset)
+	return nil
+}
+
+func (c *Coordinator) CommitOffsetsBulk(group, topic string, offsets []OffsetItem) error {
+	util.Debug("Committing bulk offsets: group='%s', topic='%s', count=%d", group, topic, len(offsets))
+
+	type BulkOffsetMsg struct {
+		Group     string       `json:"group"`
+		Topic     string       `json:"topic"`
+		Offsets   []OffsetItem `json:"offsets"`
+		Timestamp time.Time    `json:"timestamp"`
+	}
+
+	bulkMsg := BulkOffsetMsg{
+		Group:     group,
+		Topic:     topic,
+		Offsets:   offsets,
+		Timestamp: time.Now(),
+	}
+
+	payload, err := json.Marshal(bulkMsg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal bulk offset commit: %w", err)
+	}
+
+	if err := c.offsetPublisher.Publish(c.offsetTopic, &types.Message{
+		Payload: string(payload),
+		Key:     fmt.Sprintf("%s-%s-bulk", group, topic),
+	}); err != nil {
+		return err
+	}
+
+	for _, item := range offsets {
+		c.storeOffsetInMemory(group, topic, item.Partition, item.Offset)
+	}
+
 	return nil
 }
 

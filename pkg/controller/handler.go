@@ -123,6 +123,9 @@ func (ch *CommandHandler) handleCommandByType(cmd, upper string, ctx *ClientCont
 	case strings.HasPrefix(upper, "COMMIT_OFFSET "):
 		return ch.handleCommitOffset(cmd)
 
+	case strings.HasPrefix(upper, "BATCH_COMMIT "):
+		return ch.handleBatchCommit(cmd)
+
 	default:
 		return "ERROR: unknown command: " + cmd
 	}
