@@ -34,7 +34,12 @@ func (sd *ServiceDiscovery) Register() error {
 		LastSeen: time.Now(),
 	}
 
-	data, _ := json.Marshal(broker)
+	data, err := json.Marshal(broker)
+	if err != nil {
+		util.Error("Failed to marshal broker info: %v", err)
+		return fmt.Errorf("marshal broker info: %w", err)
+	}
+
 	if err := sd.rm.ApplyCommand("REGISTER", data); err != nil {
 		util.Error("Failed to register broker %s: %v", sd.brokerID, err)
 		return err
@@ -70,9 +75,23 @@ func (sd *ServiceDiscovery) AddNode(nodeID string, addr string) (string, error) 
 		return leaderAddr, err
 	}
 
-	broker := &fsm.BrokerInfo{ID: nodeID, Addr: addr, Status: "active", LastSeen: time.Now()}
-	data, _ := json.Marshal(broker)
-	_ = sd.rm.ApplyCommand("REGISTER", data)
+	broker := &fsm.BrokerInfo{
+		ID:       nodeID,
+		Addr:     addr,
+		Status:   "active",
+		LastSeen: time.Now(),
+	}
+
+	data, err := json.Marshal(broker)
+	if err != nil {
+		util.Error("CRITICAL: Marshal failed after AddVoter. Node added to Raft but not to FSM: id=%s err=%v", nodeID, err)
+		return leaderAddr, fmt.Errorf("marshal failed after AddVoter: %w", err)
+	}
+
+	if err := sd.rm.ApplyCommand("REGISTER", data); err != nil {
+		util.Error("CRITICAL: REGISTER command failed after AddVoter. Raft cluster and FSM are now inconsistent: id=%s err=%v", nodeID, err)
+		return leaderAddr, fmt.Errorf("REGISTER command failed: %w", err)
+	}
 
 	return leaderAddr, nil
 }
@@ -88,6 +107,28 @@ func (sd *ServiceDiscovery) RemoveNode(nodeID string) (string, error) {
 		return leaderAddr, err
 	}
 
-	_ = sd.rm.ApplyCommand("DEREGISTER", []byte(nodeID))
+	if err := sd.rm.ApplyCommand("DEREGISTER", []byte(nodeID)); err != nil {
+		util.Error("CRITICAL: DEREGISTER failed after RemoveServer. FSM contains stale node info: id=%s err=%v", nodeID, err)
+		return leaderAddr, fmt.Errorf("DEREGISTER failed: %w", err)
+	}
+
 	return leaderAddr, nil
 }
+
+/*
+todo. 왜 Raft configuration 변경과 FSM 상태 변경이
+서로 다른 Apply 경로인가?
+
+AddVoter → Raft internal log
+
+REGISTER → FSM command
+
+이 둘은 같은 합의 단위가 아니다
+→ 결국 “언젠가는 어긋난다”
+
+장기적으로는
+
+AddVoter + REGISTER 를 단일 Raft FSM command로 묶거나
+
+실패 시 보정하는 reconciliation 루프가 필요하다
+*/

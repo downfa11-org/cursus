@@ -74,28 +74,35 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 	data := string(log.Data)
 	util.Debug("Applying log entry at index %d", log.Index)
 
+	var res interface{}
 	switch {
 	case strings.HasPrefix(data, "REGISTER:"):
-		return f.applyRegisterCommand(data[9:])
+		res = f.applyRegisterCommand(data[9:])
 	case strings.HasPrefix(data, "DEREGISTER:"):
-		return f.applyDeregisterCommand(data[11:])
+		res = f.applyDeregisterCommand(data[11:])
 	case strings.HasPrefix(data, "MESSAGE:"):
-		return f.applyMessageCommand(data[8:])
+		res = f.applyMessageCommand(data[8:])
 	case strings.HasPrefix(data, "BATCH:"):
-		return f.applyMessageCommand(data[6:])
+		res = f.applyMessageCommand(data[6:])
 	case strings.HasPrefix(data, "TOPIC:"):
-		return f.applyTopicCommand(data[6:])
+		res = f.applyTopicCommand(data[6:])
 	case strings.HasPrefix(data, "PARTITION:"):
-		return f.applyPartitionCommand(data)
+		res = f.applyPartitionCommand(data)
 	case strings.HasPrefix(data, "GROUP_SYNC:"):
-		return f.applyGroupSyncCommand(data[11:])
+		res = f.applyGroupSyncCommand(data[11:])
 	case strings.HasPrefix(data, "OFFSET_SYNC:"):
-		return f.applyOffsetSyncCommand(data[12:])
+		res = f.applyOffsetSyncCommand(data[12:])
 	case strings.HasPrefix(data, "BATCH_OFFSET_SYNC:"):
-		return f.applyBatchOffsetSyncCommand(data[18:])
+		res = f.applyBatchOffsetSyncCommand(data[18:])
 	default:
-		return f.handleUnknownCommand(data)
+		res = f.handleUnknownCommand(data)
 	}
+
+	if err, ok := res.(error); !ok || err == nil {
+		f.applied = log.Index
+	}
+
+	return res
 }
 
 func (f *BrokerFSM) Restore(rc io.ReadCloser) error {
@@ -104,6 +111,7 @@ func (f *BrokerFSM) Restore(rc io.ReadCloser) error {
 	util.Info("Starting FSM restore from snapshot")
 
 	var state struct {
+		Applied           uint64                        `json:"applied"`
 		Logs              map[uint64]*ReplicationEntry  `json:"logs"`
 		Brokers           map[string]*BrokerInfo        `json:"brokers"`
 		PartitionMetadata map[string]*PartitionMetadata `json:"partitionMetadata"`
@@ -154,6 +162,7 @@ func (f *BrokerFSM) Snapshot() (raft.FSMSnapshot, error) {
 
 	util.Debug("Creating FSM snapshot")
 	return &BrokerFSMSnapshot{
+		applied:           f.applied,
 		logs:              logsCopy,
 		brokers:           brokersCopy,
 		partitionMetadata: metadataCopy,
@@ -172,7 +181,9 @@ func (f *BrokerFSM) persistMessage(topicName string, partition int, msg *types.M
 		return fmt.Errorf("failed to serialize message: %w", err)
 	}
 
-	dh.WriteDirect(topicName, partition, msg.Offset, string(serialized))
+	if err := dh.WriteDirect(topicName, partition, msg.Offset, string(serialized)); err != nil {
+		return fmt.Errorf("WriteDirect failed: %w", err)
+	}
 	util.Debug("FSM persisted message: topic=%s, offset=%d", topicName, msg.Offset)
 	return nil
 }
@@ -183,14 +194,17 @@ func (f *BrokerFSM) persistBatch(topicName string, partition int, msgs []types.M
 		return fmt.Errorf("failed to get disk handler for topic %s: %w", topicName, err)
 	}
 
+	base := dh.GetAbsoluteOffset()
 	for i := range msgs {
-		msgs[i].Offset = dh.GetAbsoluteOffset() + uint64(i)
+		msgs[i].Offset = base + uint64(i)
 		serialized, err := util.SerializeMessage(msgs[i])
 		if err != nil {
 			return fmt.Errorf("failed to serialize message at index %d: %w", i, err)
 		}
 
-		dh.WriteDirect(topicName, partition, msgs[i].Offset, string(serialized))
+		if err := dh.WriteDirect(topicName, partition, msgs[i].Offset, string(serialized)); err != nil {
+			return fmt.Errorf("WriteDirect failed: %w", err)
+		}
 	}
 
 	util.Debug("FSM persisted batch: topic=%s, count=%d", topicName, len(msgs))

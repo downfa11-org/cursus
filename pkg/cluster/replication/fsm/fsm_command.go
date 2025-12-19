@@ -3,7 +3,6 @@ package fsm
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/types"
@@ -23,6 +22,10 @@ func (f *BrokerFSM) applyRegisterCommand(jsonData string) error {
 	if err := json.Unmarshal([]byte(jsonData), &broker); err != nil {
 		util.Error("Failed to unmarshal broker registration: %v", err)
 		return err
+	}
+
+	if broker.ID == "" || broker.Addr == "" {
+		return fmt.Errorf("invalid broker registration: %+v", broker)
 	}
 
 	f.storeBroker(broker.ID, &broker)
@@ -85,117 +88,65 @@ func (f *BrokerFSM) handleUnknownCommand(data string) interface{} {
 	if len(preview) > 20 {
 		preview = preview[:20]
 	}
-	util.Debug("Unknown log entry type: %s", preview)
-	return nil
+	util.Error("Unknown log entry type: %s", preview)
+	return fmt.Errorf("unknown command: %s", preview)
 }
 
 func (f *BrokerFSM) applyMessageCommand(jsonData string) interface{} {
 	util.Debug("FSM received Raft command JSON: %s", jsonData)
 
-	messageData := make(map[string]interface{})
-	decoder := json.NewDecoder(strings.NewReader(jsonData))
-	decoder.UseNumber()
-
-	if err := decoder.Decode(&messageData); err != nil {
-		util.Error("Failed to unmarshal message data: %v", err)
-		return types.AckResponse{
-			Status:   "ERROR",
-			ErrorMsg: fmt.Sprintf("invalid JSON format: %v", err),
-		}
+	cmd, err := parseMessageCommand(jsonData)
+	if err != nil {
+		return errorAckResponse(err.Error(), "", 0)
 	}
 
-	if messageData["Messages"] != nil {
-		if messages, ok := messageData["Messages"].([]interface{}); ok {
-			return f.applyBatchMessage(messageData, messages)
-		}
+	if err := validateMessageCommand(cmd); err != nil {
+		return errorAckResponse(err.Error(), cmd.Messages[0].ProducerID, cmd.Messages[0].Epoch)
 	}
 
-	return f.applySingleMessage(messageData)
+	return f.applyMessage(cmd)
 }
 
-func (f *BrokerFSM) applySingleMessage(messageData map[string]interface{}) interface{} {
-	topicName, err := getStringField(messageData, "Topic")
-	if err != nil {
-		return errorAckResponse(err.Error(), "", 0)
+func (f *BrokerFSM) applyMessage(cmd *MessageCommand) interface{} {
+	if len(cmd.Messages) == 1 {
+		return f.applySingle(cmd)
 	}
+	return f.applyBatch(cmd)
+}
 
-	partition, err := getIntField(messageData, "Partition")
-	if err != nil {
-		return errorAckResponse(err.Error(), "", 0)
-	}
+func (f *BrokerFSM) applySingle(cmd *MessageCommand) interface{} {
+	msg := &cmd.Messages[0]
 
-	msg := &types.Message{
-		Payload:    getOptionalStringField(messageData, "Payload"),
-		ProducerID: getOptionalStringField(messageData, "ProducerID"),
-		Offset:     uint64(getOptionalInt64Field(messageData, "Offset")),
-		SeqNum:     getOptionalUint64Field(messageData, "SeqNum"),
-		Epoch:      getOptionalInt64Field(messageData, "Epoch"),
-	}
-
-	if err := f.persistMessage(topicName, partition, msg); err != nil {
-		util.Error("FSM failed to persist message: %v", err)
-		return errorAckResponse(fmt.Sprintf("persist failed: %v", err), msg.ProducerID, msg.Epoch)
+	if err := f.persistMessage(cmd.Topic, cmd.Partition, msg); err != nil {
+		return errorAckResponse(err.Error(), msg.ProducerID, msg.Epoch)
 	}
 
 	return types.AckResponse{
 		Status:        "OK",
 		LastOffset:    msg.Offset,
-		ProducerEpoch: msg.Epoch,
 		ProducerID:    msg.ProducerID,
+		ProducerEpoch: msg.Epoch,
 		SeqStart:      msg.SeqNum,
 		SeqEnd:        msg.SeqNum,
 	}
 }
 
-func (f *BrokerFSM) applyBatchMessage(messageData map[string]interface{}, messages []interface{}) interface{} {
-	if len(messages) == 0 {
-		return errorAckResponse("empty batch", "", 0)
+func (f *BrokerFSM) applyBatch(cmd *MessageCommand) interface{} {
+	if err := f.persistBatch(cmd.Topic, cmd.Partition, cmd.Messages); err != nil {
+		m := cmd.Messages[0]
+		return errorAckResponse(fmt.Sprintf("batch persist failed: %v", err), m.ProducerID, m.Epoch)
 	}
 
-	topicName, err := getStringField(messageData, "Topic")
-	if err != nil {
-		return errorAckResponse(err.Error(), "", 0)
-	}
-
-	partition, err := getIntField(messageData, "Partition")
-	if err != nil {
-		return errorAckResponse(err.Error(), "", 0)
-	}
-
-	batchMsgs := make([]types.Message, 0, len(messages))
-	for i, msgInterface := range messages {
-		msgData, ok := msgInterface.(map[string]interface{})
-		if !ok {
-			return errorAckResponse(fmt.Sprintf("invalid message at index %d", i), "", batchMsgs[0].Epoch)
-		}
-
-		batchMsgs = append(batchMsgs, types.Message{
-			Payload:    getOptionalStringField(msgData, "Payload"),
-			Offset:     uint64(getOptionalInt64Field(msgData, "Offset")),
-			ProducerID: getOptionalStringField(msgData, "ProducerID"),
-			SeqNum:     getOptionalUint64Field(msgData, "SeqNum"),
-			Epoch:      getOptionalInt64Field(msgData, "Epoch"),
-		})
-	}
-
-	if err := f.persistBatch(topicName, partition, batchMsgs); err != nil {
-		util.Error("FSM failed to persist batch: %v", err)
-		return errorAckResponse(fmt.Sprintf("batch persist failed: %v", err), batchMsgs[0].ProducerID, batchMsgs[0].Epoch)
-	}
-
-	lastOffset := batchMsgs[len(batchMsgs)-1].Offset
-	seqStart := batchMsgs[0].SeqNum
-	seqEnd := batchMsgs[len(batchMsgs)-1].SeqNum
-
-	util.Debug("FSM Ack Return - ProducerID: %s, ProducerEpoch: %d", batchMsgs[0].ProducerID, batchMsgs[0].Epoch)
+	first := cmd.Messages[0]
+	last := cmd.Messages[len(cmd.Messages)-1]
 
 	return types.AckResponse{
 		Status:        "OK",
-		LastOffset:    lastOffset,
-		ProducerEpoch: batchMsgs[0].Epoch,
-		ProducerID:    batchMsgs[0].ProducerID,
-		SeqStart:      seqStart,
-		SeqEnd:        seqEnd,
+		LastOffset:    last.Offset,
+		ProducerID:    first.ProducerID,
+		ProducerEpoch: first.Epoch,
+		SeqStart:      first.SeqNum,
+		SeqEnd:        last.SeqNum,
 	}
 }
 

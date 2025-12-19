@@ -143,17 +143,10 @@ func (t *Topic) DeregisterConsumerGroup(groupName string) error {
 
 // Publish sends a message to one partition.
 func (t *Topic) Publish(msg types.Message) {
-	var idx int
-	partitionsLen := uint64(len(t.Partitions))
-
-	if msg.Key != "" {
-		keyID := util.GenerateID(msg.Key)
-		idx = int(keyID % partitionsLen)
-		util.Debug("Key-based routing to partition %d", idx)
-	} else {
-		oldCounter := atomic.AddUint64(&t.counter, 1) - 1
-		idx = int(oldCounter % partitionsLen)
-		util.Debug("Round-robin routing to partition %d (counter: %d)", idx, oldCounter)
+	idx := t.GetPartitionForMessage(msg)
+	if idx == -1 {
+		util.Error("❌ No partitions available for topic '%s'", t.Name)
+		return
 	}
 
 	p := t.Partitions[idx]
@@ -161,23 +154,13 @@ func (t *Topic) Publish(msg types.Message) {
 }
 
 func (t *Topic) PublishSync(msg types.Message) error {
-	var idx int
-	partitionsLen := uint64(len(t.Partitions))
-	util.Debug("Starting sync publish. Topic: %s, Key: %s", t.Name, msg.Key)
-
-	if msg.Key != "" {
-		keyID := util.GenerateID(msg.Key)
-		idx = int(keyID % partitionsLen)
-		util.Debug("Key-based routing to partition %d", idx)
-	} else {
-		oldCounter := atomic.AddUint64(&t.counter, 1) - 1
-		idx = int(oldCounter % partitionsLen)
-		util.Debug("Round-robin routing to partition %d", idx)
+	idx := t.GetPartitionForMessage(msg)
+	if idx == -1 {
+		return fmt.Errorf("no partitions available for topic '%s'", t.Name)
 	}
 
-	util.Debug("Calling Partition[%d].EnqueueSync", idx)
-	p := t.Partitions[idx]
-	return p.EnqueueSync(msg)
+	util.Debug("Sync publish to topic: %s, partition: %d", t.Name, idx)
+	return t.Partitions[idx].EnqueueSync(msg)
 }
 
 func (t *Topic) PublishBatchSync(msgs []types.Message) error {
@@ -186,22 +169,15 @@ func (t *Topic) PublishBatchSync(msgs []types.Message) error {
 	}
 	partitioned := make(map[int][]types.Message)
 
-	partitionsLen := uint64(len(t.Partitions))
 	for _, msg := range msgs {
-		var idx int
-		if msg.Key != "" {
-			keyID := util.GenerateID(msg.Key)
-			idx = int(keyID % partitionsLen)
-		} else {
-			oldCounter := atomic.AddUint64(&t.counter, 1) - 1
-			idx = int(oldCounter % partitionsLen)
+		idx := t.GetPartitionForMessage(msg)
+		if idx != -1 {
+			partitioned[idx] = append(partitioned[idx], msg)
 		}
-		partitioned[idx] = append(partitioned[idx], msg)
 	}
 
 	for idx, pm := range partitioned {
 		p := t.Partitions[idx]
-
 		if err := p.EnqueueBatchSync(pm); err != nil {
 			return fmt.Errorf("partition %d: failed to publish batch: %w", idx, err)
 		}

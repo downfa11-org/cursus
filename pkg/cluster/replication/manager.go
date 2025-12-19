@@ -55,23 +55,23 @@ type RaftReplicationManager struct {
 }
 
 func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager *disk.DiskManager, topicManager *topic.TopicManager, coordinator *coordinator.Coordinator, client client.TCPClusterClient) (*RaftReplicationManager, error) {
-	fsm := fsm.NewBrokerFSM(diskManager, topicManager, coordinator)
+	brokerFSM := fsm.NewBrokerFSM(diskManager, topicManager, coordinator)
 
 	localAddr := fmt.Sprintf("%s:%d", cfg.AdvertisedHost, cfg.RaftPort)
-	config := raft.DefaultConfig()
-	config.LocalID = raft.ServerID(brokerID)
+	raftCfg := raft.DefaultConfig()
+	raftCfg.LocalID = raft.ServerID(brokerID)
 
-	config.ProtocolVersion = raft.ProtocolVersionMax
-	config.HeartbeatTimeout = 500 * time.Millisecond
-	config.ElectionTimeout = 1500 * time.Millisecond
-	config.CommitTimeout = 100 * time.Millisecond
-	config.LogLevel = "Debug"
+	raftCfg.ProtocolVersion = raft.ProtocolVersionMax
+	raftCfg.HeartbeatTimeout = 500 * time.Millisecond
+	raftCfg.ElectionTimeout = 1500 * time.Millisecond
+	raftCfg.CommitTimeout = 100 * time.Millisecond
+	raftCfg.LogLevel = "Debug"
 
 	notifyCh := make(chan bool, 10)
-	config.NotifyCh = notifyCh
+	raftCfg.NotifyCh = notifyCh
 
 	if len(cfg.StaticClusterMembers) >= 3 {
-		config.PreVoteDisabled = true
+		raftCfg.PreVoteDisabled = true
 	}
 
 	dataDir := filepath.Join(cfg.LogDir, "raft")
@@ -102,7 +102,7 @@ func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager 
 		return nil, fmt.Errorf("failed to create transport: %w", err)
 	}
 
-	r, err := raft.NewRaft(config, fsm, logStore, stableStore, snapshots, transport)
+	r, err := raft.NewRaft(raftCfg, brokerFSM, logStore, stableStore, snapshots, transport)
 	if err != nil {
 		util.Error("Failed to create raft instance: %v", err)
 		return nil, fmt.Errorf("failed to create raft: %w", err)
@@ -178,7 +178,7 @@ func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager 
 
 	manager := &RaftReplicationManager{
 		raft:      r,
-		fsm:       fsm,
+		fsm:       brokerFSM,
 		brokerID:  brokerID,
 		localAddr: localAddr,
 		peers:     make(map[string]string),
@@ -196,8 +196,8 @@ func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager 
 				leaderAddr := manager.raft.Leader()
 
 				if configFuture := manager.raft.GetConfiguration(); configFuture.Error() == nil {
-					config := configFuture.Configuration()
-					util.Debug("raft: State=%s, Leader=%s, IsLeader=%v, KnownServers=%d", state.String(), leaderAddr, state == raft.Leader, len(config.Servers))
+					raftConf := configFuture.Configuration()
+					util.Debug("raft: State=%s, Leader=%s, IsLeader=%v, KnownServers=%d", state.String(), leaderAddr, state == raft.Leader, len(raftConf.Servers))
 				} else {
 					util.Debug("raft: State=%s, Leader=%s, IsLeader=%v", state.String(), leaderAddr, state == raft.Leader)
 				}

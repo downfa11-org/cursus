@@ -8,6 +8,7 @@ import (
 )
 
 type BrokerFSMSnapshot struct {
+	applied           uint64
 	logs              map[uint64]*ReplicationEntry
 	brokers           map[string]*BrokerInfo
 	partitionMetadata map[string]*PartitionMetadata
@@ -15,10 +16,12 @@ type BrokerFSMSnapshot struct {
 
 func (s *BrokerFSMSnapshot) Persist(sink raft.SnapshotSink) error {
 	state := struct {
+		Applied           uint64                        `json:"applied"`
 		Logs              map[uint64]*ReplicationEntry  `json:"logs"`
 		Brokers           map[string]*BrokerInfo        `json:"brokers"`
 		PartitionMetadata map[string]*PartitionMetadata `json:"partitionMetadata"`
 	}{
+		Applied:           s.applied,
 		Logs:              s.logs,
 		Brokers:           s.brokers,
 		PartitionMetadata: s.partitionMetadata,

@@ -1,5 +1,7 @@
 package fsm
 
+import "github.com/downfa11-org/go-broker/util"
+
 func (f *BrokerFSM) storeBroker(id string, broker *BrokerInfo) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -16,4 +18,16 @@ func (f *BrokerFSM) storePartitionMetadata(key string, metadata *PartitionMetada
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.partitionMetadata[key] = metadata
+}
+
+func (f *BrokerFSM) UpdatePartitionISR(key string, isr []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if meta, ok := f.partitionMetadata[key]; ok {
+		meta.ISR = append([]string(nil), isr...)
+		util.Debug("Updated ISR for %s: %v", key, isr)
+	} else {
+		util.Warn("Partition metadata not found for %s. ISR not updated.", key)
+	}
 }
