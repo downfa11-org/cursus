@@ -229,7 +229,7 @@ func processMessage(data []byte, cmdHandler *controller.CommandHandler, ctx *con
 	rawInput := strings.TrimSpace(string(data))
 	util.Debug("[%s] Received unrecognized input: %s", conn.RemoteAddr().String(), rawInput)
 	writeResponse(conn, "ERROR: malformed input - missing topic or payload")
-	return false, nil
+	return true, nil
 }
 
 func handleCommandMessage(payload string, cmdHandler *controller.CommandHandler, ctx *controller.ClientContext, conn net.Conn) (bool, error) {

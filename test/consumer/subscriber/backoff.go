@@ -13,14 +13,21 @@ type backoff struct {
 }
 
 func newBackoff(min, max time.Duration) *backoff {
+	if min <= 0 {
+		min = time.Millisecond
+	}
+	if max < min {
+		max = min
+	}
 	return &backoff{current: min, min: min, max: max, factor: 2.0}
 }
 
 func (b *backoff) duration() time.Duration {
-	jitter := time.Duration(0)
-	if b.current > 0 {
-		jitter = time.Duration(rand.Int63n(int64(b.current) / 10))
+	if b.current <= 0 {
+		b.current = time.Millisecond
 	}
+
+	jitter := time.Duration(rand.Int63n(int64(b.current) / 10))
 	d := b.current + jitter
 
 	b.current = time.Duration(float64(b.current) * b.factor)

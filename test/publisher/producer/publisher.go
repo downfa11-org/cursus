@@ -615,8 +615,6 @@ func (p *Publisher) FlushBenchmark(expectedTotal int) {
 			if sentCount >= expectedTotal && totalPending == 0 {
 				util.Info("Flush completed - all expected messages (%d) acknowledged. (Elapsed: %.3fs)", expectedTotal, time.Since(deadline.Add(-timeout)).Seconds())
 				return
-			} else {
-				util.Info("Progress: %d/%d messages acked, pending batches: %d", sentCount, expectedTotal, totalPending)
 			}
 		}
 		time.Sleep(100 * time.Millisecond)

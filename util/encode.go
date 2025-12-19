@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/downfa11-org/go-broker/pkg/types"
 )
@@ -45,7 +46,6 @@ func EncodeBatchMessages(topic string, partition int, acks string, msgs []types.
 		return nil
 	}
 
-	// topic
 	topicBytes := []byte(topic)
 	if len(topicBytes) > 0xFFFF {
 		return nil, fmt.Errorf("topic too long: %d bytes", len(topicBytes))
@@ -57,12 +57,10 @@ func EncodeBatchMessages(topic string, partition int, acks string, msgs []types.
 		return nil, fmt.Errorf("write topic bytes failed: %w", err)
 	}
 
-	// partition
 	if err := write(int32(partition)); err != nil {
 		return nil, err
 	}
 
-	// acks
 	acksBytes := []byte(acks)
 	if len(acksBytes) > 0xFF {
 		return nil, fmt.Errorf("acks value too long: %d bytes", len(acksBytes))
@@ -74,7 +72,6 @@ func EncodeBatchMessages(topic string, partition int, acks string, msgs []types.
 		return nil, fmt.Errorf("write acks bytes failed: %w", err)
 	}
 
-	// batch start/end seqNum
 	var batchStart, batchEnd uint64
 	if len(msgs) > 0 {
 		batchStart = msgs[0].SeqNum
@@ -92,17 +89,14 @@ func EncodeBatchMessages(topic string, partition int, acks string, msgs []types.
 	}
 
 	for _, m := range msgs {
-		// offset
 		if err := write(m.Offset); err != nil {
 			return nil, err
 		}
 
-		// seqNum
 		if err := write(m.SeqNum); err != nil {
 			return nil, err
 		}
 
-		// producerID
 		producerIDBytes := []byte(m.ProducerID)
 		if len(producerIDBytes) > 0xFFFF {
 			return nil, fmt.Errorf("producerID too long: %d bytes", len(producerIDBytes))
@@ -114,7 +108,6 @@ func EncodeBatchMessages(topic string, partition int, acks string, msgs []types.
 			return nil, err
 		}
 
-		// key
 		keyBytes := []byte(m.Key)
 		if len(keyBytes) > 0xFFFF {
 			return nil, fmt.Errorf("key too long: %d bytes", len(keyBytes))
@@ -126,12 +119,10 @@ func EncodeBatchMessages(topic string, partition int, acks string, msgs []types.
 			return nil, err
 		}
 
-		// epoch
 		if err := write(m.Epoch); err != nil {
 			return nil, err
 		}
 
-		// payload
 		payloadBytes := []byte(m.Payload)
 		if err := write(uint32(len(payloadBytes))); err != nil {
 			return nil, err
@@ -146,145 +137,109 @@ func EncodeBatchMessages(topic string, partition int, acks string, msgs []types.
 
 // DecodeBatchMessages decodes a batch encoded by EncodeBatchMessages
 func DecodeBatchMessages(data []byte) (*types.Batch, error) {
-	if len(data) < 2 || data[0] != 0xBA || data[1] != 0x7C {
-		return nil, fmt.Errorf("invalid batch header")
+	if len(data) < 2 {
+		return nil, fmt.Errorf("data too short")
 	}
-	data = data[2:]
 
-	offset := 0
-	read := func(size int) ([]byte, error) {
-		if offset+size > len(data) {
-			return nil, errors.New("data too short")
+	reader := bytes.NewReader(data)
+
+	var magic uint16
+	if err := binary.Read(reader, binary.BigEndian, &magic); err != nil {
+		return nil, fmt.Errorf("failed to read magic number: %w", err)
+	}
+	if magic != 0xBA7C {
+		return nil, fmt.Errorf("invalid magic number: %x", magic)
+	}
+
+	var topicLen uint16
+	if err := binary.Read(reader, binary.BigEndian, &topicLen); err != nil {
+		return nil, fmt.Errorf("failed to read topic length: %w", err)
+	}
+	topicBytes := make([]byte, topicLen)
+	if _, err := io.ReadFull(reader, topicBytes); err != nil {
+		return nil, fmt.Errorf("failed to read topic bytes: %w", err)
+	}
+
+	var partition int32
+	if err := binary.Read(reader, binary.BigEndian, &partition); err != nil {
+		return nil, fmt.Errorf("failed to read partition: %w", err)
+	}
+
+	var acksLen uint8
+	if err := binary.Read(reader, binary.BigEndian, &acksLen); err != nil {
+		return nil, fmt.Errorf("failed to read acks length: %w", err)
+	}
+	acksBytes := make([]byte, acksLen)
+	if _, err := io.ReadFull(reader, acksBytes); err != nil {
+		return nil, fmt.Errorf("failed to read acks bytes: %w", err)
+	}
+
+	var batchStart, batchEnd uint64
+	if err := binary.Read(reader, binary.BigEndian, &batchStart); err != nil {
+		return nil, fmt.Errorf("failed to read batch start: %w", err)
+	}
+	if err := binary.Read(reader, binary.BigEndian, &batchEnd); err != nil {
+		return nil, fmt.Errorf("failed to read batch end: %w", err)
+	}
+
+	var msgCount int32
+	if err := binary.Read(reader, binary.BigEndian, &msgCount); err != nil {
+		return nil, fmt.Errorf("failed to read message count: %w", err)
+	}
+
+	batch := &types.Batch{
+		Topic:     string(topicBytes),
+		Partition: int(partition),
+		Acks:      string(acksBytes),
+		Messages:  make([]types.Message, 0, msgCount),
+	}
+
+	for i := 0; i < int(msgCount); i++ {
+		var m types.Message
+
+		if err := binary.Read(reader, binary.BigEndian, &m.Offset); err != nil {
+			return nil, fmt.Errorf("failed to read message[%d] offset: %w", i, err)
 		}
-		b := data[offset : offset+size]
-		offset += size
-		return b, nil
-	}
-
-	// topic
-	topicLenBytes, err := read(2)
-	if err != nil {
-		return nil, err
-	}
-	topicLen := int(binary.BigEndian.Uint16(topicLenBytes))
-	topicBytes, err := read(topicLen)
-	if err != nil {
-		return nil, err
-	}
-	topic := string(topicBytes)
-
-	// partition
-	partBytes, err := read(4)
-	if err != nil {
-		return nil, err
-	}
-	partition := int(binary.BigEndian.Uint32(partBytes))
-
-	// acks
-	acksLenBytes, err := read(1)
-	if err != nil {
-		return nil, err
-	}
-	acksLen := int(acksLenBytes[0])
-	acksBytes, err := read(acksLen)
-	if err != nil {
-		return nil, err
-	}
-	acks := string(acksBytes)
-
-	// batch start/end
-	batchStartBytes, err := read(8)
-	if err != nil {
-		return nil, err
-	}
-	batchStart := binary.BigEndian.Uint64(batchStartBytes)
-
-	batchEndBytes, err := read(8)
-	if err != nil {
-		return nil, err
-	}
-	batchEnd := binary.BigEndian.Uint64(batchEndBytes)
-
-	// num messages
-	numMsgsBytes, err := read(4)
-	if err != nil {
-		return nil, err
-	}
-	numMsgs := int(binary.BigEndian.Uint32(numMsgsBytes))
-
-	msgs := make([]types.Message, 0, numMsgs)
-
-	for i := 0; i < numMsgs; i++ {
-		// offset
-		offsetBytes, err := read(8)
-		if err != nil {
-			return nil, err
-		}
-		currentOffset := binary.BigEndian.Uint64(offsetBytes)
-
-		// seqNum (8 bytes)
-		seqBytes, err := read(8)
-		if err != nil {
-			return nil, err
-		}
-		seq := binary.BigEndian.Uint64(seqBytes)
-
-		// producerID
-		producerIDLenBytes, err := read(2)
-		if err != nil {
-			return nil, err
-		}
-		producerIDLen := int(binary.BigEndian.Uint16(producerIDLenBytes))
-		producerIDBytes, err := read(producerIDLen)
-		if err != nil {
-			return nil, err
+		if err := binary.Read(reader, binary.BigEndian, &m.SeqNum); err != nil {
+			return nil, fmt.Errorf("failed to read message[%d] seqNum: %w", i, err)
 		}
 
-		// key
-		keyLenBytes, err := read(2)
-		if err != nil {
-			return nil, err
+		var pIdLen uint16
+		if err := binary.Read(reader, binary.BigEndian, &pIdLen); err != nil {
+			return nil, fmt.Errorf("failed to read message[%d] producerID length: %w", i, err)
 		}
-		keyLen := int(binary.BigEndian.Uint16(keyLenBytes))
-		keyBytes, err := read(keyLen)
-		if err != nil {
-			return nil, err
+		pIdBytes := make([]byte, pIdLen)
+		if _, err := io.ReadFull(reader, pIdBytes); err != nil {
+			return nil, fmt.Errorf("failed to read message[%d] producerID bytes: %w", i, err)
+		}
+		m.ProducerID = string(pIdBytes)
+
+		var keyLen uint16
+		if err := binary.Read(reader, binary.BigEndian, &keyLen); err != nil {
+			return nil, fmt.Errorf("failed to read message[%d] key length: %w", i, err)
+		}
+		keyBytes := make([]byte, keyLen)
+		if _, err := io.ReadFull(reader, keyBytes); err != nil {
+			return nil, fmt.Errorf("failed to read message[%d] key bytes: %w", i, err)
+		}
+		m.Key = string(keyBytes)
+
+		if err := binary.Read(reader, binary.BigEndian, &m.Epoch); err != nil {
+			return nil, fmt.Errorf("failed to read message[%d] epoch: %w", i, err)
 		}
 
-		// epoch (8 bytes)
-		epochBytes, err := read(8)
-		if err != nil {
-			return nil, err
+		var payloadLen uint32
+		if err := binary.Read(reader, binary.BigEndian, &payloadLen); err != nil {
+			return nil, fmt.Errorf("failed to read message[%d] payload length: %w", i, err)
 		}
-		epoch := int64(binary.BigEndian.Uint64(epochBytes))
+		payloadBytes := make([]byte, payloadLen)
+		if _, err := io.ReadFull(reader, payloadBytes); err != nil {
+			return nil, fmt.Errorf("failed to read message[%d] payload bytes: %w", i, err)
+		}
+		m.Payload = string(payloadBytes)
 
-		// payload
-		payloadLenBytes, err := read(4)
-		if err != nil {
-			return nil, err
-		}
-		payloadLen := int(binary.BigEndian.Uint32(payloadLenBytes))
-		payloadBytes, err := read(payloadLen)
-		if err != nil {
-			return nil, err
-		}
-
-		msgs = append(msgs, types.Message{
-			Offset:     currentOffset,
-			SeqNum:     seq,
-			ProducerID: string(producerIDBytes),
-			Key:        string(keyBytes),
-			Epoch:      epoch,
-			Payload:    string(payloadBytes),
-		})
+		batch.Messages = append(batch.Messages, m)
 	}
 
-	return &types.Batch{
-		Topic:      topic,
-		Partition:  partition,
-		BatchStart: batchStart,
-		BatchEnd:   batchEnd,
-		Acks:       acks,
-		Messages:   msgs,
-	}, nil
+	return batch, nil
 }

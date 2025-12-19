@@ -26,9 +26,11 @@ type Consumer struct {
 	generation int64
 	memberID   string
 
-	commitConn net.Conn
-	commitCh   chan commitEntry
-	commitMu   sync.Mutex
+	commitConn       net.Conn
+	commitCh         chan commitEntry
+	commitMu         sync.Mutex
+	commitRetryQueue []map[int]uint64
+	maxCommitRetries int
 
 	currentOffsets map[int]uint64
 	offsetsMu      sync.Mutex
@@ -86,8 +88,31 @@ func (c *Consumer) getLeaderConn() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(30 * time.Second)
+	}
+
 	util.Debug("Connected to broker: %s", addr)
 	return conn, nil
+}
+
+func (c *Consumer) validateCommitConn() bool {
+	c.commitMu.Lock()
+	defer c.commitMu.Unlock()
+	if c.commitConn == nil {
+		return false
+	}
+	one := []byte{}
+	c.commitConn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
+	if _, err := c.commitConn.Read(one); err != nil && !os.IsTimeout(err) {
+		c.commitConn.Close()
+		c.commitConn = nil
+		return false
+	}
+	c.commitConn.SetReadDeadline(time.Time{})
+	return true
 }
 
 func (c *Consumer) Start() error {
@@ -176,7 +201,27 @@ func (c *Consumer) flushOffsets() {
 	c.currentOffsets = make(map[int]uint64, len(toCommit))
 	c.offsetsMu.Unlock()
 
-	c.sendBatchCommit(toCommit)
+	c.enqueueCommit(toCommit)
+}
+
+func (c *Consumer) enqueueCommit(offsets map[int]uint64) {
+	go func() {
+		retries := 0
+		for {
+			if c.sendBatchCommit(offsets) {
+				return
+			}
+			retries++
+			if retries >= c.maxCommitRetries {
+				util.Error("Failed to commit offsets after %d retries, enqueueing for later", retries)
+				c.commitMu.Lock()
+				c.commitRetryQueue = append(c.commitRetryQueue, offsets)
+				c.commitMu.Unlock()
+				return
+			}
+			time.Sleep(500 * time.Millisecond) // backoff
+		}
+	}()
 }
 
 func (c *Consumer) handleLeaderRedirection(resp string) {
@@ -516,24 +561,28 @@ func (c *Consumer) startStreaming() {
 	<-c.doneCh
 }
 
-func (c *Consumer) sendBatchCommit(offsets map[int]uint64) {
+func (c *Consumer) sendBatchCommit(offsets map[int]uint64) bool {
 	c.commitMu.Lock()
-	if c.commitConn == nil {
+	if c.commitConn == nil || !c.validateCommitConn() {
 		conn, err := c.getLeaderConn()
 		if err != nil {
 			c.commitMu.Unlock()
 			util.Error("Batch commit failed to get connection: %v", err)
-			return
+			return false
+		}
+
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			tcpConn.SetKeepAlive(true)
+			tcpConn.SetKeepAlivePeriod(30 * time.Second)
 		}
 		c.commitConn = conn
 	}
 	conn := c.commitConn
 	c.commitMu.Unlock()
 
-	// BATCH_COMMIT topic=test group=g1 P0:10,P1:20,P2:30...
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("BATCH_COMMIT topic=%s group=%s generation=%d member=%s ", c.config.Topic, c.config.GroupID, c.generation, c.memberID))
-
+	sb.WriteString(fmt.Sprintf("BATCH_COMMIT topic=%s group=%s generation=%d member=%s ",
+		c.config.Topic, c.config.GroupID, c.generation, c.memberID))
 	parts := []string{}
 	for pid, off := range offsets {
 		parts = append(parts, fmt.Sprintf("%d:%d", pid, off))
@@ -546,7 +595,7 @@ func (c *Consumer) sendBatchCommit(offsets map[int]uint64) {
 		conn.Close()
 		c.commitConn = nil
 		c.commitMu.Unlock()
-		return
+		return false
 	}
 
 	resp, err := util.ReadWithLength(conn)
@@ -556,24 +605,24 @@ func (c *Consumer) sendBatchCommit(offsets map[int]uint64) {
 		conn.Close()
 		c.commitConn = nil
 		c.commitMu.Unlock()
-		return
+		return false
 	}
 
 	respStr := string(resp)
 	if strings.HasPrefix(respStr, "OK") {
 		util.Debug("✅ Batch commit success: %s", respStr)
+		return true
 	} else if strings.Contains(respStr, "ERROR") {
 		util.Error("❌ Batch commit error from broker: %s", respStr)
-
 		if strings.Contains(respStr, "GEN_MISMATCH") || strings.Contains(respStr, "REBALANCE_REQUIRED") {
-			util.Warn("Generation mismatch in batch commit, triggering rebalance...")
 			select {
 			case c.rebalanceSig <- struct{}{}:
-				util.Debug("Rebalance signal sent")
 			default:
 			}
 		}
+		return false
 	}
+	return false
 }
 
 func (c *Consumer) processBatchSync(msgs []types.Message, partition int) error {

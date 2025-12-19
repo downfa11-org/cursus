@@ -153,7 +153,9 @@ func countMessagesInFile(filePath string) (int, error) {
 }
 
 func (d *DiskHandler) AppendMessageSync(topic string, partition int, offset uint64, payload string) error {
-	d.WriteDirect(topic, partition, offset, payload)
+	if err := d.WriteDirect(topic, partition, offset, payload); err != nil {
+		return fmt.Errorf("WriteDirect failed: %w", err)
+	}
 	return nil
 }
 

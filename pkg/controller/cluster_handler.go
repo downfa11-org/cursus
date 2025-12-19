@@ -21,7 +21,7 @@ func (ch *CommandHandler) isAuthorizedForPartition(topic string, partition int) 
 
 // todo. isLeaderAndForward checks if the current node is the cluster leader
 func (ch *CommandHandler) isLeaderAndForward(cmd string) (string, bool, error) {
-	if !ch.Config.EnabledDistribution || ch.Cluster.RaftManager == nil {
+	if !ch.Config.EnabledDistribution || ch.Cluster == nil || ch.Cluster.RaftManager == nil {
 		return "", false, nil
 	}
 
@@ -31,13 +31,18 @@ func (ch *CommandHandler) isLeaderAndForward(cmd string) (string, bool, error) {
 		}
 
 		encodedCmd := string(util.EncodeMessage("", cmd))
-		for i := 0; i < 3; i++ {
+		const (
+			maxRetries = 3
+			retryDelay = 200 * time.Millisecond
+		)
+
+		for i := 0; i < maxRetries; i++ {
 			resp, err := ch.Cluster.Router.ForwardToLeader(encodedCmd)
 			if err == nil {
 				return resp, true, nil
 			}
 			util.Debug("Retrying forward to leader... attempt %d", i+1)
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(retryDelay)
 		}
 		leaderAddr := ch.Cluster.RaftManager.GetLeaderAddress()
 		return fmt.Sprintf("ERROR: failed to forward command to leader (Leader: %s)", leaderAddr), true, nil

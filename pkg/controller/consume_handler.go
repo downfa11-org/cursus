@@ -33,28 +33,16 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		return 0, fmt.Errorf("invalid partition ID: %w", err)
 	}
 
-	if ch.Config.EnabledDistribution && ch.Cluster.Router != nil {
-		if !ch.Cluster.RaftManager.IsLeader() {
-			leaderAddr := ch.Cluster.RaftManager.GetLeaderAddress()
-			if leaderAddr != "" {
-				serviceLeader := leaderAddr
-				if host, _, splitErr := net.SplitHostPort(leaderAddr); splitErr == nil {
-					serviceLeader = net.JoinHostPort(host, strconv.Itoa(ch.Config.BrokerPort))
-				}
-
-				errResp := fmt.Sprintf("ERROR: NOT_LEADER LEADER_IS %s", serviceLeader)
-				util.Warn("consume warn: %s", errResp)
-				if err := util.WriteWithLength(conn, []byte(errResp)); err != nil {
-					return 0, fmt.Errorf("send consume failed: %w", err)
-				}
-				return 0, nil
-			}
+	if err := ch.checkLeaderOrRedirect(conn); err != nil {
+		if err.Error() == "not leader" {
+			return 0, nil
 		}
+		return 0, err
+	}
 
-		if !strings.ContainsAny(topicPattern, "*?") {
-			if !ch.isAuthorizedForPartition(topicPattern, partition) {
-				return 0, fmt.Errorf("ERROR: NOT_AUTHORIZED_FOR_PARTITION %s:%d", topicPattern, partition)
-			}
+	if !strings.ContainsAny(topicPattern, "*?") {
+		if err := ch.checkPartitionAuthorization(topicPattern, partition); err != nil {
+			return 0, err
 		}
 	}
 
@@ -217,7 +205,6 @@ func (ch *CommandHandler) matchTopicPattern(pattern string) ([]string, error) {
 	}
 
 	escaped := regexp.QuoteMeta(pattern)
-	// QuoteMeta escapes * and ?, so we need to replace the escaped versions
 	regexPattern := strings.ReplaceAll(escaped, `\*`, ".*")
 	regexPattern = strings.ReplaceAll(regexPattern, `\?`, ".")
 	regex, err := regexp.Compile("^" + regexPattern + "$")
@@ -298,27 +285,11 @@ func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx 
 		}
 	}
 
-	if ch.Config.EnabledDistribution && ch.Cluster.Router != nil {
-		if !ch.Cluster.RaftManager.IsLeader() {
-			leaderAddr := ch.Cluster.RaftManager.GetLeaderAddress()
-			if leaderAddr != "" {
-				serviceLeader := leaderAddr
-				if host, _, splitErr := net.SplitHostPort(leaderAddr); splitErr == nil {
-					serviceLeader = net.JoinHostPort(host, strconv.Itoa(ch.Config.BrokerPort))
-				}
-
-				errResp := fmt.Sprintf("ERROR: NOT_LEADER LEADER_IS %s", serviceLeader)
-				util.Warn("consume warn: %s", errResp)
-				if err := util.WriteWithLength(conn, []byte(errResp)); err != nil {
-					return fmt.Errorf("send stream failed: %w", err)
-				}
-				return nil
-			}
-		}
-
-		if !ch.isAuthorizedForPartition(topicName, partition) {
-			return fmt.Errorf("ERROR: NOT_AUTHORIZED_FOR_PARTITION %s:%d", topicName, partition)
-		}
+	if err := ch.checkLeaderOrRedirect(conn); err != nil {
+		return err
+	}
+	if err := ch.checkPartitionAuthorization(topicName, partition); err != nil {
+		return err
 	}
 
 	actualOffset, err := ch.resolveOffset(topicName, partition, requestedOffset, groupName, args["autoOffsetReset"])
@@ -376,4 +347,40 @@ func (ch *CommandHandler) validateConsumeSyntax(cmd, raw string) string {
 		return ch.fail(raw, "ERROR: invalid CONSUME syntax")
 	}
 	return STREAM_DATA_SIGNAL
+}
+
+// checkLeaderOrRedirect checks if this broker is the leader and writes a redirect error if not.
+func (ch *CommandHandler) checkLeaderOrRedirect(conn net.Conn) error {
+	if !ch.Config.EnabledDistribution || ch.Cluster.Router == nil {
+		return nil
+	}
+
+	if ch.Cluster.RaftManager.IsLeader() {
+		return nil
+	}
+
+	leaderAddr := ch.Cluster.RaftManager.GetLeaderAddress()
+	if leaderAddr == "" {
+		return fmt.Errorf("no leader available")
+	}
+
+	serviceLeader := leaderAddr
+	if host, _, splitErr := net.SplitHostPort(leaderAddr); splitErr == nil {
+		serviceLeader = net.JoinHostPort(host, strconv.Itoa(ch.Config.BrokerPort))
+	}
+
+	errResp := fmt.Sprintf("ERROR: NOT_LEADER LEADER_IS %s", serviceLeader)
+	util.Warn("leader redirect: %s", errResp)
+	if err := util.WriteWithLength(conn, []byte(errResp)); err != nil {
+		return fmt.Errorf("failed to send leader redirect: %w", err)
+	}
+	return fmt.Errorf("not leader")
+}
+
+// checkPartitionAuthorization checks if the client is authorized for the given topic/partition.
+func (ch *CommandHandler) checkPartitionAuthorization(topic string, partition int) error {
+	if !ch.isAuthorizedForPartition(topic, partition) {
+		return fmt.Errorf("ERROR: NOT_AUTHORIZED_FOR_PARTITION %s:%d", topic, partition)
+	}
+	return nil
 }

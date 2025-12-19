@@ -14,6 +14,13 @@ import (
 	"github.com/google/uuid"
 )
 
+const defaultLeaderStalenessThreshold = 30 * time.Second
+
+type leaderInfo struct {
+	addr    string
+	updated time.Time
+}
+
 type ProducerState struct {
 	ProducerID  string         `json:"producer_id"`
 	LastSeqNums map[int]uint64 `json:"last_seq_nums"`
@@ -28,8 +35,7 @@ type ProducerClient struct {
 	conns   atomic.Pointer[[]net.Conn]
 	config  *config.PublisherConfig
 
-	leaderAddr       string
-	lastLeaderUpdate time.Time
+	leader atomic.Value
 }
 
 func (pc *ProducerClient) CommitSeqRange(partition int, endSeq uint64) {
@@ -37,9 +43,14 @@ func (pc *ProducerClient) CommitSeqRange(partition int, endSeq uint64) {
 		panic(fmt.Sprintf("invalid partition index in CommitSeqRange: %d", partition))
 	}
 
-	current := pc.seqNums[partition].Load()
-	if endSeq > current {
-		pc.seqNums[partition].Store(endSeq)
+	for {
+		current := pc.seqNums[partition].Load()
+		if endSeq <= current {
+			return
+		}
+		if pc.seqNums[partition].CompareAndSwap(current, endSeq) {
+			return
+		}
 	}
 }
 
@@ -50,6 +61,8 @@ func NewProducerClient(partitions int, config *config.PublisherConfig) *Producer
 		seqNums: make([]atomic.Uint64, partitions),
 		config:  config,
 	}
+
+	pc.leader.Store(&leaderInfo{})
 	if err := pc.loadState(); err != nil {
 		fmt.Printf("Warning: failed to load producer state: %v\n", err)
 	}
@@ -164,31 +177,32 @@ func (pc *ProducerClient) Close() error {
 }
 
 func (pc *ProducerClient) GetLeaderAddr() string {
-	pc.mu.RLock()
-	defer pc.mu.RUnlock()
-	return pc.leaderAddr
+	info, ok := pc.leader.Load().(*leaderInfo)
+	if !ok || info.addr == "" {
+		return ""
+	}
+	return info.addr
 }
 
 func (pc *ProducerClient) UpdateLeader(leaderAddr string) {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-
-	if pc.leaderAddr != leaderAddr {
-		pc.leaderAddr = leaderAddr
-		pc.lastLeaderUpdate = time.Now()
+	old := pc.leader.Load().(*leaderInfo)
+	if old.addr != leaderAddr {
+		pc.leader.Store(&leaderInfo{
+			addr:    leaderAddr,
+			updated: time.Now(),
+		})
 	}
 }
 
 func (pc *ProducerClient) selectBroker() string {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-
 	if pc.config == nil || len(pc.config.BrokerAddrs) == 0 {
 		return ""
 	}
 
-	if pc.leaderAddr != "" && time.Since(pc.lastLeaderUpdate) < 30*time.Second {
-		return pc.leaderAddr
+	threshold := defaultLeaderStalenessThreshold
+	info, ok := pc.leader.Load().(*leaderInfo)
+	if ok && info.addr != "" && time.Since(info.updated) < threshold {
+		return info.addr
 	}
 
 	return pc.config.BrokerAddrs[0]
@@ -209,6 +223,9 @@ func (pc *ProducerClient) ConnectPartition(idx int, addr string, useTLS bool, ce
 }
 
 func (pc *ProducerClient) ReconnectPartition(idx int, addr string, useTLS bool, certPath, keyPath string) error {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
 	oldPtr := pc.conns.Load()
 	if oldPtr != nil {
 		conns := *oldPtr
@@ -217,5 +234,5 @@ func (pc *ProducerClient) ReconnectPartition(idx int, addr string, useTLS bool, 
 		}
 	}
 
-	return pc.ConnectPartition(idx, addr, useTLS, certPath, keyPath)
+	return pc.connectPartitionLocked(idx, addr, useTLS, certPath, keyPath)
 }

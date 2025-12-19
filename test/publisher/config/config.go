@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/downfa11-org/go-broker/util"
 	"gopkg.in/yaml.v3"
@@ -22,6 +23,8 @@ type PublisherConfig struct {
 	Topic            string `yaml:"topic" json:"topic"`
 	AutoCreateTopics bool   `yaml:"auto_create_topics" json:"auto_create_topics"`
 	Partitions       int    `yaml:"partitions" json:"partitions"`
+
+	LeaderStaleness time.Duration `yaml:"leader_staleness" json:"leader_staleness"`
 
 	PublishDelayMS      int `yaml:"publish_delay_ms" json:"publish_delay_ms"`
 	MaxInflightRequests int `yaml:"max_inflight_requests" json:"max_inflight_requests"`
@@ -68,11 +71,13 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 	flag.IntVar(&cfg.MaxRetries, "max-retries", 3, "Maximum retry attempts")
 	flag.IntVar(&cfg.RetryBackoffMS, "retry-backoff-ms", 100, "Initial backoff time in milliseconds")
 	flag.IntVar(&cfg.AckTimeoutMS, "ack-timeout-ms", 5000, "ACK timeout in milliseconds")
+
 	flag.StringVar(&cfg.Topic, "topic", "my-topic", "Topic name")
 	flag.BoolVar(&cfg.AutoCreateTopics, "auto-create-topics", cfg.AutoCreateTopics, "Auto-create topics")
-
 	flag.IntVar(&cfg.Partitions, "partitions", 4, "Number of partitions")
 	flag.IntVar(&cfg.NumMessages, "num-messages", 10, "Number of messages to publish")
+
+	flag.DurationVar(&cfg.LeaderStaleness, "leader-staleness", 30*time.Second, "Leader staleness duration")
 
 	flag.IntVar(&cfg.PublishDelayMS, "publish-delay-ms", 0, "Delay between messages in milliseconds")
 	flag.IntVar(&cfg.MaxInflightRequests, "max-inflight", 5, "Max inflight requests")

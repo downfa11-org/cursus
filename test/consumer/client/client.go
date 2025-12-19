@@ -20,7 +20,7 @@ type leaderInfo struct {
 type ConsumerClient struct {
 	ID     string
 	config *config.ConsumerConfig
-	mu     sync.RWMutex
+	mu     sync.Mutex
 
 	leader atomic.Value
 }
@@ -32,18 +32,6 @@ func NewConsumerClient(cfg *config.ConsumerConfig) *ConsumerClient {
 	}
 	c.leader.Store(&leaderInfo{addr: "", updated: time.Time{}})
 	return c
-}
-
-func (c *ConsumerClient) selectBroker() string {
-	info := c.leader.Load().(*leaderInfo)
-	if info.addr != "" && time.Since(info.updated) < 30*time.Second {
-		return info.addr
-	}
-
-	if len(c.config.BrokerAddrs) > 0 {
-		return c.config.BrokerAddrs[0]
-	}
-	return ""
 }
 
 func (c *ConsumerClient) UpdateLeader(addr string) {
@@ -58,9 +46,6 @@ func (c *ConsumerClient) UpdateLeader(addr string) {
 }
 
 func (c *ConsumerClient) Connect(addr string) (net.Conn, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	dialer := net.Dialer{Timeout: 5 * time.Second}
 	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
@@ -71,7 +56,6 @@ func (c *ConsumerClient) Connect(addr string) (net.Conn, error) {
 		tcpConn.SetNoDelay(true)
 		tcpConn.SetKeepAlive(true)
 		tcpConn.SetKeepAlivePeriod(30 * time.Second)
-
 		tcpConn.SetReadBuffer(2 * 1024 * 1024)  // 2MB
 		tcpConn.SetWriteBuffer(2 * 1024 * 1024) // 2MB
 	}
@@ -85,21 +69,24 @@ func (c *ConsumerClient) ConnectWithFailover() (net.Conn, string, error) {
 		return nil, "", fmt.Errorf("no broker addresses configured")
 	}
 
-	leader := c.selectBroker()
-	if leader != "" {
-		if conn, err := c.Connect(leader); err == nil {
-			return conn, leader, nil
+	leaderAddr := ""
+	raw := c.leader.Load()
+	if info, ok := raw.(*leaderInfo); ok && info.addr != "" && time.Since(info.updated) < c.config.LeaderStaleness {
+		leaderAddr = info.addr
+	}
+
+	if leaderAddr != "" {
+		if conn, err := c.Connect(leaderAddr); err == nil {
+			return conn, leaderAddr, nil
 		}
-		util.Warn("Leader %s failed, falling back to other brokers", leader)
+		util.Warn("Leader %s failed, falling back to other brokers", leaderAddr)
 	}
 
 	var lastErr error
-	for i := 0; i < len(addrs); i++ {
-		addr := addrs[i]
-		if addr == leader {
+	for _, addr := range addrs {
+		if addr == leaderAddr {
 			continue
 		}
-
 		conn, err := c.Connect(addr)
 		if err == nil {
 			c.UpdateLeader(addr)
@@ -109,5 +96,8 @@ func (c *ConsumerClient) ConnectWithFailover() (net.Conn, string, error) {
 		util.Warn("Failover: failed to connect to %s: %v", addr, err)
 	}
 
-	return nil, "", fmt.Errorf("all brokers unreachable: %w", lastErr)
+	if lastErr != nil {
+		return nil, "", fmt.Errorf("all brokers unreachable: %w", lastErr)
+	}
+	return nil, "", fmt.Errorf("all brokers unreachable")
 }

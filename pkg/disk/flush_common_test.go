@@ -34,7 +34,9 @@ func TestWriteDirectAndFlush(t *testing.T) {
 	defer dh.Close()
 
 	for i := 0; i < 3; i++ {
-		dh.WriteDirect("testTopic", 0, uint64(i), "msg"+string(rune('A'+i)))
+		if err := dh.WriteDirect("testTopic", 0, uint64(i), "msg"+string(rune('A'+i))); err != nil {
+			t.Fatalf("WriteDirect failed: %v", err)
+		}
 	}
 
 	dh.Flush()
@@ -58,8 +60,12 @@ func TestWriteBatchRotation(t *testing.T) {
 		msg[i] = 'x'
 	}
 
-	dh.WriteDirect("testTopic", 0, 0, string(msg))
-	dh.WriteDirect("testTopic", 0, 1, string(msg))
+	if err := dh.WriteDirect("testTopic", 0, 0, string(msg)); err != nil {
+		t.Fatalf("WriteDirect failed: %v", err)
+	}
+	if err := dh.WriteDirect("testTopic", 0, 1, string(msg)); err != nil {
+		t.Fatalf("WriteDirect failed: %v", err)
+	}
 
 	currentSeg := dh.GetCurrentSegment()
 	if currentSeg != 1 {
@@ -99,7 +105,9 @@ func TestReadMessagesWithMetadata(t *testing.T) {
 	}
 
 	for _, msg := range testMessages {
-		dh.WriteDirect(msg.topic, msg.partition, msg.offset, msg.payload)
+		if err := dh.WriteDirect(msg.topic, msg.partition, msg.offset, msg.payload); err != nil {
+			t.Fatalf("WriteDirect failed: %v", err)
+		}
 	}
 
 	dh.Flush()

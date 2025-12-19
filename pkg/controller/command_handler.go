@@ -38,14 +38,14 @@ func (ch *CommandHandler) handleCreate(cmd string) string {
 	args := parseKeyValueArgs(cmd[7:])
 	topicName, ok := args["topic"]
 	if !ok || topicName == "" {
-		return "ERROR: missing topic parameter. Expected: CREATE topic=<name> [partitions=<N>]"
+		return "missing topic parameter. Expected: CREATE topic=<name> [partitions=<N>]"
 	}
 
 	partitions := 4 // default
 	if partStr, ok := args["partitions"]; ok {
 		n, err := strconv.Atoi(partStr)
 		if err != nil || n <= 0 {
-			return "ERROR: partitions must be a positive integer"
+			return "partitions must be a positive integer"
 		}
 		partitions = n
 	}
@@ -61,11 +61,14 @@ func (ch *CommandHandler) handleCreate(cmd string) string {
 			"name":       topicName,
 			"partitions": partitions,
 		}
-		data, _ := json.Marshal(topicData)
-
-		err := ch.Cluster.RaftManager.ApplyCommand("TOPIC", data)
+		data, err := json.Marshal(topicData)
 		if err != nil {
-			return fmt.Sprintf("ERROR: failed to replicate topic: %v", err)
+			return fmt.Sprintf("failed to marshal join data: %v", err)
+		}
+
+		err = ch.Cluster.RaftManager.ApplyCommand("TOPIC", data)
+		if err != nil {
+			return fmt.Sprintf("failed to replicate topic: %v", err)
 		}
 
 		const maxWaitRetries = 10
@@ -77,7 +80,7 @@ func (ch *CommandHandler) handleCreate(cmd string) string {
 				break
 			}
 			if i == maxWaitRetries-1 {
-				return fmt.Sprintf("ERROR: topic '%s' creation timed out (FSM application failed)", topicName)
+				return fmt.Sprintf("topic '%s' creation timed out (FSM application failed)", topicName)
 			}
 			time.Sleep(waitDelay)
 		}
@@ -100,7 +103,7 @@ func (ch *CommandHandler) handleDelete(cmd string) string {
 	args := parseKeyValueArgs(cmd[7:])
 	topicName, ok := args["topic"]
 	if !ok || topicName == "" {
-		return "ERROR: missing topic parameter. Expected: DELETE topic=<name>"
+		return "missing topic parameter. Expected: DELETE topic=<name>"
 	}
 
 	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
@@ -118,7 +121,7 @@ func (ch *CommandHandler) handleDelete(cmd string) string {
 	if ch.TopicManager.DeleteTopic(topicName) {
 		return fmt.Sprintf("🗑️ Topic '%s' deleted", topicName)
 	}
-	return fmt.Sprintf("ERROR: topic '%s' not found", topicName)
+	return fmt.Sprintf("topic '%s' not found", topicName)
 }
 
 // handleList processes LIST command
@@ -136,17 +139,17 @@ func (ch *CommandHandler) handleRegisterGroup(cmd string) string {
 	args := parseKeyValueArgs(cmd[15:])
 	topicName, ok := args["topic"]
 	if !ok || topicName == "" {
-		return "ERROR: REGISTER_GROUP requires topic parameter"
+		return "REGISTER_GROUP requires topic parameter"
 	}
 	groupName, ok := args["group"]
 	if !ok || groupName == "" {
-		return "ERROR: REGISTER_GROUP requires group parameter"
+		return "REGISTER_GROUP requires group parameter"
 	}
 
 	t := ch.TopicManager.GetTopic(topicName)
 	if t == nil {
 		util.Warn("ch registerGroup: topic '%s' does not exist", topicName)
-		return fmt.Sprintf("ERROR: topic '%s' does not exist", topicName)
+		return fmt.Sprintf("topic '%s' does not exist", topicName)
 	}
 
 	if ch.Coordinator != nil {
@@ -155,7 +158,7 @@ func (ch *CommandHandler) handleRegisterGroup(cmd string) string {
 		}
 		return fmt.Sprintf("✅ Group '%s' registered for topic '%s'", groupName, topicName)
 	}
-	return "ERROR: coordinator not available"
+	return "coordinator not available"
 }
 
 // handleJoinGroup processes JOIN_GROUP command
@@ -164,15 +167,15 @@ func (ch *CommandHandler) handleJoinGroup(cmd string, ctx *ClientContext) string
 
 	topicName, ok := args["topic"]
 	if !ok || topicName == "" {
-		return "ERROR: JOIN_GROUP requires topic parameter"
+		return "JOIN_GROUP requires topic parameter"
 	}
 	groupName, ok := args["group"]
 	if !ok || groupName == "" {
-		return "ERROR: JOIN_GROUP requires group parameter"
+		return "JOIN_GROUP requires group parameter"
 	}
 	consumerID, ok := args["member"]
 	if !ok || consumerID == "" {
-		return "ERROR: JOIN_GROUP requires member parameter"
+		return "JOIN_GROUP requires member parameter"
 	}
 
 	n, err := rand.Int(rand.Reader, big.NewInt(10000))
@@ -185,6 +188,7 @@ func (ch *CommandHandler) handleJoinGroup(cmd string, ctx *ClientContext) string
 	}
 	consumerID = fmt.Sprintf("%s-%s", consumerID, randSuffix)
 
+	var assignments []int
 	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
 		if resp, forwarded, _ := ch.isLeaderAndForward(cmd); forwarded {
 			return resp
@@ -196,26 +200,40 @@ func (ch *CommandHandler) handleJoinGroup(cmd string, ctx *ClientContext) string
 			"member": consumerID,
 			"topic":  topicName,
 		}
-		data, _ := json.Marshal(joinData)
+		data, err := json.Marshal(joinData)
+		if err != nil {
+			return fmt.Sprintf("failed to marshal join data: %v", err)
+		}
 
 		err = ch.Cluster.RaftManager.ApplyCommand("GROUP_SYNC", data)
 		if err != nil {
-			return fmt.Sprintf("ERROR: failed to replicate group operation: %v", err)
+			return fmt.Sprintf("failed to replicate group operation: %v", err)
 		}
 	} else {
 		if ch.Coordinator != nil {
-			_, err := ch.Coordinator.AddConsumer(groupName, consumerID)
+			if ch.Coordinator.GetGroup(groupName) == nil {
+				topic := ch.TopicManager.GetTopic(topicName)
+				if topic == nil {
+					return fmt.Sprintf("topic '%s' not found", topicName)
+				}
+
+				err := ch.Coordinator.RegisterGroup(topicName, groupName, len(topic.Partitions))
+				if err != nil {
+					return fmt.Sprintf("failed to register group: %v", err)
+				}
+			}
+
+			assignments, err = ch.Coordinator.AddConsumer(groupName, consumerID)
 			if err != nil {
 				util.Error("failed to join %s: %v", groupName, err)
 			}
 		} else {
-			return "ERROR: coordinator not available"
+			return "coordinator not available"
 		}
 	}
 
 	ctx.MemberID = consumerID
 	ctx.Generation = ch.Coordinator.GetGeneration(groupName)
-	assignments := ch.Coordinator.GetAssignments(groupName)[consumerID]
 	util.Debug("✅ Joined group '%s' member '%s' generation '%d' with partitions: %v", groupName, ctx.MemberID, ctx.Generation, assignments)
 	return fmt.Sprintf("OK generation=%d member=%s assignments=%v", ctx.Generation, ctx.MemberID, assignments)
 }
@@ -226,19 +244,19 @@ func (ch *CommandHandler) handleSyncGroup(cmd string) string {
 
 	topicName, ok := args["topic"]
 	if !ok || topicName == "" {
-		return "ERROR: SYNC_GROUP requires topic parameter"
+		return "SYNC_GROUP requires topic parameter"
 	}
 	groupName, ok := args["group"]
 	if !ok || groupName == "" {
-		return "ERROR: SYNC_GROUP requires group parameter"
+		return "SYNC_GROUP requires group parameter"
 	}
 	memberID, ok := args["member"]
 	if !ok || memberID == "" {
-		return "ERROR: SYNC_GROUP requires member parameter"
+		return "SYNC_GROUP requires member parameter"
 	}
 
 	if ch.Coordinator == nil {
-		return "ERROR: coordinator not available"
+		return "coordinator not available"
 	}
 
 	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
@@ -249,7 +267,7 @@ func (ch *CommandHandler) handleSyncGroup(cmd string) string {
 
 	assignments := ch.Coordinator.GetAssignments(groupName)
 	if _, exists := assignments[memberID]; !exists {
-		return fmt.Sprintf("ERROR: member %s not found in group", memberID)
+		return fmt.Sprintf("member %s not found in group", memberID)
 	}
 
 	memberAssignments := assignments[memberID]
@@ -262,19 +280,15 @@ func (ch *CommandHandler) handleLeaveGroup(cmd string) string {
 
 	topicName, ok := args["topic"]
 	if !ok || topicName == "" {
-		return "ERROR: LEAVE_GROUP requires topic parameter"
+		return "LEAVE_GROUP requires topic parameter"
 	}
 	groupName, ok := args["group"]
 	if !ok || groupName == "" {
-		return "ERROR: LEAVE_GROUP requires group parameter"
+		return "LEAVE_GROUP requires group parameter"
 	}
 	consumerID, ok := args["member"]
 	if !ok || consumerID == "" {
-		return "ERROR: LEAVE_GROUP requires member parameter"
-	}
-
-	if groupName == "" || consumerID == "" {
-		return "ERROR: LEAVE_GROUP requires group and member parameters"
+		return "LEAVE_GROUP requires member parameter"
 	}
 
 	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
@@ -287,11 +301,14 @@ func (ch *CommandHandler) handleLeaveGroup(cmd string) string {
 			"group":  groupName,
 			"member": consumerID,
 		}
-		data, _ := json.Marshal(leaveData)
-
-		err := ch.Cluster.RaftManager.ApplyCommand("GROUP_SYNC", data)
+		data, err := json.Marshal(leaveData)
 		if err != nil {
-			return fmt.Sprintf("ERROR: failed to replicate leave operation: %v", err)
+			return fmt.Sprintf("failed to marshal join data: %v", err)
+		}
+
+		err = ch.Cluster.RaftManager.ApplyCommand("GROUP_SYNC", data)
+		if err != nil {
+			return fmt.Sprintf("failed to replicate leave operation: %v", err)
 		}
 	} else {
 		if ch.Coordinator != nil {
@@ -309,19 +326,19 @@ func (ch *CommandHandler) handleFetchOffset(cmd string) string {
 
 	topicName, ok := args["topic"]
 	if !ok || topicName == "" {
-		return "ERROR: FETCH_OFFSET requires topic parameter"
+		return "FETCH_OFFSET requires topic parameter"
 	}
 	partitionStr, ok := args["partition"]
 	if !ok || partitionStr == "" {
-		return "ERROR: FETCH_OFFSET requires partition parameter"
+		return "FETCH_OFFSET requires partition parameter"
 	}
 	partition, err := strconv.Atoi(partitionStr)
 	if err != nil {
-		return "ERROR: invalid partition"
+		return "invalid partition"
 	}
 	groupName, ok := args["group"]
 	if !ok || groupName == "" {
-		return "ERROR: FETCH_OFFSET requires group parameter"
+		return "FETCH_OFFSET requires group parameter"
 	}
 
 	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
@@ -329,7 +346,7 @@ func (ch *CommandHandler) handleFetchOffset(cmd string) string {
 			return resp
 		}
 		if !ch.isAuthorizedForPartition(topicName, partition) {
-			return fmt.Sprintf("ERROR: NOT_AUTHORIZED_FOR_PARTITION %s:%d", topicName, partition)
+			return fmt.Sprintf("NOT_AUTHORIZED_FOR_PARTITION %s:%d", topicName, partition)
 		}
 	}
 
@@ -341,7 +358,7 @@ func (ch *CommandHandler) handleFetchOffset(cmd string) string {
 			return fmt.Sprintf("%d", offset)
 		}
 	} else {
-		return "ERROR: offset manager not available"
+		return "offset manager not available"
 	}
 }
 
@@ -350,11 +367,11 @@ func (ch *CommandHandler) handleGroupStatus(cmd string) string {
 	args := parseKeyValueArgs(cmd[13:])
 	groupName, ok := args["group"]
 	if !ok || groupName == "" {
-		return "ERROR: GROUP_STATUS requires group parameter"
+		return "GROUP_STATUS requires group parameter"
 	}
 
 	if ch.Coordinator == nil {
-		return "ERROR: coordinator not available"
+		return "coordinator not available"
 	}
 
 	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
@@ -370,7 +387,7 @@ func (ch *CommandHandler) handleGroupStatus(cmd string) string {
 
 	statusJSON, err := json.Marshal(status)
 	if err != nil {
-		return fmt.Sprintf("ERROR: failed to marshal status: %v", err)
+		return fmt.Sprintf("failed to marshal status: %v", err)
 	}
 	return string(statusJSON)
 }
@@ -381,15 +398,15 @@ func (ch *CommandHandler) handleHeartbeat(cmd string) string {
 
 	topicName, ok := args["topic"]
 	if !ok || topicName == "" {
-		return "ERROR: HEARTBEAT requires topic parameter"
+		return "HEARTBEAT requires topic parameter"
 	}
 	groupName, ok := args["group"]
 	if !ok || groupName == "" {
-		return "ERROR: HEARTBEAT requires group parameter"
+		return "HEARTBEAT requires group parameter"
 	}
 	consumerID, ok := args["member"]
 	if !ok || consumerID == "" {
-		return "ERROR: HEARTBEAT requires member parameter"
+		return "HEARTBEAT requires member parameter"
 	}
 
 	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
@@ -406,7 +423,7 @@ func (ch *CommandHandler) handleHeartbeat(cmd string) string {
 			return "OK"
 		}
 	} else {
-		return "ERROR: coordinator not available"
+		return "coordinator not available"
 	}
 }
 
@@ -416,27 +433,27 @@ func (ch *CommandHandler) handleCommitOffset(cmd string) string {
 
 	topicName, ok := args["topic"]
 	if !ok || topicName == "" {
-		return "ERROR: COMMIT_OFFSET requires topic parameter"
+		return "COMMIT_OFFSET requires topic parameter"
 	}
 	partitionStr, ok := args["partition"]
 	if !ok || partitionStr == "" {
-		return "ERROR: COMMIT_OFFSET requires partition parameter"
+		return "COMMIT_OFFSET requires partition parameter"
 	}
 	partition, err := strconv.Atoi(partitionStr)
 	if err != nil {
-		return "ERROR: invalid partition"
+		return "invalid partition"
 	}
 	groupID, ok := args["group"]
 	if !ok || groupID == "" {
-		return "ERROR: COMMIT_OFFSET requires groupID parameter"
+		return "COMMIT_OFFSET requires groupID parameter"
 	}
 	offsetStr, ok := args["offset"]
 	if !ok || offsetStr == "" {
-		return "ERROR: COMMIT_OFFSET requires offset parameter"
+		return "COMMIT_OFFSET requires offset parameter"
 	}
 	offset, err := strconv.ParseUint(offsetStr, 10, 64)
 	if err != nil {
-		return "ERROR: invalid offset"
+		return "invalid offset"
 	}
 
 	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
@@ -445,7 +462,7 @@ func (ch *CommandHandler) handleCommitOffset(cmd string) string {
 		}
 
 		if !ch.isAuthorizedForPartition(topicName, partition) {
-			return fmt.Sprintf("ERROR: NOT_AUTHORIZED_FOR_PARTITION %s:%d", topicName, partition)
+			return fmt.Sprintf("NOT_AUTHORIZED_FOR_PARTITION %s:%d", topicName, partition)
 		}
 
 		commitData := map[string]interface{}{
@@ -455,11 +472,14 @@ func (ch *CommandHandler) handleCommitOffset(cmd string) string {
 			"partition": partition,
 			"offset":    offset,
 		}
-		data, _ := json.Marshal(commitData)
+		data, err := json.Marshal(commitData)
+		if err != nil {
+			return fmt.Sprintf("failed to marshal join data: %v", err)
+		}
 
 		err = ch.Cluster.RaftManager.ApplyCommand("OFFSET_SYNC", data)
 		if err != nil {
-			return fmt.Sprintf("ERROR: offset replication failed: %v", err)
+			return fmt.Sprintf("offset replication failed: %v", err)
 		}
 		return "OK"
 	}
@@ -472,7 +492,7 @@ func (ch *CommandHandler) handleCommitOffset(cmd string) string {
 			return "OK"
 		}
 	}
-	return "ERROR: offset manager not available"
+	return "offset manager not available"
 }
 
 // handleBatchCommit processes BATCH_COMMIT topic=T1 group=G1 P0:10,P1:20...
@@ -484,7 +504,7 @@ func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 	// P0:10,P1:20...
 	partsIdx := strings.LastIndex(cmd, " ")
 	if partsIdx == -1 {
-		return "ERROR: invalid batch commit format"
+		return "invalid batch commit format"
 	}
 	partitionData := cmd[partsIdx+1:]
 	partitionPairs := strings.Split(partitionData, ",")
@@ -497,8 +517,16 @@ func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 			continue
 		}
 
-		p, _ := strconv.Atoi(kv[0])
-		o, _ := strconv.ParseUint(kv[1], 10, 64)
+		p, err := strconv.Atoi(kv[0])
+		if err != nil {
+			util.Warn("Invalid partition in batch commit: %s", kv[0])
+			continue
+		}
+		o, err := strconv.ParseUint(kv[1], 10, 64)
+		if err != nil {
+			util.Warn("Invalid offset in batch commit: %s", kv[1])
+			continue
+		}
 
 		offsetList = append(offsetList, coordinator.OffsetItem{Partition: p, Offset: o})
 	}
@@ -514,15 +542,18 @@ func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 			"topic":   topicName,
 			"offsets": offsetList,
 		}
-		data, _ := json.Marshal(batchCommitData)
-		err := ch.Cluster.RaftManager.ApplyCommand("BATCH_OFFSET", data)
+		data, err := json.Marshal(batchCommitData)
 		if err != nil {
-			return fmt.Sprintf("ERROR: raft batch apply failed: %v", err)
+			return fmt.Sprintf("ERROR: failed to marshal batch commit data: %v", err)
+		}
+		err = ch.Cluster.RaftManager.ApplyCommand("BATCH_OFFSET", data)
+		if err != nil {
+			return fmt.Sprintf("raft batch apply failed: %v", err)
 		}
 	} else if ch.Coordinator != nil {
 		err := ch.Coordinator.CommitOffsetsBulk(groupID, topicName, offsetList)
 		if err != nil {
-			return fmt.Sprintf("ERROR: bulk commit failed: %v", err)
+			return fmt.Sprintf("bulk commit failed: %v", err)
 		}
 	}
 

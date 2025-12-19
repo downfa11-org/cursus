@@ -1,7 +1,6 @@
 package coordinator
 
 import (
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -76,6 +75,13 @@ type OffsetItem struct {
 	Offset    uint64 `json:"offset"`
 }
 
+type BulkOffsetMsg struct {
+	Group     string       `json:"group"`
+	Topic     string       `json:"topic"`
+	Offsets   []OffsetItem `json:"offsets"`
+	Timestamp time.Time    `json:"timestamp"`
+}
+
 // NewCoordinator creates a new Coordinator instance.
 func NewCoordinator(cfg *config.Config, publisher OffsetPublisher) *Coordinator {
 	if publisher == nil {
@@ -106,30 +112,6 @@ func (c *Coordinator) Stop() {
 	close(c.stopCh)
 }
 
-// RegisterGroup creates a new consumer group for a topic.
-func (c *Coordinator) RegisterGroup(topicName, groupName string, partitionCount int) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if _, exists := c.groups[groupName]; exists {
-		return nil
-	}
-
-	partitions := make([]int, partitionCount)
-	for i := 0; i < partitionCount; i++ {
-		partitions[i] = i
-	}
-
-	c.groups[groupName] = &GroupMetadata{
-		TopicName:  topicName,
-		Members:    make(map[string]*MemberMetadata),
-		Partitions: partitions,
-	}
-
-	c.updateOffsetPartitionCount()
-	return nil
-}
-
 // GetAssignments returns the current partition assignments for each group member.
 func (c *Coordinator) GetAssignments(groupName string) map[string][]int {
 	c.mu.RLock()
@@ -146,106 +128,6 @@ func (c *Coordinator) GetAssignments(groupName string) map[string][]int {
 		result[id] = cp
 	}
 	return result
-}
-
-// AddConsumer registers a new consumer in the group and triggers a rebalance.
-func (c *Coordinator) AddConsumer(groupName, consumerID string) ([]int, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	group := c.groups[groupName]
-	if group == nil {
-		util.Error("❌ Consumer '%s' failed to join: group '%s' not found", consumerID, groupName)
-		return nil, fmt.Errorf("group not found")
-	}
-
-	timeout := time.Duration(c.cfg.ConsumerSessionTimeoutMS) * time.Millisecond
-	now := time.Now()
-	for memberID, member := range group.Members {
-		if now.Sub(member.LastHeartbeat) > timeout {
-			delete(group.Members, memberID)
-			util.Info("Removed inactive member %s before adding new consumer", memberID)
-		}
-	}
-
-	util.Info("🚀 Consumer '%s' joining group '%s' (current members: %d)", consumerID, groupName, len(group.Members))
-
-	group.Members[consumerID] = &MemberMetadata{
-		ID:            consumerID,
-		LastHeartbeat: time.Now(),
-	}
-
-	group.Generation++
-	util.Info("⬆️ Group '%s' generation incremented to %d", groupName, group.Generation)
-
-	c.rebalanceRange(groupName)
-	assignments := group.Members[consumerID].Assignments
-	if len(assignments) == 0 {
-		util.Warn("No assignments for new consumer %s, retrying rebalance", consumerID)
-		c.rebalanceRange(groupName)
-		assignments = group.Members[consumerID].Assignments
-	}
-
-	util.Info("✅ Consumer '%s' joined group '%s' (Generation: %d, Assignments: %v)", consumerID, groupName, group.Generation, assignments)
-	return assignments, nil
-}
-
-// RemoveConsumer unregisters a consumer and triggers a rebalance.
-func (c *Coordinator) RemoveConsumer(groupName, consumerID string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	group := c.groups[groupName]
-	if group == nil {
-		util.Error("❌ Consumer '%s' failed to leave: group '%s' not found", consumerID, groupName)
-		return fmt.Errorf("group not found")
-	}
-
-	util.Info("👋 Consumer '%s' leaving group '%s' (current members: %d)", consumerID, groupName, len(group.Members))
-
-	delete(group.Members, consumerID)
-
-	group.Generation++
-	util.Info("⬆️ Group '%s' generation incremented to %d after member left", groupName, group.Generation)
-
-	c.rebalanceRange(groupName)
-	c.updateOffsetPartitionCount()
-	util.Info("✅ Consumer '%s' left group '%s'. Remaining members: %d", consumerID, groupName, len(group.Members))
-	return nil
-}
-
-// Rebalance forces a rebalance for a consumer group.
-func (c *Coordinator) Rebalance(groupName string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.rebalanceRange(groupName)
-}
-
-// RecordHeartbeat updates the consumer's last heartbeat timestamp.
-func (c *Coordinator) RecordHeartbeat(groupName, consumerID string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	group := c.groups[groupName]
-	if group == nil {
-		util.Error("❌ Heartbeat from '%s' failed: group '%s' not found",
-			consumerID, groupName)
-		return fmt.Errorf("group not found")
-	}
-
-	member := group.Members[consumerID]
-	if member == nil {
-		util.Error("❌ Heartbeat from '%s' failed: consumer not found in group '%s'", consumerID, groupName)
-		return fmt.Errorf("consumer not found")
-	}
-
-	old := member.LastHeartbeat
-	member.LastHeartbeat = time.Now()
-
-	util.Debug("💓 Consumer '%s' in group '%s' sent heartbeat (previous: %v ago)",
-		consumerID, groupName, time.Since(old))
-
-	return nil
 }
 
 func (c *Coordinator) ListGroups() []string {
@@ -292,179 +174,6 @@ func (c *Coordinator) GetGroupStatus(groupName string) (*GroupStatus, error) {
 		Members:        members,
 		LastRebalance:  group.LastRebalance,
 	}, nil
-}
-
-func calculateOffsetPartitionCount(groupCount int) int {
-	return min(max(groupCount/10, 4), 50)
-}
-
-func (c *Coordinator) storeOffsetInMemory(group, topic string, partition int, offset uint64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if _, ok := c.offsets[group]; !ok {
-		c.offsets[group] = make(map[string]map[int]uint64)
-	}
-	if _, ok := c.offsets[group][topic]; !ok {
-		c.offsets[group][topic] = make(map[int]uint64)
-	}
-	c.offsets[group][topic][partition] = offset
-}
-
-func (c *Coordinator) CommitOffset(group, topic string, partition int, offset uint64) error {
-	util.Debug("Committing offset: group='%s', topic='%s', partition=%d, offset=%d",
-		group, topic, partition, offset)
-
-	offsetMsg := OffsetCommitMessage{
-		Group:     group,
-		Topic:     topic,
-		Partition: partition,
-		Offset:    offset,
-		Timestamp: time.Now(),
-	}
-
-	payload, err := json.Marshal(offsetMsg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal offset commit: %w", err)
-	}
-
-	if err := c.offsetPublisher.Publish(c.offsetTopic, &types.Message{
-		Payload: string(payload),
-		Key:     fmt.Sprintf("%s-%s-%d", group, topic, partition),
-	}); err != nil {
-		return err
-	}
-
-	c.storeOffsetInMemory(group, topic, partition, offset)
-	return nil
-}
-
-func (c *Coordinator) CommitOffsetsBulk(group, topic string, offsets []OffsetItem) error {
-	util.Debug("Committing bulk offsets: group='%s', topic='%s', count=%d", group, topic, len(offsets))
-
-	type BulkOffsetMsg struct {
-		Group     string       `json:"group"`
-		Topic     string       `json:"topic"`
-		Offsets   []OffsetItem `json:"offsets"`
-		Timestamp time.Time    `json:"timestamp"`
-	}
-
-	bulkMsg := BulkOffsetMsg{
-		Group:     group,
-		Topic:     topic,
-		Offsets:   offsets,
-		Timestamp: time.Now(),
-	}
-
-	payload, err := json.Marshal(bulkMsg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal bulk offset commit: %w", err)
-	}
-
-	if err := c.offsetPublisher.Publish(c.offsetTopic, &types.Message{
-		Payload: string(payload),
-		Key:     fmt.Sprintf("%s-%s-bulk", group, topic),
-	}); err != nil {
-		return err
-	}
-
-	for _, item := range offsets {
-		c.storeOffsetInMemory(group, topic, item.Partition, item.Offset)
-	}
-
-	return nil
-}
-
-func (c *Coordinator) GetOffset(group, topic string, partition int) (uint64, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if topics, ok := c.offsets[group]; ok {
-		if partitions, ok := topics[topic]; ok {
-			if offset, ok := partitions[partition]; ok {
-				return offset, nil
-			}
-		}
-	}
-	return 0, fmt.Errorf("no offset found for group '%s', topic '%s', partition %d", group, topic, partition)
-}
-
-// updateOffsetPartitionCount updates the number of partitions for the internal offset topic.
-func (c *Coordinator) updateOffsetPartitionCount() {
-	groupCount := len(c.groups)
-	newCount := calculateOffsetPartitionCount(groupCount)
-
-	if newCount != c.offsetTopicPartitionCount {
-		c.offsetTopicPartitionCount = newCount
-		c.offsetPublisher.CreateTopic(c.offsetTopic, newCount)
-		util.Info("Updated offset topic partitions to %d for %d groups", newCount, groupCount)
-	}
-}
-
-func (c *Coordinator) ValidateAndCommit(groupName, topic string, partition int, offset uint64, generation int, memberID string) error {
-	c.mu.Lock()
-
-	group := c.groups[groupName] // *GroupMetadata
-	if group == nil {
-		c.mu.Unlock()
-		return fmt.Errorf("group not found")
-	}
-
-	member := group.Members[memberID]
-	if member == nil {
-		c.mu.Unlock()
-		return fmt.Errorf("member not found")
-	}
-
-	if group.Generation != generation {
-		c.mu.Unlock()
-		return fmt.Errorf("generation mismatch")
-	}
-
-	if !contains(member.Assignments, partition) {
-		c.mu.Unlock()
-		return fmt.Errorf("not partition owner")
-	}
-
-	c.mu.Unlock()
-	return c.CommitOffset(groupName, topic, partition, offset)
-}
-
-func (c *Coordinator) ValidateOwnershipAtomic(groupName, memberID string, generation int, partition int) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	group := c.GetGroup(groupName)
-	if group == nil {
-		util.Debug("failed to validate ownership for partition %d: Group '%s' not found.", partition, groupName)
-		return false
-	}
-
-	member := group.Members[memberID]
-	if member == nil {
-		util.Debug("failed to validate ownership for partition %d: Member '%s' not found in group '%s'.", partition, memberID, groupName)
-		return false
-	}
-
-	if group.Generation != generation {
-		util.Debug("failed to validate ownership  for partition %d: Generation mismatch. Group Gen: %d, Request Gen: %d.", partition, group.Generation, generation)
-		return false
-	}
-
-	isAssigned := false
-	for _, assigned := range member.Assignments {
-		if assigned == partition {
-			isAssigned = true
-			break
-		}
-	}
-
-	if !isAssigned {
-		util.Debug("failed to validate ownership for partition %d: Partition not assigned to member '%s'. Assignments: %v", partition, memberID, member.Assignments)
-		return false
-	}
-
-	return true
 }
 
 func (c *Coordinator) GetGroup(groupName string) *GroupMetadata {
