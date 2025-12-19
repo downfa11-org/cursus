@@ -2,8 +2,9 @@
 name: Enhancement proposal
 about: Suggest an improvement or new feature for this project
 title: ''
-labels: ['enhancement', 'triage/pending']
+labels: enhancement, state:pending
 assignees: ''
+
 ---
 
 # Summary

@@ -2,8 +2,9 @@
 name: Bug report
 about: Create a report to help us improve
 title: ''
-labels: ['bug', 'triage/pending']
+labels: bug, state:pending
 assignees: ''
+
 ---
 
 Checklist:
