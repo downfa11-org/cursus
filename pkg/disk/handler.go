@@ -153,7 +153,9 @@ func countMessagesInFile(filePath string) (int, error) {
 }
 
 func (d *DiskHandler) AppendMessageSync(topic string, partition int, offset uint64, payload string) error {
-	d.WriteDirect(topic, partition, offset, payload)
+	if err := d.WriteDirect(topic, partition, offset, payload); err != nil {
+		return fmt.Errorf("WriteDirect failed: %w", err)
+	}
 	return nil
 }
 
@@ -297,10 +299,9 @@ func (dh *DiskHandler) readMessagesFromSegment(reader *mmap.ReaderAt, startOffse
 				continue
 			}
 			msg := types.Message{
-				Offset:  diskMsg.Offset,
+				Offset:  segmentStartOffset + currentMsgIndex,
 				Payload: diskMsg.Payload,
 			}
-			msg.Offset = segmentStartOffset + currentMsgIndex
 			messages = append(messages, msg)
 		}
 		currentMsgIndex++

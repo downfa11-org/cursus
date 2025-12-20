@@ -8,9 +8,9 @@ max_retries: 1
 retry_backoff_ms: 50
 
 acks: "1"
-num_messages: 100
+num_messages: 100000
 partitions: 12
-max_inflight_requests: 10
-batch_size: 10000
-buffer_size: 70000
-linger_ms: 40
+max_inflight_requests: 25
+batch_size: 2000
+buffer_size: 100000
+linger_ms: 10

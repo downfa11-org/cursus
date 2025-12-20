@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
+	"sync"
 	"syscall"
 	"time"
 
@@ -35,37 +37,38 @@ func main() {
 	defer pub.Close()
 
 	total := cfg.NumMessages
-	msgs := make([]string, 0, total)
-	for i := 0; i < total; i++ {
-		var msg string
-		if cfg.EnableBenchmark {
-			msg = bench.GenerateMessage(cfg.MessageSize, i)
-		} else {
-			msg = fmt.Sprintf("hello-%d", i)
-		}
-		msgs = append(msgs, msg)
-	}
-
 	start := time.Now()
 
-	batchSize := cfg.BatchSize
-	for i := 0; i < len(msgs); i += batchSize {
-		end := i + batchSize
-		if end > len(msgs) {
-			end = len(msgs)
-		}
-		batch := msgs[i:end]
+	var wg sync.WaitGroup
+	numWorkers := runtime.NumCPU()
+	chunkSize := total / numWorkers
 
-		for _, m := range batch {
-			if _, err := pub.PublishMessage(m); err != nil {
-				util.Error("publish failed: %v", err)
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			startIdx := workerID * chunkSize
+			endIdx := startIdx + chunkSize
+			if workerID == numWorkers-1 {
+				endIdx = total
 			}
-		}
 
-		if cfg.PublishDelayMS > 0 {
-			time.Sleep(time.Duration(cfg.PublishDelayMS) * time.Millisecond)
-		}
+			for i := startIdx; i < endIdx; i++ {
+				var msg string
+				if cfg.EnableBenchmark {
+					msg = bench.GenerateMessage(cfg.MessageSize, i)
+				} else {
+					msg = fmt.Sprintf("hello-%d", i)
+				}
+
+				if _, err := pub.PublishMessage(msg); err != nil {
+					util.Error("publish failed: %v", err)
+				}
+			}
+		}(w)
 	}
+
+	wg.Wait()
 
 	if !cfg.EnableBenchmark {
 		pub.Flush()

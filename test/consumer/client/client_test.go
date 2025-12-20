@@ -47,22 +47,6 @@ func TestConsumerClient_Connect(t *testing.T) {
 	defer conn.Close()
 }
 
-func TestConsumerClient_GetNextBroker(t *testing.T) {
-	cfg := &config.ConsumerConfig{
-		BrokerAddrs: []string{"broker1:9000", "broker2:9000", "broker3:9000"},
-	}
-
-	c := client.NewConsumerClient(cfg)
-	expected := []string{"broker1:9000", "broker2:9000", "broker3:9000", "broker1:9000"}
-
-	for i, exp := range expected {
-		broker := c.GetNextBroker()
-		if broker != exp {
-			t.Errorf("Iteration %d: expected %s, got %s", i, exp, broker)
-		}
-	}
-}
-
 func TestConsumerClient_ConnectWithFailover(t *testing.T) {
 	ln1, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

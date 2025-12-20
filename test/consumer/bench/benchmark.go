@@ -73,7 +73,7 @@ func (m *ConsumerMetrics) PrintSummaryTo(w io.Writer) {
 	fmt.Fprintln(w, "BENCHMARK SUMMARY")
 	fmt.Fprintf(w, "%-28s : %d\n", "Total messages consumed", total)
 	fmt.Fprintf(w, "%-28s : %d\n", "Actually processed messages", processed)
-	fmt.Fprintf(w, "%-28s : %d\n", "Duplicate messages filtered", total-processed)
+	fmt.Fprintf(w, "%-28s : %d\n", "Duplicate messages", total-processed)
 	fmt.Fprintf(w, "%-28s : %v\n", "Consume elapsed time", duration)
 	fmt.Fprintf(w, "%-28s : %.2f msg/s\n", "Consume Throughput", tps)
 	fmt.Fprintf(w, "%-28s : %.2f msg/s\n", "Processed Throughput", processedTps)

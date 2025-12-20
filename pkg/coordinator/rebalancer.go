@@ -1,10 +1,109 @@
 package coordinator
 
 import (
+	"fmt"
 	"sort"
+	"time"
 
 	"github.com/downfa11-org/go-broker/util"
 )
+
+// RegisterGroup creates a new consumer group for a topic.
+func (c *Coordinator) RegisterGroup(topicName, groupName string, partitionCount int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, exists := c.groups[groupName]; exists {
+		return nil
+	}
+
+	partitions := make([]int, partitionCount)
+	for i := 0; i < partitionCount; i++ {
+		partitions[i] = i
+	}
+
+	c.groups[groupName] = &GroupMetadata{
+		TopicName:  topicName,
+		Members:    make(map[string]*MemberMetadata),
+		Partitions: partitions,
+	}
+
+	c.updateOffsetPartitionCount()
+	return nil
+}
+
+// AddConsumer registers a new consumer in the group and triggers a rebalance.
+func (c *Coordinator) AddConsumer(groupName, consumerID string) ([]int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	group := c.groups[groupName]
+	if group == nil {
+		util.Error("❌ Consumer '%s' failed to join: group '%s' not found", consumerID, groupName)
+		return nil, fmt.Errorf("group not found")
+	}
+
+	timeout := time.Duration(c.cfg.ConsumerSessionTimeoutMS) * time.Millisecond
+	now := time.Now()
+	for memberID, member := range group.Members {
+		if now.Sub(member.LastHeartbeat) > timeout {
+			delete(group.Members, memberID)
+			util.Info("Removed inactive member %s before adding new consumer", memberID)
+		}
+	}
+
+	util.Info("🚀 Consumer '%s' joining group '%s' (current members: %d)", consumerID, groupName, len(group.Members))
+
+	group.Members[consumerID] = &MemberMetadata{
+		ID:            consumerID,
+		LastHeartbeat: time.Now(),
+	}
+
+	group.Generation++
+	util.Info("⬆️ Group '%s' generation incremented to %d", groupName, group.Generation)
+
+	c.rebalanceRange(groupName)
+	assignments := group.Members[consumerID].Assignments
+	if len(assignments) == 0 {
+		util.Warn("No assignments for new consumer %s, retrying rebalance", consumerID)
+		c.rebalanceRange(groupName)
+		assignments = group.Members[consumerID].Assignments
+	}
+
+	util.Info("✅ Consumer '%s' joined group '%s' (Generation: %d, Assignments: %v)", consumerID, groupName, group.Generation, assignments)
+	return assignments, nil
+}
+
+// RemoveConsumer unregisters a consumer and triggers a rebalance.
+func (c *Coordinator) RemoveConsumer(groupName, consumerID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	group := c.groups[groupName]
+	if group == nil {
+		util.Error("❌ Consumer '%s' failed to leave: group '%s' not found", consumerID, groupName)
+		return fmt.Errorf("group not found")
+	}
+
+	util.Info("👋 Consumer '%s' leaving group '%s' (current members: %d)", consumerID, groupName, len(group.Members))
+
+	delete(group.Members, consumerID)
+
+	group.Generation++
+	util.Info("⬆️ Group '%s' generation incremented to %d after member left", groupName, group.Generation)
+
+	c.rebalanceRange(groupName)
+	c.updateOffsetPartitionCount()
+	util.Info("✅ Consumer '%s' left group '%s'. Remaining members: %d", consumerID, groupName, len(group.Members))
+	return nil
+}
+
+// Rebalance forces a rebalance for a consumer group.
+func (c *Coordinator) Rebalance(groupName string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rebalanceRange(groupName)
+}
 
 // rebalanceRange redistributes partitions among consumers using range-based assignment.
 func (c *Coordinator) rebalanceRange(groupName string) {

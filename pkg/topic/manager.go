@@ -111,6 +111,7 @@ func (tm *TopicManager) PublishBatchSync(topicName string, messages []types.Mess
 
 	t := tm.GetTopic(topicName)
 	if t == nil {
+		util.Warn("tm: topic '%s' does not exist", topicName)
 		return fmt.Errorf("topic '%s' does not exist", topicName)
 	}
 
@@ -151,6 +152,55 @@ func (tm *TopicManager) PublishBatchSync(topicName string, messages []types.Mess
 	return nil
 }
 
+// Batch Async (acks=0)
+func (tm *TopicManager) PublishBatchAsync(topicName string, messages []types.Message) error {
+	if len(messages) == 0 {
+		return nil
+	}
+
+	t := tm.GetTopic(topicName)
+	if t == nil {
+		util.Warn("tm: topic '%s' does not exist", topicName)
+		return fmt.Errorf("topic '%s' does not exist", topicName)
+	}
+
+	partitioned := make(map[int][]types.Message)
+
+	partitionsLen := uint64(len(t.Partitions))
+	for _, msg := range messages {
+		var idx int
+		if msg.Key != "" {
+			keyID := util.GenerateID(msg.Key)
+			idx = int(keyID % partitionsLen)
+		} else {
+			oldCounter := atomic.AddUint64(&t.counter, 1) - 1
+			idx = int(oldCounter % partitionsLen)
+		}
+		partitioned[idx] = append(partitioned[idx], msg)
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(partitioned))
+
+	for idx, msgs := range partitioned {
+		wg.Add(1)
+		go func(p *Partition, msgs []types.Message) {
+			defer wg.Done()
+			if err := p.EnqueueBatch(msgs); err != nil {
+				errCh <- fmt.Errorf("partition %d: %w", p.id, err)
+			}
+		}(t.Partitions[idx], msgs)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	if len(errCh) > 0 {
+		return <-errCh
+	}
+	return nil
+}
+
 func (tm *TopicManager) publishInternal(topicName string, msg *types.Message, requireAck bool) error {
 	util.Debug("Starting publish. Topic: %s, RequireAck: %v, ProducerID: %s, SeqNum: %d",
 		topicName, requireAck, msg.ProducerID, msg.SeqNum)
@@ -174,6 +224,7 @@ func (tm *TopicManager) publishInternal(topicName string, msg *types.Message, re
 
 	t := tm.GetTopic(topicName)
 	if t == nil {
+		util.Warn("tm: topic '%s' does not exist", topicName)
 		return fmt.Errorf("topic '%s' does not exist", topicName)
 	}
 
@@ -196,6 +247,7 @@ func (tm *TopicManager) publishInternal(topicName string, msg *types.Message, re
 func (tm *TopicManager) RegisterConsumerGroup(topicName, groupName string, consumerCount int) (*types.ConsumerGroup, error) {
 	t := tm.GetTopic(topicName)
 	if t == nil {
+		util.Warn("tm: topic '%s' does not exist", topicName)
 		return nil, fmt.Errorf("topic '%s' does not exist", topicName)
 	}
 

@@ -89,7 +89,6 @@ func (bc *BrokerClient) SendHeartbeat() error {
 	return bc.executeCommand("", heartbeatCmd)
 }
 
-// DeleteTopic
 func (bc *BrokerClient) DeleteTopic(topic string) error {
 	deleteCmd := fmt.Sprintf("DELETE topic=%s", topic)
 	return bc.executeCommand("admin", deleteCmd)
@@ -253,7 +252,7 @@ func (bc *BrokerClient) ConsumeMessages(topic string, partition int, consumerGro
 		return nil, fmt.Errorf("set read deadline: %w", err)
 	}
 
-	batchBytes, err := util.ReadWithLength(conn)
+	rawData, err := util.ReadWithLength(conn)
 
 	if resetErr := conn.SetReadDeadline(time.Time{}); resetErr != nil {
 		util.Warn("failed to reset read deadline: %v", resetErr)
@@ -266,24 +265,31 @@ func (bc *BrokerClient) ConsumeMessages(topic string, partition int, consumerGro
 		return nil, fmt.Errorf("read batch message: %w", err)
 	}
 
-	if len(batchBytes) == 0 {
+	if len(rawData) == 0 {
 		return []string{}, nil
 	}
 
-	respStr := strings.TrimSpace(string(batchBytes))
-	if strings.HasPrefix(respStr, "ERROR:") {
-		return nil, fmt.Errorf("broker error during consume: %s", respStr)
+	if len(rawData) >= 6 && string(rawData[:6]) == "ERROR:" {
+		return nil, fmt.Errorf("broker error during consume: %s", string(rawData))
 	}
 
-	batch, err := util.DecodeBatchMessages(batchBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode batch: %w", err)
+	if len(rawData) >= 2 && rawData[0] == 0xBA && rawData[1] == 0x7C {
+		batch, err := util.DecodeBatchMessages(rawData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode batch: %w", err)
+		}
+
+		var messages []string
+		for _, msg := range batch.Messages {
+			messages = append(messages, msg.Payload)
+		}
+		return messages, nil
 	}
 
-	var messages []string
-	for _, msg := range batch.Messages {
-		messages = append(messages, msg.Payload)
+	respStr := string(rawData)
+	if respStr == "OK" || strings.HasPrefix(respStr, "OK ") {
+		return []string{}, nil
 	}
 
-	return messages, nil
+	return nil, fmt.Errorf("unexpected response format: %s", respStr)
 }

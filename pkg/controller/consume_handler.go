@@ -24,6 +24,28 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 		return 0, fmt.Errorf("missing topic parameter")
 	}
 
+	partitionStr, ok := args["partition"]
+	if !ok {
+		return 0, fmt.Errorf("missing partition parameter")
+	}
+	partition, err := strconv.Atoi(partitionStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid partition ID: %w", err)
+	}
+
+	if err := ch.checkLeaderOrRedirect(conn); err != nil {
+		if err.Error() == "not leader" {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	if !strings.ContainsAny(topicPattern, "*?") {
+		if err := ch.checkPartitionAuthorization(topicPattern, partition); err != nil {
+			return 0, err
+		}
+	}
+
 	matchedTopics, err := ch.matchTopicPattern(topicPattern)
 	if err != nil {
 		return 0, err
@@ -37,24 +59,10 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 				matchedTopics = []string{group.TopicName}
 			}
 		}
-	} else {
-		matchedTopics, err = ch.matchTopicPattern(topicPattern)
-		if err != nil {
-			return 0, err
-		}
 	}
 
 	if len(matchedTopics) == 0 {
 		return 0, fmt.Errorf("no assigned topics match pattern '%s'", topicPattern)
-	}
-
-	partitionStr, ok := args["partition"]
-	if !ok {
-		return 0, fmt.Errorf("missing partition parameter")
-	}
-	partition, err := strconv.Atoi(partitionStr)
-	if err != nil {
-		return 0, fmt.Errorf("invalid partition ID: %w", err)
 	}
 
 	totalStreamed := 0
@@ -171,7 +179,7 @@ func (ch *CommandHandler) consumeFromTopic(conn net.Conn, topicName string, part
 		}
 	}
 
-	batchData, err := util.EncodeBatchMessages(topicName, partition, messages)
+	batchData, err := util.EncodeBatchMessages(topicName, partition, "1", messages)
 	if err != nil {
 		return 0, fmt.Errorf("failed to encode batch: %w", err)
 	}
@@ -197,7 +205,6 @@ func (ch *CommandHandler) matchTopicPattern(pattern string) ([]string, error) {
 	}
 
 	escaped := regexp.QuoteMeta(pattern)
-	// QuoteMeta escapes * and ?, so we need to replace the escaped versions
 	regexPattern := strings.ReplaceAll(escaped, `\*`, ".*")
 	regexPattern = strings.ReplaceAll(regexPattern, `\?`, ".")
 	regex, err := regexp.Compile("^" + regexPattern + "$")
@@ -277,6 +284,14 @@ func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx 
 			requestedOffset = parsed
 		}
 	}
+
+	if err := ch.checkLeaderOrRedirect(conn); err != nil {
+		return err
+	}
+	if err := ch.checkPartitionAuthorization(topicName, partition); err != nil {
+		return err
+	}
+
 	actualOffset, err := ch.resolveOffset(topicName, partition, requestedOffset, groupName, args["autoOffsetReset"])
 	if err != nil {
 		return err
@@ -328,8 +343,44 @@ func (ch *CommandHandler) validateStreamSyntax(cmd, raw string) string {
 
 func (ch *CommandHandler) validateConsumeSyntax(cmd, raw string) string {
 	args := parseKeyValueArgs(cmd[8:])
-	if args["topic"] == "" || args["partition"] == "" || args["offset"] == "" {
+	if args["topic"] == "" || args["partition"] == "" || args["offset"] == "" || args["member"] == "" {
 		return ch.fail(raw, "ERROR: invalid CONSUME syntax")
 	}
 	return STREAM_DATA_SIGNAL
+}
+
+// checkLeaderOrRedirect checks if this broker is the leader and writes a redirect error if not.
+func (ch *CommandHandler) checkLeaderOrRedirect(conn net.Conn) error {
+	if !ch.Config.EnabledDistribution || ch.Cluster.Router == nil {
+		return nil
+	}
+
+	if ch.Cluster.RaftManager.IsLeader() {
+		return nil
+	}
+
+	leaderAddr := ch.Cluster.RaftManager.GetLeaderAddress()
+	if leaderAddr == "" {
+		return fmt.Errorf("no leader available")
+	}
+
+	serviceLeader := leaderAddr
+	if host, _, splitErr := net.SplitHostPort(leaderAddr); splitErr == nil {
+		serviceLeader = net.JoinHostPort(host, strconv.Itoa(ch.Config.BrokerPort))
+	}
+
+	errResp := fmt.Sprintf("ERROR: NOT_LEADER LEADER_IS %s", serviceLeader)
+	util.Warn("leader redirect: %s", errResp)
+	if err := util.WriteWithLength(conn, []byte(errResp)); err != nil {
+		return fmt.Errorf("failed to send leader redirect: %w", err)
+	}
+	return fmt.Errorf("not leader")
+}
+
+// checkPartitionAuthorization checks if the client is authorized for the given topic/partition.
+func (ch *CommandHandler) checkPartitionAuthorization(topic string, partition int) error {
+	if !ch.isAuthorizedForPartition(topic, partition) {
+		return fmt.Errorf("ERROR: NOT_AUTHORIZED_FOR_PARTITION %s:%d", topic, partition)
+	}
+	return nil
 }

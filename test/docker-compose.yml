@@ -3,7 +3,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    container_name: broker
+    container_name: bench-broker
     command: ./broker
     volumes:
       - ./config.yaml:/root/config.yaml
@@ -27,7 +27,7 @@ services:
     build:
       context: ./publisher
       dockerfile: Dockerfile
-    container_name: broker-publisher
+    container_name: bench-publisher
     depends_on:
       broker:
         condition: service_healthy
@@ -41,7 +41,7 @@ services:
     build:
       context: ./consumer
       dockerfile: Dockerfile
-    container_name: broker-consumer
+    container_name: bench-consumer
     depends_on:
       broker:
         condition: service_healthy

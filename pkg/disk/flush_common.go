@@ -32,13 +32,17 @@ func (d *DiskHandler) flushLoop() {
 
 			if len(batch) >= d.batchSize {
 				util.Debug("🔥 Batch size threshold reached, flushing %d messages", len(batch))
-				d.writeBatch(batch)
+				if err := d.writeBatch(batch); err != nil {
+					util.Error("writeBatch failed: %v", err)
+				}
 				batch = batch[:0]
 			}
 		case <-ticker.C:
 			if len(batch) > 0 {
 				util.Debug("🔥 Flushing %d messages on timer", len(batch))
-				d.writeBatch(batch)
+				if err := d.writeBatch(batch); err != nil {
+					util.Error("writeBatch failed: %v", err)
+				}
 				batch = batch[:0]
 			}
 		case <-func() <-chan time.Time {
@@ -63,7 +67,9 @@ func (d *DiskHandler) flushLoop() {
 			draining := true
 			for draining {
 				if len(batch) >= d.batchSize {
-					d.writeBatch(batch)
+					if err := d.writeBatch(batch); err != nil {
+						util.Error("writeBatch failed: %v", err)
+					}
 					batch = batch[:0]
 					continue
 				}
@@ -80,7 +86,9 @@ func (d *DiskHandler) flushLoop() {
 			}
 
 			if len(batch) > 0 {
-				d.writeBatch(batch)
+				if err := d.writeBatch(batch); err != nil {
+					util.Error("writeBatch failed: %v", err)
+				}
 			}
 
 			d.ioMu.Lock()
@@ -124,7 +132,7 @@ func (d *DiskHandler) syncLoop() {
 }
 
 // writeBatch writes a batch of messages into the current segment file.
-func (d *DiskHandler) writeBatch(batch []types.DiskMessage) {
+func (d *DiskHandler) writeBatch(batch []types.DiskMessage) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
@@ -132,33 +140,27 @@ func (d *DiskHandler) writeBatch(batch []types.DiskMessage) {
 
 	if d.file == nil {
 		if err := d.openSegment(); err != nil {
-			util.Fatal("failed to open segment: %v", err)
+			return fmt.Errorf("open segment failed: %w", err)
 		}
 	}
 
 	if len(batch) == 0 {
-		return
+		return nil
 	}
 
 	serializedMsgs := make([][]byte, 0, len(batch))
 	totalSize := 0
 
-	for _, msg := range batch {
+	for i, msg := range batch {
 		serialized, err := util.SerializeDiskMessage(msg)
 		if err != nil {
-			util.Error("failed to serialize message: %v", err)
-			continue
+			return fmt.Errorf("serialize failed at index %d: %w", i, err)
 		}
 		if len(serialized) > 0xFFFFFFFF {
-			util.Error("message too large to write: %d bytes", len(serialized))
-			continue
+			return fmt.Errorf("message too large at index %d: %d bytes", i, len(serialized))
 		}
 		serializedMsgs = append(serializedMsgs, serialized)
 		totalSize += 4 + len(serialized)
-	}
-
-	if len(serializedMsgs) == 0 {
-		return
 	}
 
 	buffer := make([]byte, 0, totalSize)
@@ -173,27 +175,26 @@ func (d *DiskHandler) writeBatch(batch []types.DiskMessage) {
 
 	if d.CurrentOffset+uint64(len(buffer)) > d.SegmentSize {
 		if err := d.rotateSegment(); err != nil {
-			util.Error("rotateSegment failed: %v", err)
-			return
+			return fmt.Errorf("rotateSegment failed: %w", err)
 		}
 	}
 
 	if _, err := d.writer.Write(buffer); err != nil {
-		util.Error("writeBatch failed: %v", err)
-		return
+		return fmt.Errorf("write batch failed: %w", err)
+	}
+
+	if err := d.writer.Flush(); err != nil {
+		return fmt.Errorf("flush failed after batch: %w", err)
 	}
 
 	d.CurrentOffset += uint64(len(buffer))
 	d.AbsoluteOffset += uint64(len(serializedMsgs))
 
-	if err := d.writer.Flush(); err != nil {
-		util.Error("flush failed after batch: %v", err)
-		return
-	}
+	return nil
 }
 
 // WriteDirect writes a single message immediately without batching.
-func (d *DiskHandler) WriteDirect(topic string, partition int, offset uint64, payload string) {
+func (d *DiskHandler) WriteDirect(topic string, partition int, offset uint64, payload string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
@@ -208,13 +209,11 @@ func (d *DiskHandler) WriteDirect(topic string, partition int, offset uint64, pa
 
 	serialized, err := util.SerializeDiskMessage(diskMsg)
 	if err != nil {
-		util.Fatal("failed to serialize message: %v", err)
-		return
+		return fmt.Errorf("serialize failed: %w", err)
 	}
 
 	if len(serialized) > 0xFFFFFFFF {
-		util.Fatal("message too large to write: %d bytes", len(serialized))
-		return
+		return fmt.Errorf("message too large: %d bytes", len(serialized))
 	}
 
 	var lenBuf [4]byte
@@ -223,25 +222,25 @@ func (d *DiskHandler) WriteDirect(topic string, partition int, offset uint64, pa
 
 	if d.CurrentOffset+totalLen > d.SegmentSize {
 		if err := d.rotateSegment(); err != nil {
-			util.Fatal("rotateSegment failed: %v", err)
+			return fmt.Errorf("rotateSegment failed: %w", err)
 		}
 	}
 
 	if _, err := d.writer.Write(lenBuf[:]); err != nil {
-		util.Error("writeDirect failed writing length: %v", err)
-		return
+		return fmt.Errorf("write length failed: %w", err)
 	}
 	if _, err := d.writer.Write(serialized); err != nil {
-		util.Error("writeDirect failed writing data: %v", err)
-		return
+		return fmt.Errorf("write payload failed: %w", err)
+	}
+
+	if err := d.writer.Flush(); err != nil {
+		return fmt.Errorf("flush failed: %w", err)
 	}
 
 	d.CurrentOffset += totalLen
 	d.AbsoluteOffset++
 
-	if err := d.writer.Flush(); err != nil {
-		util.Error("flush failed in WriteDirect: %v", err)
-	}
+	return nil
 }
 
 // rotateSegment closes the current segment and opens a new one.
@@ -291,7 +290,9 @@ func (d *DiskHandler) Flush() {
 
 perform_write:
 	if len(batch) > 0 {
-		d.writeBatch(batch)
+		if err := d.writeBatch(batch); err != nil {
+			return
+		}
 		return
 	}
 

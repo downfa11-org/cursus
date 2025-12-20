@@ -62,6 +62,9 @@ func (c *TCPClusterClient) joinClusterWithContext(ctx context.Context, peers []s
 		case <-time.After(backoff):
 		}
 		backoff *= 2
+		if backoff > 10*time.Second {
+			backoff = 10 * time.Second
+		}
 	}
 
 	return fmt.Errorf("failed to join cluster after %d attempts", maxAttempts)
@@ -87,9 +90,8 @@ func (c *TCPClusterClient) attemptJoin(ctx context.Context, seedHosts []string, 
 
 		hostOnly := seed
 		if strings.Contains(seed, ":") {
-			parts := strings.Split(seed, ":")
-			if len(parts) > 0 {
-				hostOnly = parts[0]
+			if h, _, err := net.SplitHostPort(seed); err == nil {
+				hostOnly = h
 			}
 		}
 		addr := net.JoinHostPort(hostOnly, fmt.Sprintf("%d", apiPort))
@@ -150,7 +152,9 @@ func (c *TCPClusterClient) sendJoinCommand(ctx context.Context, addr, joinCmd st
 func (c *TCPClusterClient) retryWithLeader(ctx context.Context, leader string, apiPort int, joinCmd string) error {
 	leaderHost := leader
 	if strings.Contains(leader, ":") {
-		leaderHost = strings.Split(leader, ":")[0]
+		if h, _, err := net.SplitHostPort(leader); err == nil {
+			leaderHost = h
+		}
 	}
 
 	addr := net.JoinHostPort(leaderHost, fmt.Sprintf("%d", apiPort))

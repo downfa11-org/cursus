@@ -114,7 +114,7 @@ func (sc *StreamConnection) Run(
 				continue
 			}
 
-			batchData, err := util.EncodeBatchMessages(sc.topic, sc.partition, msgs)
+			batchData, err := util.EncodeBatchMessages(sc.topic, sc.partition, "1", msgs)
 			if err != nil {
 				util.Error("Failed to encode batch messages: %v", err)
 				sc.Stop()
