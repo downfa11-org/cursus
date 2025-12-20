@@ -31,3 +31,26 @@ func (f *BrokerFSM) UpdatePartitionISR(key string, isr []string) {
 		util.Warn("Partition metadata not found for %s. ISR not updated.", key)
 	}
 }
+
+func (f *BrokerFSM) RegisterNotifier(requestID string) chan interface{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ch := make(chan interface{}, 1)
+	f.notifiers[requestID] = ch
+	return ch
+}
+
+func (f *BrokerFSM) UnregisterNotifier(requestID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.notifiers, requestID)
+}
+
+func (f *BrokerFSM) notify(requestID string, result interface{}) {
+	f.mu.RLock()
+	ch, ok := f.notifiers[requestID]
+	f.mu.RUnlock()
+	if ok {
+		ch <- result
+	}
+}

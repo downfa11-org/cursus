@@ -12,6 +12,7 @@ type BrokerFSMSnapshot struct {
 	logs              map[uint64]*ReplicationEntry
 	brokers           map[string]*BrokerInfo
 	partitionMetadata map[string]*PartitionMetadata
+	producerState     map[string]uint64
 }
 
 func (s *BrokerFSMSnapshot) Persist(sink raft.SnapshotSink) error {
@@ -20,11 +21,13 @@ func (s *BrokerFSMSnapshot) Persist(sink raft.SnapshotSink) error {
 		Logs              map[uint64]*ReplicationEntry  `json:"logs"`
 		Brokers           map[string]*BrokerInfo        `json:"brokers"`
 		PartitionMetadata map[string]*PartitionMetadata `json:"partitionMetadata"`
+		ProducerState     map[string]uint64             `json:"producerState"`
 	}{
 		Applied:           s.applied,
 		Logs:              s.logs,
 		Brokers:           s.brokers,
 		PartitionMetadata: s.partitionMetadata,
+		ProducerState:     s.producerState,
 	}
 
 	util.Debug("Persisting snapshot data")

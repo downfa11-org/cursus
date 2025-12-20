@@ -98,6 +98,16 @@ func (pc *PartitionConsumer) pollAndProcess() {
 	}
 
 	if len(batchData) > 0 {
+		if pc.consumer.metrics != nil && pc.consumer.metrics.IsDone() {
+			return
+		}
+
+		batch, err := types.DecodeBatchMessages(batchData)
+		if err == nil && len(batch.Messages) > 0 {
+			lastOffset := batch.Messages[len(batch.Messages)-1].Offset
+			atomic.StoreUint64(&pc.offset, lastOffset+1)
+		}
+
 		pc.dataCh <- batchData
 	}
 }
@@ -207,8 +217,14 @@ func (pc *PartitionConsumer) workerLoop() {
 
 		if len(batch.Messages) > 0 {
 			lastOffset := batch.Messages[len(batch.Messages)-1].Offset
-			atomic.StoreUint64(&pc.offset, lastOffset+1)
-			pc.consumer.commitCh <- commitEntry{pc.partitionID, lastOffset + 1}
+			nextOffset := lastOffset + 1
+			atomic.StoreUint64(&pc.offset, nextOffset)
+			pc.consumer.commitCh <- commitEntry{
+				pc.partitionID,
+				nextOffset,
+			}
+
+			time.Sleep(2 * time.Millisecond)
 		}
 	}
 }

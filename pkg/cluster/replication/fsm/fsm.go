@@ -31,10 +31,13 @@ type BrokerInfo struct {
 }
 
 type BrokerFSM struct {
-	mu                sync.RWMutex
+	notifiers map[string]chan interface{}
+	mu        sync.RWMutex
+
 	logs              map[uint64]*ReplicationEntry
 	brokers           map[string]*BrokerInfo
 	partitionMetadata map[string]*PartitionMetadata
+	producerState     map[string]uint64 // ProducerID -> LastSeqNum
 	applied           uint64
 
 	dm *disk.DiskManager
@@ -44,9 +47,11 @@ type BrokerFSM struct {
 
 func NewBrokerFSM(dm *disk.DiskManager, tm *topic.TopicManager, cd *coordinator.Coordinator) *BrokerFSM {
 	return &BrokerFSM{
+		notifiers:         make(map[string]chan interface{}),
 		logs:              make(map[uint64]*ReplicationEntry),
 		brokers:           make(map[string]*BrokerInfo),
 		partitionMetadata: make(map[string]*PartitionMetadata),
+		producerState:     make(map[string]uint64),
 		dm:                dm,
 		tm:                tm,
 		cd:                cd,
@@ -74,33 +79,47 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 	data := string(log.Data)
 	util.Debug("Applying log entry at index %d", log.Index)
 
+	var reqID string
+	if strings.Contains(data, "{") {
+		var meta struct {
+			ReqID string `json:"req_id"`
+		}
+
+		_ = json.Unmarshal([]byte(extractJSON(data)), &meta)
+		reqID = meta.ReqID
+	}
+
 	var res interface{}
 	switch {
 	case strings.HasPrefix(data, "REGISTER:"):
-		res = f.applyRegisterCommand(data[9:])
+		res = f.applyRegisterCommand(strings.TrimPrefix(data, "REGISTER:"))
 	case strings.HasPrefix(data, "DEREGISTER:"):
-		res = f.applyDeregisterCommand(data[11:])
+		res = f.applyDeregisterCommand(strings.TrimPrefix(data, "DEREGISTER:"))
 	case strings.HasPrefix(data, "MESSAGE:"):
-		res = f.applyMessageCommand(data[8:])
+		res = f.applyMessageCommand(strings.TrimPrefix(data, "MESSAGE:"))
 	case strings.HasPrefix(data, "BATCH:"):
-		res = f.applyMessageCommand(data[6:])
+		res = f.applyMessageCommand(strings.TrimPrefix(data, "BATCH:"))
 	case strings.HasPrefix(data, "TOPIC:"):
-		res = f.applyTopicCommand(data[6:])
+		res = f.applyTopicCommand(strings.TrimPrefix(data, "TOPIC:"))
 	case strings.HasPrefix(data, "PARTITION:"):
 		res = f.applyPartitionCommand(data)
 	case strings.HasPrefix(data, "GROUP_SYNC:"):
-		res = f.applyGroupSyncCommand(data[11:])
+		res = f.applyGroupSyncCommand(strings.TrimPrefix(data, "GROUP_SYNC:"))
 	case strings.HasPrefix(data, "OFFSET_SYNC:"):
-		res = f.applyOffsetSyncCommand(data[12:])
-	case strings.HasPrefix(data, "BATCH_OFFSET_SYNC:"):
-		res = f.applyBatchOffsetSyncCommand(data[18:])
+		res = f.applyOffsetSyncCommand(strings.TrimPrefix(data, "OFFSET_SYNC:"))
+	case strings.HasPrefix(data, "BATCH_OFFSET:"):
+		res = f.applyBatchOffsetSyncCommand(strings.TrimPrefix(data, "BATCH_OFFSET:"))
 	default:
 		res = f.handleUnknownCommand(data)
 	}
 
-	if err, ok := res.(error); !ok || err == nil {
-		f.applied = log.Index
+	if reqID != "" {
+		f.notify(reqID, res)
 	}
+
+	f.mu.Lock()
+	f.applied = log.Index
+	f.mu.Unlock()
 
 	return res
 }
@@ -115,6 +134,7 @@ func (f *BrokerFSM) Restore(rc io.ReadCloser) error {
 		Logs              map[uint64]*ReplicationEntry  `json:"logs"`
 		Brokers           map[string]*BrokerInfo        `json:"brokers"`
 		PartitionMetadata map[string]*PartitionMetadata `json:"partitionMetadata"`
+		ProducerState     map[string]uint64             `json:"producerState"`
 	}
 
 	if err := json.NewDecoder(rc).Decode(&state); err != nil {
@@ -126,6 +146,11 @@ func (f *BrokerFSM) Restore(rc io.ReadCloser) error {
 	f.logs = state.Logs
 	f.brokers = state.Brokers
 	f.partitionMetadata = state.PartitionMetadata
+
+	f.producerState = state.ProducerState
+	if f.producerState == nil {
+		f.producerState = make(map[string]uint64)
+	}
 
 	maxIndex := uint64(0)
 	for index := range f.logs {
@@ -159,6 +184,10 @@ func (f *BrokerFSM) Snapshot() (raft.FSMSnapshot, error) {
 		metaCopy := *v
 		metadataCopy[k] = &metaCopy
 	}
+	producerStateCopy := make(map[string]uint64, len(f.producerState))
+	for k, v := range f.producerState {
+		producerStateCopy[k] = v
+	}
 
 	util.Debug("Creating FSM snapshot")
 	return &BrokerFSMSnapshot{
@@ -166,6 +195,7 @@ func (f *BrokerFSM) Snapshot() (raft.FSMSnapshot, error) {
 		logs:              logsCopy,
 		brokers:           brokersCopy,
 		partitionMetadata: metadataCopy,
+		producerState:     producerStateCopy,
 	}, nil
 }
 

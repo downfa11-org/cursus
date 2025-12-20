@@ -261,6 +261,7 @@ func (c *Consumer) heartbeatLoop() {
 				c.hbConn = conn
 			}
 			conn := c.hbConn
+			conn.SetDeadline(time.Now().Add(5 * time.Second))
 			c.hbMu.Unlock()
 
 			hb := fmt.Sprintf("HEARTBEAT topic=%s group=%s member=%s generation=%d",
@@ -275,6 +276,7 @@ func (c *Consumer) heartbeatLoop() {
 			}
 
 			resp, err := util.ReadWithLength(conn)
+			conn.SetDeadline(time.Time{})
 			if err != nil {
 				util.Error("heartbeat response failed: %v", err)
 				c.hbMu.Lock()
@@ -581,8 +583,7 @@ func (c *Consumer) sendBatchCommit(offsets map[int]uint64) bool {
 	c.commitMu.Unlock()
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("BATCH_COMMIT topic=%s group=%s generation=%d member=%s ",
-		c.config.Topic, c.config.GroupID, c.generation, c.memberID))
+	sb.WriteString(fmt.Sprintf("BATCH_COMMIT topic=%s group=%s generation=%d member=%s ", c.config.Topic, c.config.GroupID, c.generation, c.memberID))
 	parts := []string{}
 	for pid, off := range offsets {
 		parts = append(parts, fmt.Sprintf("%d:%d", pid, off))
@@ -612,9 +613,14 @@ func (c *Consumer) sendBatchCommit(offsets map[int]uint64) bool {
 	if strings.HasPrefix(respStr, "OK") {
 		util.Debug("✅ Batch commit success: %s", respStr)
 		return true
-	} else if strings.Contains(respStr, "ERROR") {
-		util.Error("❌ Batch commit error from broker: %s", respStr)
-		if strings.Contains(respStr, "GEN_MISMATCH") || strings.Contains(respStr, "REBALANCE_REQUIRED") {
+	}
+
+	if strings.Contains(respStr, "ERROR") || strings.Contains(respStr, "STALE_METADATA") {
+		util.Error("❌ Batch commit rejected: %s", respStr)
+
+		if strings.Contains(respStr, "NOT_OWNER") ||
+			strings.Contains(respStr, "GEN_MISMATCH") ||
+			strings.Contains(respStr, "AUTHORIZED") {
 			select {
 			case c.rebalanceSig <- struct{}{}:
 			default:
@@ -626,21 +632,26 @@ func (c *Consumer) sendBatchCommit(offsets map[int]uint64) bool {
 }
 
 func (c *Consumer) processBatchSync(msgs []types.Message, partition int) error {
-	if c.metrics != nil {
-		for range msgs {
-			c.metrics.RecordMessage(partition)
+	if c.metrics == nil {
+		return nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for range msgs {
+		if c.metrics.IsDone() {
+			return nil
 		}
 
-		processedCount := int64(len(msgs))
-		c.metrics.RecordProcessed(processedCount)
-		util.Debug("recorded %d processed messages", processedCount)
+		c.metrics.RecordMessage(partition)
+		c.metrics.RecordProcessed(1)
 
 		if c.metrics.IsDone() {
-			util.Info("🎉 Benchmark completed successfully!")
+			util.Info("🎯 Exact target reached: %d. Terminating...", c.metrics.TargetMessages)
 			c.TriggerBenchmarkStop()
+			return nil
 		}
-	} else {
-		util.Debug("⚠️ No metrics configured")
 	}
 
 	return nil

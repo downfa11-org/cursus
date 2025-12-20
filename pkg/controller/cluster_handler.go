@@ -1,10 +1,12 @@
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/downfa11-org/go-broker/util"
+	"github.com/google/uuid"
 )
 
 func (ch *CommandHandler) ProcessCommand(cmd string) string {
@@ -48,4 +50,40 @@ func (ch *CommandHandler) isLeaderAndForward(cmd string) (string, bool, error) {
 		return fmt.Sprintf("ERROR: failed to forward command to leader (Leader: %s)", leaderAddr), true, nil
 	}
 	return "", false, nil
+}
+
+func (ch *CommandHandler) applyAndWait(cmdType string, payload map[string]interface{}) (interface{}, error) {
+	if ch.Cluster.RaftManager == nil {
+		return nil, fmt.Errorf("raft manager not available")
+	}
+	fsm := ch.Cluster.RaftManager.GetFSM()
+	if fsm == nil {
+		return nil, fmt.Errorf("fsm not available")
+	}
+
+	reqID := uuid.New().String()
+	payload["req_id"] = reqID
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	respChan := fsm.RegisterNotifier(reqID)
+	defer fsm.UnregisterNotifier(reqID)
+
+	err = ch.Cluster.RaftManager.ApplyCommand(cmdType, data)
+	if err != nil {
+		return nil, fmt.Errorf("raft apply failed: %w", err)
+	}
+
+	select {
+	case res := <-respChan:
+		if err, ok := res.(error); ok && err != nil {
+			return nil, err
+		}
+		return res, nil
+	case <-time.After(5 * time.Second):
+		return nil, fmt.Errorf("timeout waiting for FSM")
+	}
 }

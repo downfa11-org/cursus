@@ -36,6 +36,14 @@ func (f *BrokerFSM) parsePartitionCommand(data string) (string, *PartitionMetada
 	return key, &metadata, nil
 }
 
+func extractJSON(data string) string {
+	idx := strings.Index(data, "{")
+	if idx == -1 {
+		return ""
+	}
+	return data[idx:]
+}
+
 func getStringField(data map[string]interface{}, key string) (string, error) {
 	if val, ok := data[key]; ok {
 		if str, ok := val.(string); ok {

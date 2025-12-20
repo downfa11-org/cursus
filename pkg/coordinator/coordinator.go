@@ -130,6 +130,25 @@ func (c *Coordinator) GetAssignments(groupName string) map[string][]int {
 	return result
 }
 
+// GetMemberAssignments returns the partition assignments for a specific member in a group.
+func (c *Coordinator) GetMemberAssignments(groupName string, memberID string) []int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	group := c.groups[groupName]
+	if group == nil {
+		return nil
+	}
+
+	member, exists := group.Members[memberID]
+	if !exists {
+		return nil
+	}
+
+	cp := append([]int(nil), member.Assignments...)
+	return cp
+}
+
 func (c *Coordinator) ListGroups() []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

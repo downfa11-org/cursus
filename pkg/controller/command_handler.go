@@ -57,32 +57,14 @@ func (ch *CommandHandler) handleCreate(cmd string) string {
 			return resp
 		}
 
-		topicData := map[string]interface{}{
+		payload := map[string]interface{}{
 			"name":       topicName,
 			"partitions": partitions,
 		}
-		data, err := json.Marshal(topicData)
+
+		_, err := ch.applyAndWait("TOPIC", payload)
 		if err != nil {
-			return fmt.Sprintf("failed to marshal join data: %v", err)
-		}
-
-		err = ch.Cluster.RaftManager.ApplyCommand("TOPIC", data)
-		if err != nil {
-			return fmt.Sprintf("failed to replicate topic: %v", err)
-		}
-
-		const maxWaitRetries = 10
-		const waitDelay = 200 * time.Millisecond
-
-		for i := 0; i < maxWaitRetries; i++ {
-			if tm.GetTopic(topicName) != nil {
-				util.Debug("Topic '%s' successfully applied to FSM after %d attempts.", topicName, i+1)
-				break
-			}
-			if i == maxWaitRetries-1 {
-				return fmt.Sprintf("topic '%s' creation timed out (FSM application failed)", topicName)
-			}
-			time.Sleep(waitDelay)
+			return fmt.Sprintf("❌ Failed to create topic: %v", err)
 		}
 	} else {
 		tm.CreateTopic(topicName, partitions)
@@ -111,9 +93,13 @@ func (ch *CommandHandler) handleDelete(cmd string) string {
 			return resp
 		}
 
-		err := ch.Cluster.RaftManager.ApplyCommand("TOPIC_DELETE", []byte(topicName))
+		payload := map[string]interface{}{
+			"topic": topicName,
+		}
+
+		_, err := ch.applyAndWait("TOPIC_DELETE", payload)
 		if err != nil {
-			return fmt.Sprintf("ERROR: %v", err)
+			return fmt.Sprintf("❌ ERROR: %v", err)
 		}
 		return fmt.Sprintf("🗑️ Topic '%s' deleted across cluster", topicName)
 	}
@@ -194,21 +180,18 @@ func (ch *CommandHandler) handleJoinGroup(cmd string, ctx *ClientContext) string
 			return resp
 		}
 
-		joinData := map[string]interface{}{
+		joinPayload := map[string]interface{}{
 			"type":   "JOIN",
 			"group":  groupName,
 			"member": consumerID,
 			"topic":  topicName,
 		}
-		data, err := json.Marshal(joinData)
-		if err != nil {
-			return fmt.Sprintf("failed to marshal join data: %v", err)
-		}
 
-		err = ch.Cluster.RaftManager.ApplyCommand("GROUP_SYNC", data)
+		_, err := ch.applyAndWait("GROUP_SYNC", joinPayload)
 		if err != nil {
-			return fmt.Sprintf("failed to replicate group operation: %v", err)
+			return fmt.Sprintf("ERROR: %v", err)
 		}
+		assignments = ch.Coordinator.GetMemberAssignments(groupName, consumerID)
 	} else {
 		if ch.Coordinator != nil {
 			if ch.Coordinator.GetGroup(groupName) == nil {
@@ -265,13 +248,11 @@ func (ch *CommandHandler) handleSyncGroup(cmd string) string {
 		}
 	}
 
-	assignments := ch.Coordinator.GetAssignments(groupName)
-	if _, exists := assignments[memberID]; !exists {
-		return fmt.Sprintf("member %s not found in group", memberID)
+	assignments := ch.Coordinator.GetMemberAssignments(groupName, memberID)
+	if assignments == nil {
+		return fmt.Sprintf("member %s not found in group or no assignments", memberID)
 	}
-
-	memberAssignments := assignments[memberID]
-	return fmt.Sprintf("OK assignments=%v", memberAssignments)
+	return fmt.Sprintf("OK assignments=%v", assignments)
 }
 
 // handleLeaveGroup processes LEAVE_GROUP command
@@ -296,19 +277,15 @@ func (ch *CommandHandler) handleLeaveGroup(cmd string) string {
 			return resp
 		}
 
-		leaveData := map[string]interface{}{
+		payload := map[string]interface{}{
 			"type":   "LEAVE",
 			"group":  groupName,
 			"member": consumerID,
 		}
-		data, err := json.Marshal(leaveData)
-		if err != nil {
-			return fmt.Sprintf("failed to marshal join data: %v", err)
-		}
 
-		err = ch.Cluster.RaftManager.ApplyCommand("GROUP_SYNC", data)
+		_, err := ch.applyAndWait("GROUP_SYNC", payload)
 		if err != nil {
-			return fmt.Sprintf("failed to replicate leave operation: %v", err)
+			return fmt.Sprintf("❌ ERROR: %v", err)
 		}
 	} else {
 		if ch.Coordinator != nil {
@@ -351,12 +328,11 @@ func (ch *CommandHandler) handleFetchOffset(cmd string) string {
 	}
 
 	if ch.Coordinator != nil {
-		offset, err := ch.Coordinator.GetOffset(groupName, topicName, partition)
-		if err != nil {
-			return fmt.Sprintf("ERROR: %v", err)
-		} else {
-			return fmt.Sprintf("%d", offset)
+		offset, isFind := ch.Coordinator.GetOffset(groupName, topicName, partition)
+		if !isFind {
+			return "ERROR: no offset found"
 		}
+		return fmt.Sprintf("%d", offset)
 	} else {
 		return "offset manager not available"
 	}
@@ -465,21 +441,16 @@ func (ch *CommandHandler) handleCommitOffset(cmd string) string {
 			return fmt.Sprintf("NOT_AUTHORIZED_FOR_PARTITION %s:%d", topicName, partition)
 		}
 
-		commitData := map[string]interface{}{
+		payload := map[string]interface{}{
 			"type":      "COMMIT",
-			"group":     args["group"],
-			"topic":     args["topic"],
+			"group":     groupID,
+			"topic":     topicName,
 			"partition": partition,
 			"offset":    offset,
 		}
-		data, err := json.Marshal(commitData)
+		_, err := ch.applyAndWait("OFFSET_SYNC", payload)
 		if err != nil {
-			return fmt.Sprintf("failed to marshal join data: %v", err)
-		}
-
-		err = ch.Cluster.RaftManager.ApplyCommand("OFFSET_SYNC", data)
-		if err != nil {
-			return fmt.Sprintf("offset replication failed: %v", err)
+			return fmt.Sprintf("❌ Offset sync failed: %v", err)
 		}
 		return "OK"
 	}
@@ -495,11 +466,13 @@ func (ch *CommandHandler) handleCommitOffset(cmd string) string {
 	return "offset manager not available"
 }
 
-// handleBatchCommit processes BATCH_COMMIT topic=T1 group=G1 P0:10,P1:20...
+// handleBatchCommit processes BATCH_COMMIT topic=T1 group=G1 generation=1 member=M1 P0:10,P1:20...
 func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 	args := parseKeyValueArgs(cmd[13:])
 	topicName := args["topic"]
 	groupID := args["group"]
+	memberID := args["member"]
+	generation, _ := strconv.Atoi(args["generation"])
 
 	// P0:10,P1:20...
 	partsIdx := strings.LastIndex(cmd, " ")
@@ -525,6 +498,18 @@ func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 		o, err := strconv.ParseUint(kv[1], 10, 64)
 		if err != nil {
 			util.Warn("Invalid offset in batch commit: %s", kv[1])
+			continue
+		}
+
+		if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
+			if !ch.isAuthorizedForPartition(topicName, p) {
+				util.Warn("Unauthorized batch commit attempt for %s:%d", topicName, p)
+				continue
+			}
+		}
+
+		if !ch.ValidateOwnership(groupID, memberID, generation, p) {
+			util.Warn("STALE_METADATA_OR_NOT_OWNER for partition %d in batch", p)
 			continue
 		}
 
@@ -567,35 +552,32 @@ func (ch *CommandHandler) resolveOffset(topicName string, partition int, request
 		return 0, fmt.Errorf("failed to get disk handler: %w", err)
 	}
 
-	actualOffset := requestedOffset
-
-	if requestedOffset == 0 {
-		if ch.Coordinator != nil {
-			savedOffset, err := ch.Coordinator.GetOffset(groupName, topicName, partition)
-			if err == nil {
-				actualOffset = savedOffset
-				util.Debug("Saved offset %d for group '%s'", actualOffset, groupName)
-				return actualOffset, nil
-			} else {
-				util.Debug("💾 No saved offset found for group '%s', using reset policy", groupName)
-			}
+	if ch.Coordinator != nil {
+		savedOffset, isFind := ch.Coordinator.GetOffset(groupName, topicName, partition)
+		if isFind {
+			util.Debug("Found saved offset %d for group '%s'", savedOffset, groupName)
+			return savedOffset, nil
 		}
+	}
 
-		if strings.ToLower(autoOffsetReset) == "latest" {
-			latest, err := dh.GetLatestOffset()
-			if err != nil {
-				util.Warn("Failed to get latest offset, defaulting to 0: %v", err)
-				actualOffset = 0
-			} else {
-				actualOffset = latest
-			}
-			util.Debug("Using latest offset %d for group '%s'", actualOffset, groupName)
-		} else {
+	if requestedOffset > 0 {
+		util.Debug("Using explicitly requested offset %d", requestedOffset)
+		return requestedOffset, nil
+	}
+
+	var actualOffset uint64
+	if strings.ToLower(autoOffsetReset) == "latest" {
+		latest, err := dh.GetLatestOffset()
+		if err != nil {
+			util.Warn("Failed to get latest offset, defaulting to 0: %v", err)
 			actualOffset = 0
-			util.Debug("Using earliest offset 0 for group '%s'", groupName)
+		} else {
+			actualOffset = latest
 		}
+		util.Debug("No saved offset. Reset policy 'latest': starting at %d", actualOffset)
 	} else {
-		util.Debug("Using explicitly requested offset %d for group '%s'", requestedOffset, groupName)
+		actualOffset = 0
+		util.Debug("No saved offset. Reset policy 'earliest': starting at 0")
 	}
 
 	return actualOffset, nil

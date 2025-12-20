@@ -119,9 +119,6 @@ func validateMessageCommand(cmd *MessageCommand) error {
 		if m.Epoch != base.Epoch {
 			return fmt.Errorf("mixed epoch at %d", i)
 		}
-		if i > 0 && m.Offset <= cmd.Messages[i-1].Offset {
-			return fmt.Errorf("non-monotonic offset at %d", i)
-		}
 		if i > 0 && m.SeqNum != cmd.Messages[i-1].SeqNum+1 {
 			return fmt.Errorf("non-contiguous seq at %d", i)
 		}

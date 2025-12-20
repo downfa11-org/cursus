@@ -97,18 +97,40 @@ func (c *Coordinator) CommitOffsetsBulk(group, topic string, offsets []OffsetIte
 	return nil
 }
 
-func (c *Coordinator) GetOffset(group, topic string, partition int) (uint64, error) {
+func (c *Coordinator) ApplyOffsetUpdateFromFSM(group, topic string, offsets []OffsetItem) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if group == "" || topic == "" {
+		return fmt.Errorf("invalid group or topic name")
+	}
+
+	if _, ok := c.offsets[group]; !ok {
+		c.offsets[group] = make(map[string]map[int]uint64)
+	}
+	if _, ok := c.offsets[group][topic]; !ok {
+		c.offsets[group][topic] = make(map[int]uint64)
+	}
+
+	for _, item := range offsets {
+		c.offsets[group][topic][item.Partition] = item.Offset
+	}
+
+	return nil
+}
+
+func (c *Coordinator) GetOffset(group, topic string, partition int) (uint64, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	if topics, ok := c.offsets[group]; ok {
 		if partitions, ok := topics[topic]; ok {
 			if offset, ok := partitions[partition]; ok {
-				return offset, nil
+				return offset, true
 			}
 		}
 	}
-	return 0, fmt.Errorf("no offset found for group '%s', topic '%s', partition %d", group, topic, partition)
+	return 0, false
 }
 
 // updateOffsetPartitionCount updates the number of partitions for the internal offset topic.
