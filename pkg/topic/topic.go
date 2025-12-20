@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/stream"
@@ -38,8 +37,8 @@ type Partition struct {
 }
 
 type DiskAppender interface {
-	AppendMessage(msg string)
-	AppendMessageSync(msg string) error
+	AppendMessage(topic string, partition int, offset uint64, payload string)
+	AppendMessageSync(topic string, partition int, offset uint64, payload string) error
 }
 
 // NewTopic initializes a topic with partitions.
@@ -72,6 +71,21 @@ func NewPartition(id int, topic string, dh interface{}, sm *stream.StreamManager
 	}
 
 	return p
+}
+
+func (t *Topic) GetPartitionForMessage(msg types.Message) int {
+	partitionsLen := uint64(len(t.Partitions))
+	if partitionsLen == 0 {
+		return -1
+	}
+
+	if msg.Key != "" {
+		keyID := util.GenerateID(msg.Key)
+		return int(keyID % partitionsLen)
+	}
+
+	oldCounter := atomic.AddUint64(&t.counter, 1) - 1
+	return int(oldCounter % partitionsLen)
 }
 
 // AddPartitions extends the topic with new partitions.
@@ -129,17 +143,10 @@ func (t *Topic) DeregisterConsumerGroup(groupName string) error {
 
 // Publish sends a message to one partition.
 func (t *Topic) Publish(msg types.Message) {
-	var idx int
-	partitionsLen := uint64(len(t.Partitions))
-
-	if msg.Key != "" {
-		keyID := util.GenerateID(msg.Key)
-		idx = int(keyID % partitionsLen)
-		util.Debug("Key-based routing to partition %d", idx)
-	} else {
-		oldCounter := atomic.AddUint64(&t.counter, 1) - 1
-		idx = int(oldCounter % partitionsLen)
-		util.Debug("Round-robin routing to partition %d (counter: %d)", idx, oldCounter)
+	idx := t.GetPartitionForMessage(msg)
+	if idx == -1 {
+		util.Error("❌ No partitions available for topic '%s'", t.Name)
+		return
 	}
 
 	p := t.Partitions[idx]
@@ -147,23 +154,13 @@ func (t *Topic) Publish(msg types.Message) {
 }
 
 func (t *Topic) PublishSync(msg types.Message) error {
-	var idx int
-	partitionsLen := uint64(len(t.Partitions))
-	util.Debug("Starting sync publish. Topic: %s, Key: %s", t.Name, msg.Key)
-
-	if msg.Key != "" {
-		keyID := util.GenerateID(msg.Key)
-		idx = int(keyID % partitionsLen)
-		util.Debug("Key-based routing to partition %d", idx)
-	} else {
-		oldCounter := atomic.AddUint64(&t.counter, 1) - 1
-		idx = int(oldCounter % partitionsLen)
-		util.Debug("Round-robin routing to partition %d", idx)
+	idx := t.GetPartitionForMessage(msg)
+	if idx == -1 {
+		return fmt.Errorf("no partitions available for topic '%s'", t.Name)
 	}
 
-	util.Debug("Calling Partition[%d].EnqueueSync", idx)
-	p := t.Partitions[idx]
-	return p.EnqueueSync(msg)
+	util.Debug("Sync publish to topic: %s, partition: %d", t.Name, idx)
+	return t.Partitions[idx].EnqueueSync(msg)
 }
 
 func (t *Topic) PublishBatchSync(msgs []types.Message) error {
@@ -172,139 +169,20 @@ func (t *Topic) PublishBatchSync(msgs []types.Message) error {
 	}
 	partitioned := make(map[int][]types.Message)
 
-	partitionsLen := uint64(len(t.Partitions))
 	for _, msg := range msgs {
-		var idx int
-		if msg.Key != "" {
-			keyID := util.GenerateID(msg.Key)
-			idx = int(keyID % partitionsLen)
-		} else {
-			oldCounter := atomic.AddUint64(&t.counter, 1) - 1
-			idx = int(oldCounter % partitionsLen)
+		idx := t.GetPartitionForMessage(msg)
+		if idx != -1 {
+			partitioned[idx] = append(partitioned[idx], msg)
 		}
-		partitioned[idx] = append(partitioned[idx], msg)
 	}
 
 	for idx, pm := range partitioned {
 		p := t.Partitions[idx]
-
 		if err := p.EnqueueBatchSync(pm); err != nil {
 			return fmt.Errorf("partition %d: failed to publish batch: %w", idx, err)
 		}
 	}
 	return nil
-}
-
-// Enqueue pushes a message into the partition queue.
-func (p *Partition) Enqueue(msg types.Message) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	if p.closed {
-		util.Warn("⚠️ Partition closed, dropping message [partition-%d]", p.id)
-		return
-	}
-
-	if appender, ok := p.dh.(DiskAppender); ok {
-		util.Debug("Calling AppendMessage for disk persistence [partition-%d]", p.id)
-		serialized, err := util.SerializeMessage(msg)
-		if err != nil {
-			util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
-			return
-		}
-		appender.AppendMessage(string(serialized))
-		p.NotifyNewMessage()
-	} else {
-		util.Warn("⚠️ DiskHandler does not implement AppendMessage [partition-%d]\n", p.id)
-	}
-
-	p.broadcastToStreams(msg)
-}
-
-func (p *Partition) EnqueueSync(msg types.Message) error {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	if p.closed {
-		return fmt.Errorf("partition %d is closed", p.id)
-	}
-
-	if appender, ok := p.dh.(interface {
-		AppendMessageSync(topic string, partition int, offset uint64, payload string) error
-	}); ok {
-		serialized, err := util.SerializeMessage(msg)
-		if err != nil {
-			util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
-			return err
-		}
-		if err := appender.AppendMessageSync(p.topic, p.id, msg.Offset, string(serialized)); err != nil {
-			return fmt.Errorf("disk write failed: %w", err)
-		}
-		p.NotifyNewMessage()
-	} else {
-		return fmt.Errorf("disk handler does not support sync write")
-	}
-
-	p.broadcastToStreams(msg)
-	return nil
-}
-
-func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	if p.closed {
-		return fmt.Errorf("partition %d is closed", p.id)
-	}
-
-	if appender, ok := p.dh.(interface {
-		AppendMessageSync(topic string, partition int, offset uint64, payload string) error
-	}); ok {
-		for _, msg := range msgs {
-			serialized, err := util.SerializeMessage(msg)
-			if err != nil {
-				util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
-				return err
-			}
-			if err := appender.AppendMessageSync(p.topic, p.id, msg.Offset, string(serialized)); err != nil {
-				return fmt.Errorf("disk write failed for partition %d: %w", p.id, err)
-			}
-		}
-		p.NotifyNewMessage()
-	} else {
-		return fmt.Errorf("disk handler does not support sync write")
-	}
-
-	for _, msg := range msgs {
-		p.broadcastToStreams(msg)
-	}
-	return nil
-}
-
-func (p *Partition) broadcastToStreams(msg types.Message) {
-	if p.streamManager == nil {
-		return
-	}
-
-	streams := p.streamManager.GetStreamsForPartition(p.topic, p.id)
-	for _, stream := range streams {
-		select {
-		case <-stream.StopCh():
-			util.Debug("Stream stopped, skipping broadcast for partition %d", p.id)
-			continue
-		default:
-			if err := util.WriteWithLength(stream.Conn(), []byte(msg.Payload)); err != nil {
-				util.Warn("Failed to broadcast to stream for topic '%s' partition %d: %v", p.topic, p.id, err)
-				continue
-			}
-			stream.IncrementOffset()
-			stream.SetLastActive(time.Now())
-		}
-	}
-}
-
-func (p *Partition) NotifyNewMessage() {
-	select {
-	case p.newMessageCh <- struct{}{}:
-	default:
-	}
 }
 
 // applyAssignments connects partitions to consumers according to coordinator results.
@@ -359,14 +237,4 @@ func (t *Topic) NewMessageSignal(partition int) <-chan struct{} {
 		return nil
 	}
 	return t.Partitions[partition].newMessageCh
-}
-
-// Close shuts down the partition.
-func (p *Partition) Close() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.closed {
-		return
-	}
-	p.closed = true
 }

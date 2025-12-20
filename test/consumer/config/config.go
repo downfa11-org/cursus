@@ -50,6 +50,8 @@ type ConsumerConfig struct {
 	EnableImmediateCommit    bool          `yaml:"enable_immediate_commit" json:"enable_immediate_commit"`
 	StreamingCommitBatchSize int           `yaml:"streaming_commit_batch_size" json:"streaming_commit_batch_size"`
 
+	LeaderStaleness time.Duration `yaml:"leader_staleness" json:"leader_staleness"`
+
 	CompressionType string `yaml:"compression_type" json:"compression.type"` // "none", "gzip", "snappy", "lz4"
 
 	LogLevel util.LogLevel `yaml:"log_level" json:"log_level"`
@@ -59,9 +61,13 @@ func LoadConfig() (*ConsumerConfig, error) {
 	cfg := &ConsumerConfig{}
 
 	flag.Func("broker-addr", "Comma-separated broker addresses", func(val string) error {
-		cfg.BrokerAddrs = strings.Split(val, ",")
-		for i, addr := range cfg.BrokerAddrs {
-			cfg.BrokerAddrs[i] = strings.TrimSpace(addr)
+		parts := strings.Split(val, ",")
+		cfg.BrokerAddrs = make([]string, 0, len(parts))
+		for _, addr := range parts {
+			trimmed := strings.TrimSpace(addr)
+			if trimmed != "" {
+				cfg.BrokerAddrs = append(cfg.BrokerAddrs, trimmed)
+			}
 		}
 		return nil
 	})
@@ -78,6 +84,8 @@ func LoadConfig() (*ConsumerConfig, error) {
 
 	flag.BoolVar(&cfg.EnableAutoCommit, "enable-auto-commit", true, "Enable auto commit")
 	flag.DurationVar(&cfg.AutoCommitInterval, "auto-commit-interval", 5*time.Second, "Auto commit interval")
+
+	flag.DurationVar(&cfg.LeaderStaleness, "leader-staleness", 30*time.Second, "Maximum age of leader info before considering it stale (e.g., 30s, 1m)")
 
 	flag.DurationVar(&cfg.StreamingCommitInterval, "streaming-commit-interval", 1*time.Second, "Streaming commit interval")
 	flag.BoolVar(&cfg.EnableImmediateCommit, "enable-immediate-commit", false, "Enable immediate commit after each message")
@@ -165,6 +173,11 @@ func LoadConfig() (*ConsumerConfig, error) {
 	if cfg.HeartbeatIntervalMS == 0 {
 		cfg.HeartbeatIntervalMS = cfg.SessionTimeoutMS / 2
 	}
+
+	if cfg.LeaderStaleness == 0 {
+		cfg.LeaderStaleness = 30 * time.Second
+	}
+
 	if cfg.StreamingReadDeadlineMS == 0 {
 		cfg.StreamingReadDeadlineMS = 5 * 60 * 1000 // 5min
 	}

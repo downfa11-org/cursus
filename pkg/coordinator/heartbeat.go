@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/downfa11-org/go-broker/util"
@@ -52,4 +53,31 @@ func (c *Coordinator) monitorHeartbeats() {
 // triggerRebalance invokes the range-based rebalance strategy.
 func (c *Coordinator) triggerRebalance(groupName string) {
 	c.rebalanceRange(groupName)
+}
+
+// RecordHeartbeat updates the consumer's last heartbeat timestamp.
+func (c *Coordinator) RecordHeartbeat(groupName, consumerID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	group := c.groups[groupName]
+	if group == nil {
+		util.Error("❌ Heartbeat from '%s' failed: group '%s' not found",
+			consumerID, groupName)
+		return fmt.Errorf("group not found")
+	}
+
+	member := group.Members[consumerID]
+	if member == nil {
+		util.Error("❌ Heartbeat from '%s' failed: consumer not found in group '%s'", consumerID, groupName)
+		return fmt.Errorf("consumer not found")
+	}
+
+	old := member.LastHeartbeat
+	member.LastHeartbeat = time.Now()
+
+	util.Debug("💓 Consumer '%s' in group '%s' sent heartbeat (previous: %v ago)",
+		consumerID, groupName, time.Since(old))
+
+	return nil
 }

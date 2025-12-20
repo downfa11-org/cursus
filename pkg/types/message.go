@@ -25,6 +25,7 @@ type Batch struct {
 	Partition  int
 	BatchStart uint64
 	BatchEnd   uint64
+	Acks       string // "0", "1", "-1(=all)"
 	Messages   []Message
 }
 
@@ -49,5 +50,6 @@ type AckResponse struct {
 	ProducerID    string `json:"producer_id"`
 	SeqStart      uint64 `json:"seq_start"`
 	SeqEnd        uint64 `json:"seq_end"`
+	Leader        string `json:"leader,omitempty"`
 	ErrorMsg      string `json:"error,omitempty"`
 }

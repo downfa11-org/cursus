@@ -2,34 +2,27 @@ package controller
 
 import (
 	"context"
-	"sync/atomic"
-	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/cluster/replication"
 	"github.com/downfa11-org/go-broker/util"
-	"github.com/hashicorp/raft"
 )
 
 type ControllerElection struct {
-	rm       *replication.RaftReplicationManager
-	isLeader atomic.Bool
-	leaderCh chan bool
-	ctx      context.Context
-	cancel   context.CancelFunc
+	rm     *replication.RaftReplicationManager
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func NewControllerElection(rm *replication.RaftReplicationManager) *ControllerElection {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ControllerElection{
-		rm:       rm,
-		leaderCh: make(chan bool, 1),
-		ctx:      ctx,
-		cancel:   cancel,
+		rm:     rm,
+		ctx:    ctx,
+		cancel: cancel,
 	}
 }
 
 func (ce *ControllerElection) Start() {
-	util.Info("Starting controller leadership monitoring")
 	go ce.monitorLeadership()
 }
 
@@ -38,34 +31,19 @@ func (ce *ControllerElection) Stop() {
 }
 
 func (ce *ControllerElection) monitorLeadership() {
-	util.Debug("Starting leadership monitor loop")
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	notifyCh := ce.rm.LeaderCh()
 
 	for {
 		select {
 		case <-ce.ctx.Done():
-			util.Info("Leadership monitor stopping: context cancelled")
+			util.Info("Leadership monitor stopping")
 			return
-		case <-ticker.C:
-			isLeader := ce.rm.GetRaft().State() == raft.Leader
-			if isLeader != ce.isLeader.Load() {
-				ce.isLeader.Store(isLeader)
-				if isLeader {
-					util.Info("Became cluster leader")
-				} else {
-					util.Info("Lost cluster leadership")
-				}
-				ce.leaderCh <- isLeader
+		case isLeader := <-notifyCh:
+			if isLeader {
+				util.Info("This node is now the Cluster Leader")
+			} else {
+				util.Info("This node stepped down from Leadership")
 			}
 		}
 	}
-}
-
-func (ce *ControllerElection) IsLeader() bool {
-	return ce.isLeader.Load()
-}
-
-func (ce *ControllerElection) LeaderCh() <-chan bool {
-	return ce.leaderCh
 }

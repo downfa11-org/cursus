@@ -19,5 +19,6 @@ type AckResponse struct {
 	ProducerID    string `json:"producer_id"`
 	SeqStart      uint64 `json:"seq_start"`
 	SeqEnd        uint64 `json:"seq_end"`
+	Leader        string `json:"leader,omitempty"`
 	ErrorMsg      string `json:"error,omitempty"`
 }

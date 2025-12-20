@@ -1,14 +1,16 @@
 package controller
 
 import (
+	"encoding/json"
 	"strings"
 
-	"github.com/downfa11-org/go-broker/pkg/cluster/routing"
+	clusterController "github.com/downfa11-org/go-broker/pkg/cluster/controller"
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/coordinator"
 	"github.com/downfa11-org/go-broker/pkg/disk"
 	"github.com/downfa11-org/go-broker/pkg/stream"
 	"github.com/downfa11-org/go-broker/pkg/topic"
+	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
 )
 
@@ -22,7 +24,7 @@ type CommandHandler struct {
 	Coordinator   *coordinator.Coordinator
 	StreamManager *stream.StreamManager
 
-	Router *routing.ClientRouter
+	Cluster *clusterController.ClusterController
 }
 
 type ConsumeArgs struct {
@@ -31,14 +33,21 @@ type ConsumeArgs struct {
 	Offset    uint64
 }
 
-func NewCommandHandler(tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, cd *coordinator.Coordinator, sm *stream.StreamManager, router *routing.ClientRouter) *CommandHandler {
+func NewCommandHandler(
+	tm *topic.TopicManager,
+	dm *disk.DiskManager,
+	cfg *config.Config,
+	cd *coordinator.Coordinator,
+	sm *stream.StreamManager,
+	cc *clusterController.ClusterController,
+) *CommandHandler {
 	return &CommandHandler{
 		TopicManager:  tm,
 		DiskManager:   dm,
 		Config:        cfg,
 		Coordinator:   cd,
 		StreamManager: sm,
-		Router:        router,
+		Cluster:       cc,
 	}
 }
 
@@ -60,7 +69,6 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 
 	upper := strings.ToUpper(cmd)
 
-	// streaming commands (signal only)
 	if strings.HasPrefix(upper, "STREAM ") {
 		return ch.validateStreamSyntax(cmd, rawCmd)
 	}
@@ -68,7 +76,6 @@ func (ch *CommandHandler) HandleCommand(rawCmd string, ctx *ClientContext) strin
 		return ch.validateConsumeSyntax(cmd, rawCmd)
 	}
 
-	// Delegate to specific command handlers
 	resp := ch.handleCommandByType(cmd, upper, ctx)
 	ch.logCommandResult(rawCmd, resp)
 	return resp
@@ -90,7 +97,7 @@ func (ch *CommandHandler) handleCommandByType(cmd, upper string, ctx *ClientCont
 		return ch.handleList()
 
 	case strings.HasPrefix(upper, "PUBLISH "):
-		return ch.handlePublish(cmd) // JSON response
+		return ch.handlePublish(cmd)
 
 	case strings.HasPrefix(upper, "REGISTER_GROUP "):
 		return ch.handleRegisterGroup(cmd)
@@ -116,6 +123,9 @@ func (ch *CommandHandler) handleCommandByType(cmd, upper string, ctx *ClientCont
 	case strings.HasPrefix(upper, "COMMIT_OFFSET "):
 		return ch.handleCommitOffset(cmd)
 
+	case strings.HasPrefix(upper, "BATCH_COMMIT "):
+		return ch.handleBatchCommit(cmd)
+
 	default:
 		return "ERROR: unknown command: " + cmd
 	}
@@ -124,6 +134,15 @@ func (ch *CommandHandler) handleCommandByType(cmd, upper string, ctx *ClientCont
 func (ch *CommandHandler) fail(raw, msg string) string {
 	ch.logCommandResult(raw, msg)
 	return msg
+}
+
+func (ch *CommandHandler) errorResponse(msg string) string {
+	errorResp := types.AckResponse{
+		Status:   "ERROR",
+		ErrorMsg: msg,
+	}
+	respBytes, _ := json.Marshal(errorResp)
+	return string(respBytes)
 }
 
 func parseKeyValueArgs(argsStr string) map[string]string {

@@ -2,78 +2,102 @@ package client
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/downfa11-org/go-broker/consumer/config"
+	"github.com/downfa11-org/go-broker/util"
 	"github.com/google/uuid"
 )
 
+type leaderInfo struct {
+	addr    string
+	updated time.Time
+}
+
 type ConsumerClient struct {
-	ID       string
-	config   *config.ConsumerConfig
-	connPool map[string]net.Conn
-	mu       sync.RWMutex
+	ID     string
+	config *config.ConsumerConfig
+	mu     sync.Mutex
+
+	leader atomic.Value
 }
 
 func NewConsumerClient(cfg *config.ConsumerConfig) *ConsumerClient {
-	return &ConsumerClient{
-		ID:       uuid.New().String(),
-		config:   cfg,
-		connPool: make(map[string]net.Conn),
+	c := &ConsumerClient{
+		ID:     uuid.New().String(),
+		config: cfg,
 	}
+	c.leader.Store(&leaderInfo{addr: "", updated: time.Time{}})
+	return c
 }
 
-func (c *ConsumerClient) GetNextBroker() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if len(c.config.BrokerAddrs) == 0 {
-		return ""
+func (c *ConsumerClient) UpdateLeader(addr string) {
+	oldInfo := c.leader.Load().(*leaderInfo)
+	if oldInfo.addr != addr {
+		c.leader.Store(&leaderInfo{
+			addr:    addr,
+			updated: time.Now(),
+		})
+		util.Info("📍 Leader updated to: %s (Lock-free update)", addr)
 	}
-
-	broker := c.config.BrokerAddrs[c.config.CurrentBrokerIndex]
-	c.config.CurrentBrokerIndex = (c.config.CurrentBrokerIndex + 1) % len(c.config.BrokerAddrs)
-	return broker
-}
-
-func (c *ConsumerClient) ConnectWithFailover() (net.Conn, string, error) {
-	if len(c.config.BrokerAddrs) == 0 {
-		return nil, "", fmt.Errorf("no broker addresses configured")
-	}
-
-	var lastErr error
-	for i := 0; i < len(c.config.BrokerAddrs); i++ {
-		broker := c.GetNextBroker()
-
-		conn, err := net.Dial("tcp", broker)
-		if err == nil {
-			c.mu.Lock()
-			c.connPool[broker] = conn
-			c.mu.Unlock()
-			return conn, broker, nil
-		}
-		lastErr = err
-		log.Printf("Failed to connect to %s: %v", broker, err)
-	}
-
-	return nil, "", fmt.Errorf("failed to connect to all brokers: %w", lastErr)
 }
 
 func (c *ConsumerClient) Connect(addr string) (net.Conn, error) {
-	c.mu.Lock()
-	if conn, exists := c.connPool[addr]; exists && conn != nil {
-		c.mu.Unlock()
-		return conn, nil
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	conn, err := dialer.Dial("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("dial failed to %s: %w", addr, err)
 	}
-	c.mu.Unlock()
 
-	conn, err := net.Dial("tcp", addr)
-	if err == nil {
-		c.mu.Lock()
-		c.connPool[addr] = conn
-		c.mu.Unlock()
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetNoDelay(true)
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(30 * time.Second)
+		tcpConn.SetReadBuffer(2 * 1024 * 1024)  // 2MB
+		tcpConn.SetWriteBuffer(2 * 1024 * 1024) // 2MB
 	}
-	return conn, err
+
+	return conn, nil
+}
+
+func (c *ConsumerClient) ConnectWithFailover() (net.Conn, string, error) {
+	addrs := c.config.BrokerAddrs
+	if len(addrs) == 0 {
+		return nil, "", fmt.Errorf("no broker addresses configured")
+	}
+
+	leaderAddr := ""
+	raw := c.leader.Load()
+	if info, ok := raw.(*leaderInfo); ok && info.addr != "" && time.Since(info.updated) < c.config.LeaderStaleness {
+		leaderAddr = info.addr
+	}
+
+	if leaderAddr != "" {
+		if conn, err := c.Connect(leaderAddr); err == nil {
+			return conn, leaderAddr, nil
+		}
+		util.Warn("Leader %s failed, falling back to other brokers", leaderAddr)
+	}
+
+	var lastErr error
+	for _, addr := range addrs {
+		if addr == leaderAddr {
+			continue
+		}
+		conn, err := c.Connect(addr)
+		if err == nil {
+			c.UpdateLeader(addr)
+			return conn, addr, nil
+		}
+		lastErr = err
+		util.Warn("Failover: failed to connect to %s: %v", addr, err)
+	}
+
+	if lastErr != nil {
+		return nil, "", fmt.Errorf("all brokers unreachable: %w", lastErr)
+	}
+	return nil, "", fmt.Errorf("all brokers unreachable")
 }
