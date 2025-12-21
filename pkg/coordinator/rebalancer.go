@@ -13,7 +13,15 @@ func (c *Coordinator) RegisterGroup(topicName, groupName string, partitionCount 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if _, exists := c.groups[groupName]; exists {
+	if partitionCount <= 0 {
+		return fmt.Errorf("invalid partition count: %d (must be > 0)", partitionCount)
+	}
+
+	if existing, exists := c.groups[groupName]; exists {
+		if len(existing.Partitions) != partitionCount {
+			return fmt.Errorf("group '%s' already exists with different partition count (existing: %d, requested: %d)", groupName, len(existing.Partitions), partitionCount)
+		}
+		util.Debug("Group '%s' already registered with same configuration", groupName)
 		return nil
 	}
 
@@ -29,6 +37,7 @@ func (c *Coordinator) RegisterGroup(topicName, groupName string, partitionCount 
 	}
 
 	c.updateOffsetPartitionCount()
+	util.Info("🆕 Group '%s' registered for topic '%s' with %d partitions", groupName, topicName, partitionCount)
 	return nil
 }
 
@@ -41,6 +50,10 @@ func (c *Coordinator) AddConsumer(groupName, consumerID string) ([]int, error) {
 	if group == nil {
 		util.Error("❌ Consumer '%s' failed to join: group '%s' not found", consumerID, groupName)
 		return nil, fmt.Errorf("group not found")
+	}
+
+	if existing, exists := group.Members[consumerID]; exists {
+		util.Warn("⚠️ Consumer '%s' re-joining group '%s'. Overwriting previous session (was assigned: %v)", consumerID, groupName, existing.Assignments)
 	}
 
 	timeout := time.Duration(c.cfg.ConsumerSessionTimeoutMS) * time.Millisecond
@@ -60,17 +73,18 @@ func (c *Coordinator) AddConsumer(groupName, consumerID string) ([]int, error) {
 	}
 
 	group.Generation++
-	util.Info("⬆️ Group '%s' generation incremented to %d", groupName, group.Generation)
 
 	c.rebalanceRange(groupName)
 	assignments := group.Members[consumerID].Assignments
+
 	if len(assignments) == 0 {
-		util.Warn("No assignments for new consumer %s, retrying rebalance", consumerID)
-		c.rebalanceRange(groupName)
-		assignments = group.Members[consumerID].Assignments
+		util.Warn("ℹ️ Consumer '%s' joined group '%s' but received no assignments (Total Partitions: %d, Active Members: %d)",
+			consumerID, groupName, len(group.Partitions), len(group.Members))
+	} else {
+		util.Info("✅ Consumer '%s' joined group '%s' (Generation: %d, Assignments: %v)",
+			consumerID, groupName, group.Generation, assignments)
 	}
 
-	util.Info("✅ Consumer '%s' joined group '%s' (Generation: %d, Assignments: %v)", consumerID, groupName, group.Generation, assignments)
 	return assignments, nil
 }
 

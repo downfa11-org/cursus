@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -39,7 +40,12 @@ func main() {
 	total := cfg.NumMessages
 	start := time.Now()
 
-	var wg sync.WaitGroup
+	var (
+		errorCount uint64
+		wg         sync.WaitGroup
+		errSummary sync.Map
+	)
+
 	numWorkers := runtime.NumCPU()
 	chunkSize := total / numWorkers
 
@@ -62,7 +68,20 @@ func main() {
 				}
 
 				if _, err := pub.PublishMessage(msg); err != nil {
-					util.Error("publish failed: %v", err)
+					atomic.AddUint64(&errorCount, 1)
+
+					errMsg := err.Error()
+					if val, ok := errSummary.Load(errMsg); ok {
+						atomic.AddUint64(val.(*uint64), 1)
+					} else {
+						var count uint64 = 1
+						actual, loaded := errSummary.LoadOrStore(errMsg, &count)
+						if loaded {
+							atomic.AddUint64(actual.(*uint64), 1)
+						}
+					}
+
+					util.Debug("publish failed: %v", err)
 				}
 			}
 		}(w)
@@ -76,6 +95,20 @@ func main() {
 		pub.FlushBenchmark(total)
 		duration := time.Since(start)
 
+		finalErrorCount := atomic.LoadUint64(&errorCount)
+		sentMessages := pub.GetSentMessageCount()
+
+		fmt.Println("\n--- Reliability Report ---")
+		fmt.Printf("Total Target:    %d\n", total)
+		fmt.Printf("Successfully Sent: %d\n", sentMessages)
+		fmt.Printf("Failed Requests:   %d (%.2f%%)\n", finalErrorCount, float64(finalErrorCount)/float64(total)*100)
+
+		errSummary.Range(func(key, value interface{}) bool {
+			fmt.Printf("  - [%d occurrences]: %s\n", atomic.LoadUint64(value.(*uint64)), key.(string))
+			return true
+		})
+		fmt.Println("--------------------------")
+
 		if err := pub.VerifySentSequences(total); err != nil {
 			util.Info("verify failed: %v", err)
 		}
@@ -83,8 +116,6 @@ func main() {
 		partitionStats := make([]bench.PartitionStat, 0, pub.GetPartitionCount())
 		stats := pub.GetPartitionStats()
 		partitionStats = append(partitionStats, stats...)
-
-		sentMessages := pub.GetSentMessageCount()
 
 		bench.PrintBenchmarkSummaryFixed(partitionStats, sentMessages, duration)
 		os.Exit(0)

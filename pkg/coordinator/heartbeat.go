@@ -62,22 +62,19 @@ func (c *Coordinator) RecordHeartbeat(groupName, consumerID string) error {
 
 	group := c.groups[groupName]
 	if group == nil {
-		util.Error("❌ Heartbeat from '%s' failed: group '%s' not found",
-			consumerID, groupName)
-		return fmt.Errorf("group not found")
+		util.Error("❌ Heartbeat failed: group '%s' not found (ConsumerID: %s)", groupName, consumerID)
+		return fmt.Errorf("group '%s' not found", groupName)
 	}
 
 	member := group.Members[consumerID]
 	if member == nil {
 		util.Error("❌ Heartbeat from '%s' failed: consumer not found in group '%s'", consumerID, groupName)
-		return fmt.Errorf("consumer not found")
+		return fmt.Errorf("consumer '%s' not found in group '%s'", consumerID, groupName)
 	}
 
 	old := member.LastHeartbeat
 	member.LastHeartbeat = time.Now()
 
-	util.Debug("💓 Consumer '%s' in group '%s' sent heartbeat (previous: %v ago)",
-		consumerID, groupName, time.Since(old))
-
+	util.Debug("💓 Consumer '%s' in group '%s' sent heartbeat (previous: %v ago)", consumerID, groupName, time.Since(old))
 	return nil
 }
