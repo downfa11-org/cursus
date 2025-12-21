@@ -46,6 +46,9 @@ type ConsumerConfig struct {
 	EnableAutoCommit   bool          `yaml:"enable_auto_commit" json:"enable_auto_commit"`
 	AutoCommitInterval time.Duration `yaml:"auto_commit_interval" json:"auto_commit_interval"`
 
+	MaxCommitRetries   int           `yaml:"max_commit_retries" json:"max_commit_retries"`
+	CommitRetryBackoff time.Duration `yaml:"commit_retry_backoff" json:"commit_retry_backoff"`
+
 	StreamingCommitInterval  time.Duration `yaml:"streaming_commit_interval" json:"streaming_commit_interval"`
 	EnableImmediateCommit    bool          `yaml:"enable_immediate_commit" json:"enable_immediate_commit"`
 	StreamingCommitBatchSize int           `yaml:"streaming_commit_batch_size" json:"streaming_commit_batch_size"`
@@ -84,6 +87,9 @@ func LoadConfig() (*ConsumerConfig, error) {
 
 	flag.BoolVar(&cfg.EnableAutoCommit, "enable-auto-commit", true, "Enable auto commit")
 	flag.DurationVar(&cfg.AutoCommitInterval, "auto-commit-interval", 5*time.Second, "Auto commit interval")
+
+	flag.IntVar(&cfg.MaxCommitRetries, "max-commit-retries", 5, "Max retries for offset commit")
+	flag.DurationVar(&cfg.CommitRetryBackoff, "commit-retry-backoff", 500*time.Millisecond, "Backoff time between commit retries")
 
 	flag.DurationVar(&cfg.LeaderStaleness, "leader-staleness", 30*time.Second, "Maximum age of leader info before considering it stale (e.g., 30s, 1m)")
 
@@ -147,6 +153,12 @@ func LoadConfig() (*ConsumerConfig, error) {
 	}
 	if cfg.AutoCommitInterval == 0 {
 		cfg.AutoCommitInterval = 5 * time.Second
+	}
+	if cfg.MaxCommitRetries == 0 {
+		cfg.MaxCommitRetries = 5
+	}
+	if cfg.CommitRetryBackoff == 0 {
+		cfg.CommitRetryBackoff = 500 * time.Millisecond
 	}
 	if cfg.StreamingCommitInterval == 0 {
 		cfg.StreamingCommitInterval = 1 * time.Second

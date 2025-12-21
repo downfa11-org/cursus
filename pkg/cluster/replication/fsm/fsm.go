@@ -30,6 +30,15 @@ type BrokerInfo struct {
 	LastSeen time.Time `json:"last_seen"`
 }
 
+type BrokerFSMState struct {
+	Version           int                           `json:"version"`
+	Applied           uint64                        `json:"applied"`
+	Logs              map[uint64]*ReplicationEntry  `json:"logs"`
+	Brokers           map[string]*BrokerInfo        `json:"brokers"`
+	PartitionMetadata map[string]*PartitionMetadata `json:"partitionMetadata"`
+	ProducerState     map[string]uint64             `json:"producerState"`
+}
+
 type BrokerFSM struct {
 	notifiers map[string]chan interface{}
 	mu        sync.RWMutex
@@ -129,37 +138,33 @@ func (f *BrokerFSM) Restore(rc io.ReadCloser) error {
 
 	util.Info("Starting FSM restore from snapshot")
 
-	var state struct {
-		Applied           uint64                        `json:"applied"`
-		Logs              map[uint64]*ReplicationEntry  `json:"logs"`
-		Brokers           map[string]*BrokerInfo        `json:"brokers"`
-		PartitionMetadata map[string]*PartitionMetadata `json:"partitionMetadata"`
-		ProducerState     map[string]uint64             `json:"producerState"`
-	}
-
+	var state BrokerFSMState
 	if err := json.NewDecoder(rc).Decode(&state); err != nil {
 		util.Error("Failed to decode snapshot: %v", err)
 		return fmt.Errorf("failed to restore snapshot: %w", err)
 	}
 
+	switch state.Version {
+	case 0:
+		util.Warn("FSM Restore: Legacy snapshot detected (Version 0).")
+	case 1:
+		util.Info("FSM Restore: Validating snapshot Version 1")
+	default:
+		return fmt.Errorf("unknown snapshot version: %d.", state.Version)
+	}
+
 	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	f.logs = state.Logs
 	f.brokers = state.Brokers
 	f.partitionMetadata = state.PartitionMetadata
+	f.applied = state.Applied
 
 	f.producerState = state.ProducerState
 	if f.producerState == nil {
 		f.producerState = make(map[string]uint64)
 	}
-
-	maxIndex := uint64(0)
-	for index := range f.logs {
-		if index > maxIndex {
-			maxIndex = index
-		}
-	}
-	f.applied = maxIndex
-	f.mu.Unlock()
 
 	util.Info("FSM restore completed: %d logs, %d brokers, %d partitions", len(state.Logs), len(state.Brokers), len(state.PartitionMetadata))
 	return nil

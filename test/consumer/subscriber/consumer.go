@@ -26,18 +26,17 @@ type Consumer struct {
 	generation int64
 	memberID   string
 
-	commitConn       net.Conn
-	commitCh         chan commitEntry
-	commitMu         sync.Mutex
-	commitRetryQueue []map[int]uint64
-	maxCommitRetries int
+	commitConn     net.Conn
+	commitCh       chan commitEntry
+	commitMu       sync.Mutex
+	commitRetryMap map[int]uint64
 
 	currentOffsets map[int]uint64
 	offsetsMu      sync.Mutex
 
-	wg            sync.WaitGroup
-	sessionCtx    context.Context
-	sessionCancel context.CancelFunc
+	wg         sync.WaitGroup
+	mainCtx    context.Context
+	mainCancel context.CancelFunc
 
 	rebalancing  int32
 	rebalanceSig chan struct{}
@@ -63,6 +62,8 @@ type commitEntry struct {
 
 func NewConsumer(cfg *config.ConsumerConfig) (*Consumer, error) {
 	client := client.NewConsumerClient(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+
 	c := &Consumer{
 		config:             cfg,
 		client:             client,
@@ -71,6 +72,8 @@ func NewConsumer(cfg *config.ConsumerConfig) (*Consumer, error) {
 		currentOffsets:     make(map[int]uint64),
 		rebalanceSig:       make(chan struct{}, 1),
 		doneCh:             make(chan struct{}),
+		mainCtx:            ctx,
+		mainCancel:         cancel,
 	}
 
 	if cfg.EnableBenchmark {
@@ -78,8 +81,6 @@ func NewConsumer(cfg *config.ConsumerConfig) (*Consumer, error) {
 	}
 
 	c.commitCh = make(chan commitEntry, 1024)
-	c.sessionCtx, c.sessionCancel = context.WithCancel(context.Background())
-
 	return c, nil
 }
 
@@ -104,9 +105,10 @@ func (c *Consumer) validateCommitConn() bool {
 	if c.commitConn == nil {
 		return false
 	}
-	one := []byte{}
+
 	c.commitConn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
-	if _, err := c.commitConn.Read(one); err != nil && !os.IsTimeout(err) {
+	_, err := c.commitConn.Read(make([]byte, 0))
+	if err != nil && !os.IsTimeout(err) {
 		c.commitConn.Close()
 		c.commitConn = nil
 		return false
@@ -162,11 +164,17 @@ func (c *Consumer) startCommitWorker() {
 			select {
 			case entry := <-c.commitCh:
 				c.offsetsMu.Lock()
-				c.currentOffsets[entry.partition] = entry.offset
+				if entry.offset > c.currentOffsets[entry.partition] {
+					c.currentOffsets[entry.partition] = entry.offset
+				}
 				c.offsetsMu.Unlock()
 
 			case <-ticker.C:
 				c.flushOffsets()
+				c.processRetryQueue()
+
+			case <-c.mainCtx.Done():
+				return
 
 			case <-c.doneCh:
 				c.flushOffsets()
@@ -204,22 +212,64 @@ func (c *Consumer) flushOffsets() {
 	c.enqueueCommit(toCommit)
 }
 
+func (c *Consumer) processRetryQueue() {
+	c.commitMu.Lock()
+	if len(c.commitRetryMap) == 0 {
+		c.commitMu.Unlock()
+		return
+	}
+
+	toRetry := make(map[int]uint64)
+	for p, o := range c.commitRetryMap {
+		toRetry[p] = o
+	}
+	c.commitRetryMap = make(map[int]uint64)
+	c.commitMu.Unlock()
+
+	util.Debug("🔄 Retrying failed commits for %d partitions...", len(toRetry))
+
+	if !c.sendBatchCommit(toRetry) {
+		util.Error("❌ Retry batch commit failed. Re-queueing...")
+		c.commitMu.Lock()
+		for p, o := range toRetry {
+			if current, ok := c.commitRetryMap[p]; !ok || o > current {
+				c.commitRetryMap[p] = o
+			}
+		}
+		c.commitMu.Unlock()
+	}
+}
+
 func (c *Consumer) enqueueCommit(offsets map[int]uint64) {
 	go func() {
 		retries := 0
+		baseBackoff := c.config.CommitRetryBackoff
+		maxBackoff := 10 * time.Second
+
 		for {
 			if c.sendBatchCommit(offsets) {
 				return
 			}
 			retries++
-			if retries >= c.maxCommitRetries {
+			if retries >= c.config.MaxCommitRetries {
 				util.Error("Failed to commit offsets after %d retries, enqueueing for later", retries)
 				c.commitMu.Lock()
-				c.commitRetryQueue = append(c.commitRetryQueue, offsets)
+				for p, o := range offsets {
+					if current, ok := c.commitRetryMap[p]; !ok || o > current {
+						c.commitRetryMap[p] = o
+					}
+				}
 				c.commitMu.Unlock()
 				return
 			}
-			time.Sleep(500 * time.Millisecond) // backoff
+			sleepTime := baseBackoff * time.Duration(1<<(uint(retries)-1))
+
+			if sleepTime > maxBackoff {
+				sleepTime = maxBackoff
+			}
+
+			util.Debug("Commit failed (%d/%d)), retrying in %v...", retries, c.config.MaxCommitRetries, sleepTime)
+			time.Sleep(sleepTime)
 		}
 	}()
 }
@@ -319,8 +369,13 @@ func (c *Consumer) handleRebalanceSignal() {
 	c.partitionConsumers = make(map[int]*PartitionConsumer)
 	c.mu.Unlock()
 
+	c.mainCancel()
+	c.wg.Wait()
+
+	c.mainCtx, c.mainCancel = context.WithCancel(context.Background())
+
 	go func() {
-		time.Sleep(1 * time.Second)
+		defer atomic.StoreInt32(&c.rebalancing, 0)
 
 		gen, mid, assignments, err := c.joinGroup()
 		if err != nil {
@@ -337,7 +392,6 @@ func (c *Consumer) handleRebalanceSignal() {
 			c.partitionConsumers[pid] = pc
 		}
 		c.mu.Unlock()
-		atomic.StoreInt32(&c.rebalancing, 0)
 
 		if c.config.Mode != config.ModePolling {
 			c.startStreaming()
@@ -699,9 +753,7 @@ func (c *Consumer) Close() error {
 	c.closeMu.Unlock()
 
 	close(c.doneCh)
-	if c.sessionCancel != nil {
-		c.sessionCancel()
-	}
+	c.mainCancel()
 
 	c.resetHeartbeatConn()
 

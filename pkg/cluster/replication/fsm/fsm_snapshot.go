@@ -16,13 +16,8 @@ type BrokerFSMSnapshot struct {
 }
 
 func (s *BrokerFSMSnapshot) Persist(sink raft.SnapshotSink) error {
-	state := struct {
-		Applied           uint64                        `json:"applied"`
-		Logs              map[uint64]*ReplicationEntry  `json:"logs"`
-		Brokers           map[string]*BrokerInfo        `json:"brokers"`
-		PartitionMetadata map[string]*PartitionMetadata `json:"partitionMetadata"`
-		ProducerState     map[string]uint64             `json:"producerState"`
-	}{
+	state := BrokerFSMState{
+		Version:           1,
 		Applied:           s.applied,
 		Logs:              s.logs,
 		Brokers:           s.brokers,

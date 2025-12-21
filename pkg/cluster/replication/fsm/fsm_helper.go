@@ -3,6 +3,7 @@ package fsm
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -36,12 +37,17 @@ func (f *BrokerFSM) parsePartitionCommand(data string) (string, *PartitionMetada
 	return key, &metadata, nil
 }
 
+// extractJSON locates the JSON object within a string.
 func extractJSON(data string) string {
-	idx := strings.Index(data, "{")
-	if idx == -1 {
+	start := strings.Index(data, "{")
+	if start == -1 {
 		return ""
 	}
-	return data[idx:]
+	end := strings.LastIndex(data, "}")
+	if end == -1 || end < start {
+		return ""
+	}
+	return data[start : end+1]
 }
 
 func getStringField(data map[string]interface{}, key string) (string, error) {
@@ -151,8 +157,8 @@ func getOptionalInt64Field(data map[string]interface{}, key string) (int64, erro
 		return i64, nil
 
 	case float64:
-		if v > float64(^uint64(0)>>1) {
-			return 0, fmt.Errorf("float64 overflow for int64 field '%s': %f", key, v)
+		if v > float64(math.MaxInt64) || v < float64(math.MinInt64) {
+			return 0, fmt.Errorf("float64 overflow/underflow for int64 field '%s': %f", key, v)
 		}
 		return int64(v), nil
 
@@ -160,7 +166,7 @@ func getOptionalInt64Field(data map[string]interface{}, key string) (int64, erro
 		return v, nil
 
 	case uint64:
-		if v > uint64(^uint64(0)>>1) {
+		if v > uint64(math.MaxInt64) {
 			return 0, fmt.Errorf("uint64 overflow for int64 field '%s': %d", key, v)
 		}
 		return int64(v), nil
