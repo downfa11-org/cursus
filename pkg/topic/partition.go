@@ -153,7 +153,10 @@ func (p *Partition) broadcastToStreams(msg types.Message) {
 			continue
 		}
 
-		conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+		if err := conn.SetWriteDeadline(time.Now().Add(1 * time.Second)); err != nil {
+			util.Error("⚠️ SetWriteDeadline error: %v", err)
+			return
+		}
 
 		if err := util.WriteWithLength(stream.Conn(), []byte(msg.Payload)); err != nil {
 			util.Warn("Failed to broadcast to stream for topic '%s' partition %d: %v", p.topic, p.id, err)

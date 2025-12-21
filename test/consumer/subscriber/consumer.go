@@ -100,8 +100,6 @@ func (c *Consumer) getLeaderConn() (net.Conn, error) {
 }
 
 func (c *Consumer) validateCommitConn() bool {
-	c.commitMu.Lock()
-	defer c.commitMu.Unlock()
 	if c.commitConn == nil {
 		return false
 	}
@@ -301,37 +299,37 @@ func (c *Consumer) heartbeatLoop() {
 			return
 		case <-ticker.C:
 			c.hbMu.Lock()
-			if c.hbConn == nil {
-				conn, err := c.getLeaderConn()
+			conn := c.hbConn
+			c.hbMu.Unlock()
+
+			if conn == nil {
+				util.Debug("Heartbeat connection is nil, establishing new connection...")
+				newConn, err := c.getLeaderConn()
 				if err != nil {
-					c.hbMu.Unlock()
 					util.Error("heartbeat could not get connection: %v", err)
 					continue
 				}
-				c.hbConn = conn
+
+				c.hbMu.Lock()
+				c.hbConn = newConn
+				conn = c.hbConn
+				c.hbMu.Unlock()
 			}
-			conn := c.hbConn
 			conn.SetDeadline(time.Now().Add(5 * time.Second))
-			c.hbMu.Unlock()
 
-			hb := fmt.Sprintf("HEARTBEAT topic=%s group=%s member=%s generation=%d",
-				c.config.Topic, c.config.GroupID, c.memberID, c.generation)
-
+			hb := fmt.Sprintf("HEARTBEAT topic=%s group=%s member=%s generation=%d", c.config.Topic, c.config.GroupID, c.memberID, c.generation)
 			if err := util.WriteWithLength(conn, util.EncodeMessage("", hb)); err != nil {
 				util.Error("heartbeat send failed: %v", err)
-				c.hbMu.Lock()
-				c.hbConn = nil
-				c.hbMu.Unlock()
+				c.cleanupHbConn(conn)
 				continue
 			}
 
 			resp, err := util.ReadWithLength(conn)
 			conn.SetDeadline(time.Time{})
+
 			if err != nil {
 				util.Error("heartbeat response failed: %v", err)
-				c.hbMu.Lock()
-				c.hbConn = nil
-				c.hbMu.Unlock()
+				c.cleanupHbConn(conn)
 				continue
 			}
 
@@ -361,6 +359,16 @@ func (c *Consumer) handleRebalanceSignal() {
 	if !atomic.CompareAndSwapInt32(&c.rebalancing, 0, 1) {
 		return
 	}
+
+	util.Info("🔄 Rebalance started, resetting state...")
+	c.resetHeartbeatConn()
+
+	c.commitMu.Lock()
+	if c.commitConn != nil {
+		c.commitConn.Close()
+		c.commitConn = nil
+	}
+	c.commitMu.Unlock()
 
 	c.mu.Lock()
 	for _, pc := range c.partitionConsumers {
@@ -619,25 +627,30 @@ func (c *Consumer) startStreaming() {
 
 func (c *Consumer) sendBatchCommit(offsets map[int]uint64) bool {
 	c.commitMu.Lock()
-	if c.commitConn == nil || !c.validateCommitConn() {
-		conn, err := c.getLeaderConn()
+	conn := c.commitConn
+	needsNewConn := conn == nil || !c.validateCommitConn()
+	c.commitMu.Unlock()
+
+	if needsNewConn {
+		newConn, err := c.getLeaderConn()
 		if err != nil {
-			c.commitMu.Unlock()
 			util.Error("Batch commit failed to get connection: %v", err)
 			return false
 		}
 
-		if tcpConn, ok := conn.(*net.TCPConn); ok {
-			tcpConn.SetKeepAlive(true)
-			tcpConn.SetKeepAlivePeriod(30 * time.Second)
-		}
-		c.commitConn = conn
+		c.commitMu.Lock()
+		c.commitConn = newConn
+		conn = newConn
+		c.commitMu.Unlock()
 	}
-	conn := c.commitConn
-	c.commitMu.Unlock()
+
+	c.mu.RLock()
+	generation := c.generation
+	memberID := c.memberID
+	c.mu.RUnlock()
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("BATCH_COMMIT topic=%s group=%s generation=%d member=%s ", c.config.Topic, c.config.GroupID, c.generation, c.memberID))
+	sb.WriteString(fmt.Sprintf("BATCH_COMMIT topic=%s group=%s generation=%d member=%s ", c.config.Topic, c.config.GroupID, generation, memberID))
 	parts := []string{}
 	for pid, off := range offsets {
 		parts = append(parts, fmt.Sprintf("%d:%d", pid, off))
@@ -647,8 +660,10 @@ func (c *Consumer) sendBatchCommit(offsets map[int]uint64) bool {
 	if err := util.WriteWithLength(conn, util.EncodeMessage("", sb.String())); err != nil {
 		util.Error("Batch commit send failed: %v", err)
 		c.commitMu.Lock()
-		conn.Close()
-		c.commitConn = nil
+		if c.commitConn == conn {
+			c.commitConn = nil
+			conn.Close()
+		}
 		c.commitMu.Unlock()
 		return false
 	}
@@ -712,6 +727,11 @@ func (c *Consumer) processBatchSync(msgs []types.Message, partition int) error {
 }
 
 func (c *Consumer) directCommit(partition int, offset uint64) error {
+	c.mu.RLock()
+	generation := c.generation
+	memberID := c.memberID
+	c.mu.RUnlock()
+
 	conn, err := c.getLeaderConn()
 	if err != nil {
 		return err
@@ -719,7 +739,7 @@ func (c *Consumer) directCommit(partition int, offset uint64) error {
 	defer conn.Close()
 
 	commitCmd := fmt.Sprintf("COMMIT_OFFSET topic=%s partition=%d group=%s offset=%d generation=%d member=%s",
-		c.config.Topic, partition, c.config.GroupID, offset, c.generation, c.memberID)
+		c.config.Topic, partition, c.config.GroupID, offset, generation, memberID)
 
 	if err := util.WriteWithLength(conn, util.EncodeMessage("", commitCmd)); err != nil {
 		return fmt.Errorf("direct commit send failed: %v", err)
@@ -779,4 +799,13 @@ func (c *Consumer) Close() error {
 
 	c.wg.Wait()
 	return nil
+}
+
+func (c *Consumer) cleanupHbConn(badConn net.Conn) {
+	badConn.Close()
+	c.hbMu.Lock()
+	if c.hbConn == badConn {
+		c.hbConn = nil
+	}
+	c.hbMu.Unlock()
 }

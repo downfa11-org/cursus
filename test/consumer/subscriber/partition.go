@@ -44,19 +44,22 @@ func (pc *PartitionConsumer) runWorker() {
 	defer pc.consumer.wg.Done()
 
 	for batch := range pc.dataCh {
-		if len(batch.Messages) > 0 {
-			if !pc.consumer.config.EnableBenchmark {
-				pc.printConsumedMessage(batch)
-			}
+		msgCount := len(batch.Messages)
+		if msgCount == 0 {
+			continue
+		}
 
-			if err := pc.consumer.processBatchSync(batch.Messages, pc.partitionID); err != nil {
-				util.Error("Partition [%d] process error: %v", pc.partitionID, err)
-			}
+		if !pc.consumer.config.EnableBenchmark {
+			pc.printConsumedMessage(batch)
+		}
 
-			lastOffset := batch.Messages[len(batch.Messages)-1].Offset
-			if err := pc.commitOffsetWithRetry(lastOffset + 1); err != nil {
-				util.Error("Partition [%d] failed to commit offset: %v", pc.partitionID, err)
-			}
+		if err := pc.consumer.processBatchSync(batch.Messages, pc.partitionID); err != nil {
+			util.Error("Partition [%d] process error: %v", pc.partitionID, err)
+		}
+
+		lastOffset := batch.Messages[len(batch.Messages)-1].Offset
+		if err := pc.commitOffsetWithRetry(lastOffset + 1); err != nil {
+			util.Error("Partition [%d] failed to commit offset: %v", pc.partitionID, err)
 		}
 	}
 }

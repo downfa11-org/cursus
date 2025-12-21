@@ -79,6 +79,17 @@ func (f *BrokerFSM) GetBrokers() []BrokerInfo {
 	return brokers
 }
 
+func (f *BrokerFSM) GetAllPartitionKeys() []string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	keys := make([]string, 0, len(f.partitionMetadata))
+	for k := range f.partitionMetadata {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 func (f *BrokerFSM) SetCoordinator(cd *coordinator.Coordinator) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -213,7 +224,9 @@ func (f *BrokerFSM) persistMessage(topicName string, partition int, msg *types.M
 		return fmt.Errorf("failed to get disk handler for topic %s: %w", topicName, err)
 	}
 
-	msg.Offset = dh.GetAbsoluteOffset()
+	assignedOffset := dh.GetAbsoluteOffset()
+	msg.Offset = assignedOffset
+
 	serialized, err := util.SerializeMessage(*msg)
 	if err != nil {
 		return fmt.Errorf("failed to serialize message: %w", err)
@@ -233,15 +246,21 @@ func (f *BrokerFSM) persistBatch(topicName string, partition int, msgs []types.M
 	}
 
 	base := dh.GetAbsoluteOffset()
+	serializedBatch := make([]string, len(msgs))
 	for i := range msgs {
-		msgs[i].Offset = base + uint64(i)
-		serialized, err := util.SerializeMessage(msgs[i])
-		if err != nil {
-			return fmt.Errorf("failed to serialize message at index %d: %w", i, err)
-		}
+		m := msgs[i]
+		m.Offset = base + uint64(i)
 
-		if err := dh.WriteDirect(topicName, partition, msgs[i].Offset, string(serialized)); err != nil {
-			return fmt.Errorf("WriteDirect failed: %w", err)
+		data, err := util.SerializeMessage(m)
+		if err != nil {
+			return fmt.Errorf("serialization error at index %d: %w", i, err)
+		}
+		serializedBatch[i] = string(data)
+	}
+
+	for i, data := range serializedBatch {
+		if err := dh.WriteDirect(topicName, partition, base+uint64(i), data); err != nil {
+			return fmt.Errorf("partial batch failure at index %d: %w", i, err)
 		}
 	}
 

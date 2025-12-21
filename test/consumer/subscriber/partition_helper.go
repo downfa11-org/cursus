@@ -73,7 +73,7 @@ func (pc *PartitionConsumer) handleBrokerError(data []byte) bool {
 	}
 
 	pc.closeConnection()
-	time.Sleep(time.Duration(pc.partitionID*10) * time.Millisecond) // jitter
+	time.Sleep(time.Duration(pc.partitionID+1*10) * time.Millisecond) // jitter
 	return true
 }
 

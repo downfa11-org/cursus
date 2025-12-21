@@ -432,7 +432,11 @@ func (p *Publisher) sendWithRetry(payload []byte, part int) (*types.AckResponse,
 			}
 		}
 
-		_ = conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.WriteTimeoutMS) * time.Millisecond))
+		if err := conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.WriteTimeoutMS) * time.Millisecond)); err != nil {
+			util.Error("⚠️ SetWriteDeadline error: %v", err)
+			continue
+		}
+
 		if _, err := conn.Write(payload); err != nil {
 			lastErr = fmt.Errorf("write failed: %w", err)
 			brokerAddr := p.producer.selectBroker()
