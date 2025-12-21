@@ -3,7 +3,6 @@ package subscriber
 import (
 	"fmt"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/downfa11-org/go-broker/consumer/types"
@@ -62,25 +61,6 @@ func (pc *PartitionConsumer) handleBrokerError(data []byte) bool {
 	pc.closeConnection()
 	time.Sleep(time.Duration(pc.partitionID*10) * time.Millisecond) // jitter
 	return true
-}
-
-func (pc *PartitionConsumer) updateOffsetAndCommit(msgs []types.Message) {
-	lastOffset := msgs[len(msgs)-1].Offset
-	atomic.StoreUint64(&pc.offset, lastOffset+1)
-
-	select {
-	case pc.consumer.commitCh <- commitEntry{
-		partition: pc.partitionID,
-		offset:    lastOffset,
-	}:
-	default:
-		util.Warn("Partition [%d] commit channel full. falling back to directCommit for offset %d", pc.partitionID, lastOffset)
-		go func(o uint64) {
-			if err := pc.commitOffsetWithRetry(o); err != nil {
-				util.Error("Partition [%d] offset %d commit permanent failure: %v", pc.partitionID, o, err)
-			}
-		}(lastOffset)
-	}
 }
 
 func (pc *PartitionConsumer) commitOffsetWithRetry(offset uint64) error {

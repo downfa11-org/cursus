@@ -19,39 +19,43 @@ type PartitionConsumer struct {
 	mu          sync.Mutex
 	closed      bool
 
-	dataCh chan []byte
-	once   sync.Once
+	dataCh    chan *types.Batch
+	once      sync.Once
+	closeOnce sync.Once
 }
 
 func (pc *PartitionConsumer) initWorker() {
 	pc.once.Do(func() {
-		pc.dataCh = make(chan []byte, 1000)
+		pc.dataCh = make(chan *types.Batch, 1000)
+		pc.consumer.wg.Add(1)
 		go pc.runWorker()
 	})
 }
 
+func (pc *PartitionConsumer) closeDataCh() {
+	pc.closeOnce.Do(func() {
+		if pc.dataCh != nil {
+			close(pc.dataCh)
+		}
+	})
+}
+
 func (pc *PartitionConsumer) runWorker() {
-	for {
-		select {
-		case <-pc.consumer.doneCh:
-			return
-		case batchData := <-pc.dataCh:
-			batch, err := types.DecodeBatchMessages(batchData)
-			if err != nil {
-				util.Error("Partition [%d] decode error: %v", pc.partitionID, err)
-				continue
+	defer pc.consumer.wg.Done()
+
+	for batch := range pc.dataCh {
+		if len(batch.Messages) > 0 {
+			if !pc.consumer.config.EnableBenchmark {
+				pc.printConsumedMessage(batch)
 			}
 
-			if len(batch.Messages) > 0 {
-				if pc.consumer.config.EnableBenchmark {
-				} else {
-					pc.printConsumedMessage(batch)
-				}
+			if err := pc.consumer.processBatchSync(batch.Messages, pc.partitionID); err != nil {
+				util.Error("Partition [%d] process error: %v", pc.partitionID, err)
+			}
 
-				if err := pc.consumer.processBatchSync(batch.Messages, pc.partitionID); err != nil {
-					util.Error("Partition [%d] process error: %v", pc.partitionID, err)
-				}
-				pc.updateOffsetAndCommit(batch.Messages)
+			lastOffset := batch.Messages[len(batch.Messages)-1].Offset
+			if err := pc.commitOffsetWithRetry(lastOffset + 1); err != nil {
+				util.Error("Partition [%d] failed to commit offset: %v", pc.partitionID, err)
 			}
 		}
 	}
@@ -93,22 +97,21 @@ func (pc *PartitionConsumer) pollAndProcess() {
 		pc.closeConnection()
 		return
 	}
-	if pc.handleBrokerError(batchData) {
+
+	if pc.handleBrokerError(batchData) || len(batchData) == 0 {
 		return
 	}
 
-	if len(batchData) > 0 {
-		if pc.consumer.metrics != nil && pc.consumer.metrics.IsDone() {
-			return
-		}
+	batch, err := types.DecodeBatchMessages(batchData)
+	if err != nil {
+		util.Error("Partition [%d] decode error: %v", pc.partitionID, err)
+		return
+	}
 
-		batch, err := types.DecodeBatchMessages(batchData)
-		if err == nil && len(batch.Messages) > 0 {
-			lastOffset := batch.Messages[len(batch.Messages)-1].Offset
-			atomic.StoreUint64(&pc.offset, lastOffset+1)
-		}
-
-		pc.dataCh <- batchData
+	select {
+	case pc.dataCh <- batch:
+	case <-c.doneCh:
+		pc.closeDataCh()
 	}
 }
 
@@ -117,17 +120,14 @@ func (pc *PartitionConsumer) startStreamLoop() {
 	pid := pc.partitionID
 	c := pc.consumer
 
-	pc.consumer.wg.Add(1)
-	go pc.workerLoop()
-
 	minRetry := time.Duration(c.config.StreamingRetryIntervalMS) * time.Millisecond
 	bo := newBackoff(minRetry, 30*time.Second)
+	defer pc.closeDataCh()
 
 	for {
 		select {
 		case <-c.doneCh:
 			pc.closeConnection()
-			close(pc.dataCh)
 			return
 		default:
 		}
@@ -185,46 +185,22 @@ func (pc *PartitionConsumer) startStreamLoop() {
 				break
 			}
 
-			if len(batchData) == 0 {
-				continue // keepalive
+			if len(batchData) == 0 || pc.handleBrokerError(batchData) {
+				continue
 			}
 
-			if pc.handleBrokerError(batchData) {
-				break
+			batch, err := types.DecodeBatchMessages(batchData)
+			if err != nil {
+				continue
 			}
 
 			select {
-			case pc.dataCh <- batchData:
+			case pc.dataCh <- batch:
 			case <-c.doneCh:
 				return
 			}
 			bo.reset()
 		}
 		time.Sleep(bo.duration())
-	}
-}
-
-func (pc *PartitionConsumer) workerLoop() {
-	defer pc.consumer.wg.Done()
-	for data := range pc.dataCh {
-		batch, err := types.DecodeBatchMessages(data)
-		if err != nil {
-			util.Error("Decode error on P[%d]: %v", pc.partitionID, err)
-			continue
-		}
-
-		pc.consumer.processBatchSync(batch.Messages, pc.partitionID)
-
-		if len(batch.Messages) > 0 {
-			lastOffset := batch.Messages[len(batch.Messages)-1].Offset
-			nextOffset := lastOffset + 1
-			atomic.StoreUint64(&pc.offset, nextOffset)
-			pc.consumer.commitCh <- commitEntry{
-				pc.partitionID,
-				nextOffset,
-			}
-
-			time.Sleep(2 * time.Millisecond)
-		}
 	}
 }
