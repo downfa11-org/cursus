@@ -2,7 +2,7 @@
 
 This Code of Conduct is adapted from Contributor Covenant v2.0 and modified to reflect the scale and operating model of this project.
 
-## 1. Purpose
+## Purpose
 
 The purpose of this Code of Conduct is to establish a minimum set of rules that allow technical discussions and contributions to continue without personal attacks, unproductive arguments, or maintainer burnout.
 
@@ -13,7 +13,7 @@ This document:
 
 Rather, its purpose is to clearly block behaviors where attacks on people undermine technical discussion.
 
-## 2. Our Pledge
+## Our Pledge
 
 All participants in this project (users, contributors, reviewers, and maintainers) commit to the following:
 
@@ -21,7 +21,7 @@ All participants in this project (users, contributors, reviewers, and maintainer
 - Allowing criticism of code and design, but not attacks against people
 - Framing discussions around solving problems, not “winning” arguments
 
-## 3. Expected Behavior
+## Expected Behavior
 
 The following behaviors are expected within this project:
 
@@ -33,7 +33,7 @@ The following behaviors are expected within this project:
 
 These points may sound obvious, but they are written here because they are often not followed in practice.
 
-## 4. Unacceptable Behavior
+## Unacceptable Behavior
 
 The following behaviors are explicitly not tolerated:
 
@@ -46,7 +46,7 @@ The following behaviors are explicitly not tolerated:
 
 In particular, the assumption that “because this is open source, support should be provided for free” is not respected in this project.
 
-## 5. Communication Guidelines
+## Communication Guidelines
 
 - Issues and pull requests should be created within the appropriate scope
 - Questions should include the minimum information necessary to reproduce the issue
@@ -55,7 +55,7 @@ In particular, the assumption that “because this is open source, support shoul
 
 Not receiving a response does not grant the right to behave rudely.
 
-## 6. Enforcement
+## Enforcement
 
 Project maintainers reserve the right to:
 
@@ -65,10 +65,10 @@ Project maintainers reserve the right to:
 
 Maintainers are not neutral arbitrators; they are responsible for the project. While you may disagree with a decision, it is not subject to public debate.
 
-## 7. Reporting
+## Reporting
 
 Clear violations of this Code of Conduct may be reported via GitHub Issues. However, not all disputes warrant maintainer intervention.
 
-## 8. Scope
+## Scope
 
 This Code of Conduct applies to interactions within GitHub Issues, Pull Requests, and Discussions.
