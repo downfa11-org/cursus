@@ -1,6 +1,6 @@
 # Design Philosophy
 
-Go-broker is designed around several core principles:
+cursus is designed around several core principles:
 
 1. **Simplicity over feature completeness**: Single-node architecture with minimal dependencies, avoiding distributed consensus complexity
 

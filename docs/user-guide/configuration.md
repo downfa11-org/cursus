@@ -1,12 +1,12 @@
 # Configuration
 
-This document provides a comprehensive guide to configuring go-broker. 
+This document provides a comprehensive guide to configuring cursus. 
 
 It covers all available configuration parameters, their default values, configuration sources, and the precedence order when configuration is specified in multiple locations.
 
 ## Purpose and Scope
 
-### Configuration in go-broker controls:
+### Configuration in cursus controls:
 
 - Network settings (ports, TLS)
 - Performance tuning (buffer sizes, batch sizes, timeouts)
@@ -18,7 +18,7 @@ The configuration system uses a hierarchical approach where settings can be spec
 
 ## Configuration Sources and Precedence
 
-go-broker supports three configuration sources with the following precedence order (highest to lowest):
+cursus supports three configuration sources with the following precedence order (highest to lowest):
 
 - **Command-line flags** - Highest precedence
 - **Configuration file** (YAML or JSON) - Specified via `--config` flag or `CONFIG_PATH` environment variable
@@ -30,7 +30,7 @@ Configuration files can be in either YAML or JSON format. The format is detected
 
 ### YAML Format
 
-The standard configuration format used in go-broker is YAML. Here's the complete structure:
+The standard configuration format used in cursus is YAML. Here's the complete structure:
 
 ```
 broker:
@@ -168,7 +168,7 @@ These parameters are defined in the struct for future extensibility but are not 
 For local development, you can run the broker with built-in defaults:
 
 ```
-./bin/go-broker
+./bin/cursus
 ```
 
 This uses:
@@ -184,11 +184,11 @@ This uses:
 Create a configuration file and specify it:
 
 ```
-./bin/go-broker --config /path/to/config.yaml
+./bin/cursus --config /path/to/config.yaml
 
 // Or using the environment variable:
 // export CONFIG_PATH=/path/to/config.yaml
-// ./bin/go-broker
+// ./bin/cursus
 ```
 
 The environment variable approach is checked in `pkg/config/properties.go`
@@ -215,7 +215,7 @@ services:
 You can use a configuration file for most settings and override specific values:
 
 ```
-./bin/go-broker --config config.yaml --port 9001 --exporter-port 9101
+./bin/cursus --config config.yaml --port 9001 --exporter-port 9101
 ```
 
 CLI flags take precedence over configuration file values.

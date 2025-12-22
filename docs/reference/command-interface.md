@@ -1,6 +1,6 @@
 # Command Interface
 
-Clients interact with go-broker through a text-based command protocol over TCP:
+Clients interact with cursus through a text-based command protocol over TCP:
 
 | Command | Example | Description |
 |---------|---------|-------------|

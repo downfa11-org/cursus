@@ -4,16 +4,16 @@
 
 <div align="center">
 
-[![GitHub](https://img.shields.io/github/stars/downfa11-org/go-broker.svg?style=social)](https://github.com/downfa11-org/go-broker)
-[![Release Version](https://img.shields.io/github/v/release/downfa11-org/go-broker?label=go-broker)](https://github.com/downfa11-org/go-broker/releases/latest)
-[![Contributors](https://img.shields.io/github/contributors/downfa11-org/go-broker.svg)](https://github.com/downfa11-org/go-broker/contributors)
-[![Commits](https://img.shields.io/github/commit-activity/m/downfa11-org/go-broker.svg)](https://github.com/downfa11-org/go-broker/pulse)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/downfa11-org/go-broker/blob/main/LICENSE)
+[![GitHub](https://img.shields.io/github/stars/downfa11-org/cursus.svg?style=social)](https://github.com/downfa11-org/cursus)
+[![Release Version](https://img.shields.io/github/v/release/downfa11-org/cursus?label=cursus)](https://github.com/downfa11-org/cursus/releases/latest)
+[![Contributors](https://img.shields.io/github/contributors/downfa11-org/cursus.svg)](https://github.com/downfa11-org/cursus/contributors)
+[![Commits](https://img.shields.io/github/commit-activity/m/downfa11-org/cursus.svg)](https://github.com/downfa11-org/cursus/pulse)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/downfa11-org/cursus/blob/main/LICENSE)
 
-[![Build Status](https://github.com/downfa11-org/go-broker/actions/workflows/ci-build.yml/badge.svg?branch=main)](https://github.com/downfa11-org/go-broker/actions/workflows/ci-build.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/downfa11-org/go-broker)](https://goreportcard.com/report/github.com/downfa11-org/go-broker)
-[![CodeCov](https://img.shields.io/codecov/c/github/downfa11-org/go-broker)](https://codecov.io/gh/downfa11-org/go-broker)
-[![Godoc](http://img.shields.io/badge/go-documentation-blue.svg?style=flat-square)](https://godoc.org/github.com/downfa11-org/go-broker)
+[![Build Status](https://github.com/downfa11-org/cursus/actions/workflows/ci-build.yml/badge.svg?branch=main)](https://github.com/downfa11-org/cursus/actions/workflows/ci-build.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/downfa11-org/cursus)](https://goreportcard.com/report/github.com/downfa11-org/cursus)
+[![CodeCov](https://img.shields.io/codecov/c/github/downfa11-org/cursus)](https://codecov.io/gh/downfa11-org/cursus)
+[![Godoc](http://img.shields.io/badge/go-documentation-blue.svg?style=flat-square)](https://godoc.org/github.com/downfa11-org/cursus)
 
 </div>
 

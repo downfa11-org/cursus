@@ -2,13 +2,13 @@
 
 ## Purpose and Scope
 
-This document describes the monitoring and observability capabilities built into go-broker, including health check endpoints, Prometheus metrics, and structured logging. 
+This document describes the monitoring and observability capabilities built into cursus, including health check endpoints, Prometheus metrics, and structured logging. 
 
 These features enable operators to monitor broker health, track performance metrics, and diagnose issues in production environments.
 
 ## Overview
 
-Go-broker provides three primary observability mechanisms:
+cursus provides three primary observability mechanisms:
 
 | Component            | Port       | Protocol          | Purpose                                                      |
 |---------------------|-----------|-----------------|--------------------------------------------------------------|
@@ -109,13 +109,13 @@ prometheus:
 
 ### Prometheus Integration
 
-To scrape go-broker metrics, configure Prometheus with:
+To scrape cursus metrics, configure Prometheus with:
 
 
 prometheus.yml
 ```
 scrape_configs:
-  - job_name: 'go-broker'
+  - job_name: 'cursus'
     scrape_interval: 5s
     scrape_timeout: 3s
     static_configs:
@@ -126,14 +126,14 @@ For Docker deployments, use the service name:
 
 ```
 static_configs:
-  - targets: ['go-broker:9100']
+  - targets: ['cursus:9100']
 ```
 
 ## Structured Logging
 
 ### Logging Strategy
 
-Go-broker implements structured logging throughout the codebase using Go's standard log package with prefixed message categories. All logs are written to `stdout/stderr` for compatibility with container log aggregation systems.
+cursus implements structured logging throughout the codebase using Go's standard log package with prefixed message categories. All logs are written to `stdout/stderr` for compatibility with container log aggregation systems.
 
 ### Log Format Examples
 
@@ -286,7 +286,7 @@ Recommended Prometheus Alerts:
 
 | Alert           | Condition                                | Severity  | Description                     |
 |-----------------|------------------------------------------|-----------|---------------------------------|
-| BrokerDown      | `up{job="go-broker"} == 0`                 | Critical  | Broker unreachable             |
+| BrokerDown      | `up{job="cursus"} == 0`                 | Critical  | Broker unreachable             |
 | HighDiskUsage   | Disk segment count growing rapidly       | Warning   | May need compaction            |
 | ConsumerLag     | Consumer offset far behind latest        | Warning   | Processing bottleneck          |
 | HighErrorRate   | Command failure rate > 5%                | Warning   | Application issues             |
@@ -295,7 +295,7 @@ Recommended Prometheus Alerts:
 
 Recommended Setup:
 
-- **Docker Logs**: Use `docker logs -f go-broker` for development
+- **Docker Logs**: Use `docker logs -f cursus` for development
 - **Production**: Ship logs to centralized system (ELK, Splunk, Datadog)
 - **Retention**: Keep at least 7 days of logs for incident investigation
 - **Parsing**: Index logs by category prefix ([CMD], [REQ], etc.)
@@ -315,7 +315,7 @@ filebeat.inputs:
 
 output.elasticsearch:
   hosts: ["elasticsearch:9200"]
-  index: "go-broker-logs-%{+yyyy.MM.dd}"
+  index: "cursus-logs-%{+yyyy.MM.dd}"
 ```
 
 ## Troubleshooting
@@ -379,18 +379,18 @@ Resolution:
 
 ```
 # View container logs directly
-docker logs -f go-broker
+docker logs -f cursus
 
 # Check Docker logging driver
-docker inspect go-broker | grep LogConfig
+docker inspect cursus | grep LogConfig
 
 # Verify log output
-docker exec go-broker ls -la /proc/1/fd/1
+docker exec cursus ls -la /proc/1/fd/1
 ```
 
 # Summary
 
-Go-broker provides comprehensive observability through three independent systems:
+cursus provides comprehensive observability through three independent systems:
 
 - **Health Checks** (:9080): Binary ready/not-ready status for load balancers
 - **Prometheus Metrics** (:9100): Time-series performance data for monitoring

@@ -3,7 +3,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    container_name: go-broker
+    container_name: cursus
     command: ./cli
     volumes:
       - ./logs:/root/broker-logs

@@ -1,12 +1,12 @@
 # Consumer Groups
 
-This document explains how consumer groups work in go-broker, including their structure, registration process, load balancing mechanism, and message distribution strategy. Consumer groups enable multiple consumers to share the load of processing messages from a topic while maintaining ordering guarantees within partitions.
+This document explains how consumer groups work in cursus, including their structure, registration process, load balancing mechanism, and message distribution strategy. Consumer groups enable multiple consumers to share the load of processing messages from a topic while maintaining ordering guarantees within partitions.
 
 For information about topic and partition structure, see [Topics and Partitions](./topics-and-partitions.md). For the broader topic management system, see [Topic Management System](./topic-management.md).
 
 ## Purpose and Functionality
 
-Consumer groups provide a mechanism for horizontal scaling of message consumption. Multiple consumers can join a group to collectively process messages from a topic, with go-broker automatically distributing partitions among the consumers. 
+Consumer groups provide a mechanism for horizontal scaling of message consumption. Multiple consumers can join a group to collectively process messages from a topic, with cursus automatically distributing partitions among the consumers. 
 
 Each partition's messages are delivered to exactly one consumer within a group, ensuring that ordering is preserved within each partition while enabling parallel processing across partitions.
 
@@ -48,7 +48,7 @@ The RegisterConsumerGroup method establishes a consumer group for a topic. It pe
 
 ### Partition-to-Consumer Distribution
 
-Go-broker uses a deterministic modulo-based distribution algorithm:
+cursus uses a deterministic modulo-based distribution algorithm:
 
 ```
 target_consumer_index = partition_id % consumer_count
@@ -165,7 +165,7 @@ The locking hierarchy ensures:
 
 # Summary
 
-Consumer groups in go-broker provide load balancing and ordering guarantees through a deterministic partition assignment mechanism. The modulo-based distribution ensures even load across consumers while maintaining per-partition message ordering. 
+Consumer groups in cursus provide load balancing and ordering guarantees through a deterministic partition assignment mechanism. The modulo-based distribution ensures even load across consumers while maintaining per-partition message ordering. 
 
 Multiple consumer groups can independently consume the same topic, each with its own partition-to-consumer mapping and isolated message delivery channels.
 

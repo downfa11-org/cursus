@@ -2,7 +2,7 @@
 
 ## Purpose and Scope
 
-This document describes the Server System in go-broker, which is responsible for accepting TCP connections, managing concurrent client sessions, and routing commands to the appropriate subsystems. 
+This document describes the Server System in cursus, which is responsible for accepting TCP connections, managing concurrent client sessions, and routing commands to the appropriate subsystems. 
 
 The server implements a bounded worker pool pattern to handle connections efficiently and exposes multiple network ports for different purposes.
 
@@ -244,7 +244,7 @@ The server uses structured logging for different event types:
 
 # Summary
 
-The Server System provides the network interface for go-broker, implementing:
+The Server System provides the network interface for cursus, implementing:
 
 - **Worker Pool Pattern**: 1000 concurrent workers handle connections efficiently
 - **Length-Prefixed Protocol**: 4-byte big-endian length prefix for reliable message framing

@@ -2,7 +2,7 @@
 
 ## Purpose and Scope
 
-This document explains how log segments are created, rotated, and managed in the go-broker disk persistence system. 
+This document explains how log segments are created, rotated, and managed in the cursus disk persistence system. 
 
 A segment is a physical file on disk that stores messages for a specific topic-partition pair. Segments are rotated (rolled over to a new file) when they reach 1MB in size, enabling efficient parallel I/O, simplified cleanup operations, and bounded resource usage.
 

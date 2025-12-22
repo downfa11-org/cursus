@@ -15,5 +15,5 @@ Checklist:
 - [ ] All commits are signed off as required by DCO.
 - [ ] Unit and/or integration tests have been added for new functionality.
 - [ ] The build passes successfully.
-- [ ] The change follows Go-broker design and feature guidelines.
+- [ ] The change follows cursus design and feature guidelines.
 - [ ] A brief description of why this PR is necessary or what problem it solves is included.

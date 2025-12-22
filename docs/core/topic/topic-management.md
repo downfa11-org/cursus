@@ -2,7 +2,7 @@
 
 ## Purpose and Scope
 
-The Topic Management System is the core routing and distribution layer of go-broker. It orchestrates how messages flow from publishers to consumers through topics, partitions, and consumer groups. 
+The Topic Management System is the core routing and distribution layer of cursus. It orchestrates how messages flow from publishers to consumers through topics, partitions, and consumer groups. 
 
 This system handles partition selection, message deduplication, consumer group registration, and in-memory message distribution to active consumers.
 
