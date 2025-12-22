@@ -1,6 +1,6 @@
 <div align="center">
 
-![cursus](.github/cursus-readme.png)
+<img src=".github/cursus-readme.png" alt="cursus" width="50%" height="50%"> 
 
 [![GitHub](https://img.shields.io/github/stars/downfa11-org/cursus.svg?style=social)](https://github.com/downfa11-org/cursus)
 [![Contributors](https://img.shields.io/github/contributors/downfa11-org/cursus.svg)](https://github.com/downfa11-org/cursus/contributors)
