@@ -1,12 +1,12 @@
 # Topics and Partitions
 
-This document provides a detailed technical explanation of topics and partitions in go-broker, including their internal structure, partition selection strategies, and ordering guarantees. Topics serve as logical message streams that are horizontally scaled through partitioning, enabling both parallelism and ordering semantics.
+This document provides a detailed technical explanation of topics and partitions in cursus, including their internal structure, partition selection strategies, and ordering guarantees. Topics serve as logical message streams that are horizontally scaled through partitioning, enabling both parallelism and ordering semantics.
 
 For information about consumer groups and how they interact with partitions, see [Consumer Groups](./consumer-groups.md). For details on how messages are persisted within partitions, see [Disk Persistence System](../storage/disk-persistence.md).
 
 ## Overview
 
-A Topic is a named message stream that is divided into one or more Partitions. Each partition operates independently with its own message queue and disk storage, allowing go-broker to parallelize message processing and storage operations. The system supports two partition selection strategies: key-based routing for ordering guarantees and round-robin for load balancing.
+A Topic is a named message stream that is divided into one or more Partitions. Each partition operates independently with its own message queue and disk storage, allowing cursus to parallelize message processing and storage operations. The system supports two partition selection strategies: key-based routing for ordering guarantees and round-robin for load balancing.
 
 ## Topic Structure
 
@@ -87,7 +87,7 @@ Algorithm:
 
 ## Ordering Guarantees
 
-Go-broker provides conditional ordering guarantees based on the partition selection strategy and consumer group configuration.
+cursus provides conditional ordering guarantees based on the partition selection strategy and consumer group configuration.
 
 ### Within-Partition Ordering
 
@@ -195,6 +195,6 @@ Key Points:
 - **Acquired during**: consumer group registration, shutdown
 - **Type**: sync.RWMutex
 
-This completes the technical documentation for topics and partitions in go-broker. 
+This completes the technical documentation for topics and partitions in cursus. 
 
 The system provides a flexible partitioning model with deterministic key-based routing for ordering guarantees and round-robin distribution for load balancing, all backed by buffered channels and independent disk persistence per partition.

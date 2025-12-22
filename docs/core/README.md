@@ -1,15 +1,15 @@
 # Core Systems
 
-This document provides a detailed technical overview of the three major subsystems that comprise go-broker's core functionality:
+This document provides a detailed technical overview of the three major subsystems that comprise cursus's core functionality:
 - the Server System, Topic Management System, and Disk Persistence System.
 
 Each system operates semi-independently while integrating through well-defined interfaces to provide a complete message broker implementation
 
-For details about message flow through these systems, see [Message Flow](./message-flow.md). For information about getting started with go-broker, see [Getting Started](../user-guide/README.md).
+For details about message flow through these systems, see [Message Flow](./message-flow.md). For information about getting started with cursus, see [Getting Started](../user-guide/README.md).
 
 ## System Architecture Overview
 
-The go-broker architecture consists of three primary systems that work together to provide message broker functionality:
+The cursus architecture consists of three primary systems that work together to provide message broker functionality:
 
 | System                   | Primary Component                                      | Responsibility                                       |
 |--------------------------|---------------------------------------------------------|------------------------------------------------------|

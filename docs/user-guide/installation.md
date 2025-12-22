@@ -1,6 +1,6 @@
 # Installation
 
-This page covers the installation of go-broker using different methods: building from source or using Docker. 
+This page covers the installation of cursus using different methods: building from source or using Docker. 
 
 For configuration options after installation, see [Configuration](./configuration.md). For instructions on running the broker once installed, see [Running the Broker](../core/server.md).
 
@@ -8,7 +8,7 @@ For configuration options after installation, see [Configuration](./configuratio
 
 ### Go Version Requirement
 
-go-broker requires `Go 1.25.0` or higher. This is specified in `go.mod`
+cursus requires `Go 1.25.0` or higher. This is specified in `go.mod`
 
 ### Dependencies
 
@@ -45,9 +45,9 @@ This executes three sub-targets defined in Makefile
 
 | Target           | Output                  | Command              |
 |-----------------|------------------------|--------------------|
-| API Server       | `bin/go-broker`        | `make build-api`    |
-| CLI Tool         | `bin/go-broker-cli`    | `make build-cli`    |
-| Benchmark Tool   | `bin/go-broker-bench`  | `make build-bench`  |
+| API Server       | `bin/cursus`        | `make build-api`    |
+| CLI Tool         | `bin/cursus-cli`    | `make build-cli`    |
+| Benchmark Tool   | `bin/cursus-bench`  | `make build-bench`  |
 
 ### Build Flags
 
@@ -72,15 +72,15 @@ Alternatively, build directly using go build:
 
 - Build broker
     ```
-    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o bin/go-broker ./cmd/broker/main.go
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o bin/cursus ./cmd/broker/main.go
     ```
 - Build CLI
     ```
-    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o bin/go-broker-cli ./cmd/cli/main.go
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o bin/cursus-cli ./cmd/cli/main.go
     ```
 - Build benchmark
     ```
-    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o bin/go-broker-bench ./cmd/bench/main.go
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o bin/cursus-bench ./cmd/bench/main.go
     ```
 ### Development Build
 
@@ -116,13 +116,13 @@ Building the Docker Image:
 
 ```
 make docker
-docker build -t go-broker:latest .
+docker build -t cursus:latest .
 ```
 
 Alternatively, build directly with docker:
 
 ```
-docker build -t go-broker:latest .
+docker build -t cursus:latest .
 ```
 
 ### Container Contents
@@ -154,18 +154,18 @@ After building from source, the `bin/` directory contains:
 
 ```
 bin/
-├── go-broker          # Main broker server
-├── go-broker-cli      # Administrative CLI tool
-└── go-broker-bench    # Performance benchmarking tool
+├── cursus          # Main broker server
+├── cursus-cli      # Administrative CLI tool
+└── cursus-bench    # Performance benchmarking tool
 ```
 
 ## Binary Descriptions
 
 | Binary            | Entry Point      | Purpose                                                                                     |
 |-------------------|------------------|---------------------------------------------------------------------------------------------|
-| **go-broker**     | `go-broker`      | Starts the broker server with TCP listener, health check endpoint, and metrics exporter     |
-| **go-broker-cli** | `go-broker-cli`  | Interactive CLI for administrative commands (`CREATE`, `DELETE`, `LIST`, `SUBSCRIBE`, `PUBLISH`, `CONSUME`) |
-| **go-broker-bench** | `go-broker-bench` | Runs performance benchmarks and load testing                                                |
+| **cursus**     | `cursus`      | Starts the broker server with TCP listener, health check endpoint, and metrics exporter     |
+| **cursus-cli** | `cursus-cli`  | Interactive CLI for administrative commands (`CREATE`, `DELETE`, `LIST`, `SUBSCRIBE`, `PUBLISH`, `CONSUME`) |
+| **cursus-bench** | `cursus-bench` | Runs performance benchmarks and load testing                                                |
 
 
 # Broker Binary Initialization
@@ -202,9 +202,9 @@ ls -lh bin/
 Expected output:
 
 ```
--rwxr-xr-x  1 user  group   15M  go-broker
--rwxr-xr-x  1 user  group   12M  go-broker-cli
--rwxr-xr-x  1 user  group   13M  go-broker-bench
+-rwxr-xr-x  1 user  group   15M  cursus
+-rwxr-xr-x  1 user  group   12M  cursus-cli
+-rwxr-xr-x  1 user  group   13M  cursus-bench
 ```
 
 ## Check Binary Execution
@@ -213,8 +213,8 @@ Expected output:
 Test that binaries are executable:
 
 ```
-./bin/go-broker --help
-./bin/go-broker-cli --help
+./bin/cursus --help
+./bin/cursus-cli --help
 ```
 
 ## Docker Image Verification
@@ -222,19 +222,19 @@ Test that binaries are executable:
 For Docker installations, verify the image was built:
 
 ```
-docker images | grep go-broker
+docker images | grep cursus
 ```
 
 Expected output:
 
 ```
-go-broker    latest    <image-id>    <timestamp>    ~50MB
+cursus    latest    <image-id>    <timestamp>    ~50MB
 ```
 
 Run a quick test container:
 
 ```
-docker run --rm go-broker --help
+docker run --rm cursus --help
 ```
 
 ## Cleaning Build Artifacts

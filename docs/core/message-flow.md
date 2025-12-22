@@ -1,6 +1,6 @@
 # Message Flow
 
-This document explains how messages flow through go-broker from publication to consumption. It covers the wire protocol, message routing, deduplication, partition selection, and the dual-path distribution mechanism that ensures both durability and low latency.
+This document explains how messages flow through cursus from publication to consumption. It covers the wire protocol, message routing, deduplication, partition selection, and the dual-path distribution mechanism that ensures both durability and low latency.
 
 For detailed information about specific aspects of message flow:
 
@@ -24,7 +24,7 @@ Responses follow the same format using `writeResponse`, which writes a 4-byte le
 
 ## Deduplication Mechanism
 
-Go-broker implements automatic message deduplication to prevent duplicate processing. The TopicManager maintains a `dedupMap` (sync.Map) that tracks message IDs for 30 minutes.
+cursus implements automatic message deduplication to prevent duplicate processing. The TopicManager maintains a `dedupMap` (sync.Map) that tracks message IDs for 30 minutes.
 
 The deduplication implementation is in `TopicManager.Publish`:
 
@@ -109,7 +109,7 @@ The `writeBatch` function:
 
 ## Purpose and Scope
 
-This document describes the complete path a message takes from publication to persistence in go-broker. It covers the TCP ingestion protocol, deduplication logic, partition selection strategies, asynchronous disk writes, and in-memory distribution to active consumers.
+This document describes the complete path a message takes from publication to persistence in cursus. It covers the TCP ingestion protocol, deduplication logic, partition selection strategies, asynchronous disk writes, and in-memory distribution to active consumers.
 
 For information about consuming messages from disk, see [Consuming Messages](./message-flow.md). For details on the disk segment format and read operations, see [Segment Management](./storage/segment-management.md).
 
@@ -282,11 +282,11 @@ These metrics are incremented in `TopicManager.Publish()` after successfully enq
 
 ## Purpose and Scope
 
-This page explains how consumers retrieve messages from go-broker, covering both in-memory consumption via consumer groups and on-demand consumption from disk. 
+This page explains how consumers retrieve messages from cursus, covering both in-memory consumption via consumer groups and on-demand consumption from disk. 
 
 For information about how messages are published and stored to disk, see [Publishing Messages](./message-flow.md). For details about consumer group architecture and load balancing, see [Consumer Groups](./topic/consumer-groups.md).
 
-There are two primary consumption patterns in go-broker:
+There are two primary consumption patterns in cursus:
 - **In-memory consumption via consumer groups**: Active consumers receive messages in real-time through channels as they are published
 - **On-demand consumption via `CONSUME` command**: Clients read historical messages directly from disk at a specific offset
 
@@ -425,7 +425,7 @@ for _, msg := range messages {
 }
 ```
 
-The `util.WriteWithLength` helper writes a 4-byte big-endian length prefix followed by the message data, matching the TCP protocol used throughout go-broker.
+The `util.WriteWithLength` helper writes a 4-byte big-endian length prefix followed by the message data, matching the TCP protocol used throughout cursus.
 
 ### Connection Lifecycle
 
@@ -576,7 +576,7 @@ The error is logged, and the partial count of successfully streamed messages is 
 
 ## Summary
 
-The consumption system in go-broker provides:
+The consumption system in cursus provides:
 
 - **On-demand disk reads**: Historical messages can be retrieved at any time using the CONSUME command
 - **Memory-mapped I/O**: Efficient file access using OS-level memory mapping

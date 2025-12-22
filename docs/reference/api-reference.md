@@ -1,6 +1,6 @@
 # API Reference
 
-This document provides a complete reference for the go-broker command API. It describes the wire protocol format, command syntax, parameters, behavior, and responses for all supported operations. The go-broker API is a text-based protocol transmitted over TCP with length-prefixed message framing.
+This document provides a complete reference for the cursus command API. It describes the wire protocol format, command syntax, parameters, behavior, and responses for all supported operations. The cursus API is a text-based protocol transmitted over TCP with length-prefixed message framing.
 
 For information about the on-disk storage format, see [Disk Format](../core/storage/disk-format.md).
 

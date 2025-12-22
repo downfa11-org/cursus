@@ -1,6 +1,6 @@
 # Contributing
 
-Go-broker is an open source project licensed under **Apache 2.0**.
+Cursus is an open source project licensed under **Apache 2.0**.
 
 Even though it is currently maintained by a single developer, contributions are welcome via GitHub pull requests. 
 
@@ -16,7 +16,7 @@ A suggested workflow for contributing:
 
 1. Fork the repository and clone it locally.
 
-2. Set up your environment for building and testing Go-broker.
+2. Set up your environment for building and testing Cursus.
 
 3. Create a topic branch from main for your contribution.
 
@@ -44,7 +44,7 @@ A suggested workflow for contributing:
 ### Build & Test
 ```
 make tools   # install dependencies
-make build   # executable: ./bin/go-broker
+make build   # executable: ./bin/cursus
 ```
 
 Run integration tests locally:
@@ -75,9 +75,7 @@ even in single-node setups.
 ```
 
 - Subject line ≤ 70 characters
-
 - Blank line after subject
-
 - Body lines wrapped at 80 characters
 
 ## Testing
@@ -103,7 +101,5 @@ All contributions are reviewed before merging.
 Even though the project is small, pull requests should include:
 
 - Clear description of the change
-
 - Relevant tests
-
 - Correct formatting

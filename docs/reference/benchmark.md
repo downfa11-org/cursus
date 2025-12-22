@@ -2,13 +2,13 @@
 
 ## Purpose and Scope
 
-This document explains how to use the built-in benchmarking tool to measure go-broker's throughput, latency, and system behavior under load. The benchmark tool simulates realistic workloads with configurable numbers of concurrent producers and consumers, partitions, and message counts.
+This document explains how to use the built-in benchmarking tool to measure cursus's throughput, latency, and system behavior under load. The benchmark tool simulates realistic workloads with configurable numbers of concurrent producers and consumers, partitions, and message counts.
 
 For information about performance tuning configuration parameters that affect benchmark results, see [Performance Tuning](./performance.md).
 
 ## Benchmark Tool Overview
 
-The go-broker benchmarking system consists of three primary components:
+The cursus benchmarking system consists of three primary components:
 
 ### Component
 
@@ -41,13 +41,13 @@ Before running benchmarks, ensure the broker server is running:
 ### Start broker in foreground
 
 ```
-./bin/go-broker
+./bin/cursus
 ```
 
 ### Or start in background
 
 ```
-./bin/go-broker &
+./bin/cursus &
 ```
 
 Wait for the broker to become ready (health check on port 9080):
@@ -307,7 +307,7 @@ This allows partial results even if some consumers encounter issues.
 
 ### Message Encoding
 
-All benchmark messages use the standard go-broker protocol:
+All benchmark messages use the standard cursus protocol:
 
 - **Encode Message**: `util.EncodeMessage(topic, payload)` creates a topic-prefixed message
 - **Optional Compression**: If EnableGzip is true, `server.CompressMessage()` compresses the payload

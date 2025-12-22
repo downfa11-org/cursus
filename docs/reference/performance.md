@@ -1,10 +1,10 @@
 # Performance
 
-This document explains the configurable parameters that control go-broker's performance characteristics. It covers buffer sizes, batching behavior, linger times, and how to tune these settings for different workload patterns. For information about running performance benchmarks, see [Running Benchmarks](./benchmark.md).
+This document explains the configurable parameters that control cursus's performance characteristics. It covers buffer sizes, batching behavior, linger times, and how to tune these settings for different workload patterns. For information about running performance benchmarks, see [Running Benchmarks](./benchmark.md).
 
 ## Overview
 
-The go-broker system exposes several tunable parameters that control the trade-off between throughput, latency, and resource utilization. These parameters primarily affect:
+The cursus system exposes several tunable parameters that control the trade-off between throughput, latency, and resource utilization. These parameters primarily affect:
 
 - **Channel buffer sizes** - Control memory usage and backpressure behavior
 - **Disk batching parameters** - Control disk write efficiency and latency
@@ -316,7 +316,7 @@ broker:
 
 # Summary
 
-Performance tuning in go-broker involves balancing three primary parameters:
+Performance tuning in cursus involves balancing three primary parameters:
 
 - `disk_flush_batch_size` - Controls throughput vs latency trade-off (default: 500)
 - `linger_ms` - Sets maximum message latency guarantee (default: 100ms)

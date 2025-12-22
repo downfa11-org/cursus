@@ -1,12 +1,12 @@
 # Disk-format
 
-This document describes the on-disk storage format used by go-broker to persist messages. It covers the segment file structure, message encoding scheme, write and read mechanics, and platform-specific optimizations.
+This document describes the on-disk storage format used by cursus to persist messages. It covers the segment file structure, message encoding scheme, write and read mechanics, and platform-specific optimizations.
 
 For details on the asynchronous write path and batching behavior, see [DiskHandler and Write Path](./disk-persistence.md).
 
 ## Purpose and Scope
 
-Go-broker stores messages in append-only log files organized into segments. Each topic-partition pair maintains its own set of segment files, allowing for parallel I/O operations and independent management. This document specifies:
+cursus stores messages in append-only log files organized into segments. Each topic-partition pair maintains its own set of segment files, allowing for parallel I/O operations and independent management. This document specifies:
 
 - Segment file naming conventions and directory layout
 - Message encoding format (length-prefixed binary)
@@ -152,7 +152,7 @@ This guarantees that messages are physically written to disk before acknowledgin
 
 ## Memory-Mapped I/O
 
-Go-broker uses memory-mapped I/O for reading messages, leveraging the `golang.org/x/exp/mmap` package. 
+cursus uses memory-mapped I/O for reading messages, leveraging the `golang.org/x/exp/mmap` package. 
 
 This approach provides efficient random access to segment files without requiring explicit read syscalls for each message.
 

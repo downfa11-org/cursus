@@ -2,13 +2,13 @@
 
 ## Purpose and Scope
 
-This document describes the platform-specific optimizations implemented in go-broker's disk persistence layer. The system uses Go's build tag mechanism to provide optimized implementations for Linux systems while maintaining compatibility with Windows through standard I/O operations.
+This document describes the platform-specific optimizations implemented in cursus's disk persistence layer. The system uses Go's build tag mechanism to provide optimized implementations for Linux systems while maintaining compatibility with Windows through standard I/O operations.
 
 For general information about the disk persistence system architecture, see [Disk Persistence System](./disk-persistence.md). For segment rotation and management, see [Segment Management](./segment-management.md).
 
 ## Build Tag System
 
-Go-broker uses build tags (`//go:build`) to compile different implementations based on the target operating system. This allows the system to leverage platform-specific system calls on Linux while providing a fallback implementation for Windows.
+cursus uses build tags (`//go:build`) to compile different implementations based on the target operating system. This allows the system to leverage platform-specific system calls on Linux while providing a fallback implementation for Windows.
 
 The DiskHandler struct is defined in common code, but the methods `openSegment()` and `SendCurrentSegmentToConn()` have platform-specific implementations that are selected at compile time.
 
@@ -16,7 +16,7 @@ The DiskHandler struct is defined in common code, but the methods `openSegment()
 
 ### Sequential Access Advisory: fadvise
 
-When opening a segment file on Linux, go-broker provides a hint to the kernel about the expected access pattern using unix.`Fadvise()` with the `FADV_SEQUENTIAL` flag.
+When opening a segment file on Linux, cursus provides a hint to the kernel about the expected access pattern using unix.`Fadvise()` with the `FADV_SEQUENTIAL` flag.
 
 The fadvise call provides performance benefits:
 
@@ -153,7 +153,7 @@ func (dm *DiskManager) GetHandler(topic string, partitionID int) (*DiskHandler, 
 
 # Summary
 
-Go-broker's platform-specific optimizations leverage Linux kernel features for high-performance segment transfers while maintaining Windows compatibility through standard I/O operations:
+cursus's platform-specific optimizations leverage Linux kernel features for high-performance segment transfers while maintaining Windows compatibility through standard I/O operations:
 
 ## Linux Optimizations:
 

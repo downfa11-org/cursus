@@ -1,12 +1,12 @@
 # Getting Started
 
-This page provides a quick start guide to get go-broker running on your system. 
+This page provides a quick start guide to get cursus running on your system. 
 
 It covers the basic prerequisites, installation methods, and initial verification steps to ensure the broker is operational. For detailed configuration options, see [Configuration](../user-guide/configuration.md).
 
 ## Prerequisites
 
-Before running go-broker, ensure you have the following installed:
+Before running cursus, ensure you have the following installed:
 
 | Requirement | Version | Purpose |
 |------------|---------|---------|
@@ -16,13 +16,13 @@ Before running go-broker, ensure you have the following installed:
 
 # Quick Start with Docker
 
-The fastest way to get go-broker running is using Docker Compose:
+The fastest way to get cursus running is using Docker Compose:
 
 ## Clone the repository
 
 ```
-git clone https://github.com/downfa11-org/go-broker
-cd go-broker
+git clone https://github.com/downfa11-org/cursus
+cd cursus
 ```
 
 ## Start the broker
@@ -43,7 +43,7 @@ The container uses the configuration at
 
 # Quick Start from Source
 
-To build and run go-broker from source:
+To build and run cursus from source:
 
 ## Build all binaries
 
@@ -54,23 +54,23 @@ make build
 ## Run the broker
 
 ```
-./bin/go-broker
+./bin/cursus
 
 // Or run in development mode:
 // make run
 ```
 The make build target invokes three sub-targets:
 
-- `build-api` → builds `./bin/go-broker` 
-- `build-cli` → builds `./bin/go-broker-cli`
-- `build-bench` → builds `./bin/go-broker-bench` 
+- `build-api` → builds `./bin/cursus` 
+- `build-cli` → builds `./bin/cursus-cli`
+- `build-bench` → builds `./bin/cursus-bench` 
 
 All builds use `CGO_ENABLED=0` and target Linux with static linking via `-ldflags="-s -w`".
 
 
 # Verifying the Installation
 
-After starting go-broker, verify it's running correctly:
+After starting cursus, verify it's running correctly:
 
 1. **Health Check**
 
@@ -102,14 +102,14 @@ After starting go-broker, verify it's running correctly:
 
 # Running Modes
 
-Go-broker can run in two modes:
+cursus can run in two modes:
 
 ## Broker Mode (Server)
 
 This is the standard mode that starts the TCP server:
 
 ```
-./bin/go-broker
+./bin/cursus
 
 // Or using make:
 // make run
@@ -130,7 +130,7 @@ The broker process:
 This mode provides an interactive command-line interface:
 
 ```
-./bin/go-broker-cli
+./bin/cursus-cli
 
 // Or using make:
 // make cli
@@ -167,7 +167,7 @@ The repository includes a comprehensive Makefile for development tasks:
 
 # Next Steps
 
-Now that you have go-broker running, you can:
+Now that you have cursus running, you can:
 
 - Configure the broker - Learn about [configuration options in Configuration](./configuration.md)
 - Create topics and publish messages - See [Running the Broker for basic operations](../core/server.md)

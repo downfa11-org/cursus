@@ -3,6 +3,6 @@ global:
   scrape_timeout: 3s
 
 scrape_configs:
-  - job_name: "go-broker"
+  - job_name: "cursus"
     static_configs:
       - targets: ["broker:9100"]

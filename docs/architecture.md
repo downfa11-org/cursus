@@ -2,15 +2,15 @@
 
 ## Purpose and Scope
 
-This document provides a high-level introduction to go-broker, a lightweight message broker system. 
+This document provides a high-level introduction to cursus, a lightweight message broker system. 
 
 It covers the system's purpose, core components, and architectural design. For detailed information about specific subsystems, see [Architecture Overview](./contributing/README.md) and [Core Systems](./core/README.md). 
 
 For setup instructions, see [Getting Started](./user-guide/README.md).
 
-## What is Go-Broker?
+## What is cursus?
 
-Go-broker is a lightweight message broker inspired by Kafka's design philosophy of **logically separated but physically distributed data management**. 
+cursus is a lightweight message broker inspired by Kafka's design philosophy of **logically separated but physically distributed data management**. 
 
 It provides publish-subscribe messaging with topic partitioning, consumer groups, and durable disk persistence, designed for single-node deployments with minimal operational complexity.
 
@@ -25,7 +25,7 @@ It provides publish-subscribe messaging with topic partitioning, consumer groups
 
 ## Network Interfaces
 
-Go-broker exposes three network ports, each serving a distinct purpose:
+cursus exposes three network ports, each serving a distinct purpose:
 
 | Port | Protocol | Handler | Purpose |
 |------|----------|---------|---------|

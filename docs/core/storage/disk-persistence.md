@@ -2,7 +2,7 @@
 
 ## Purpose and Scope
 
-This document provides a comprehensive overview of go-broker's disk persistence system, which is responsible for durably storing messages to disk and retrieving them on demand. The disk persistence layer ensures data durability through batched asynchronous writes while providing efficient read access via memory-mapped I/O.
+This document provides a comprehensive overview of cursus's disk persistence system, which is responsible for durably storing messages to disk and retrieving them on demand. The disk persistence layer ensures data durability through batched asynchronous writes while providing efficient read access via memory-mapped I/O.
 
 This page covers the architecture, core components, write and read paths, and the concurrency model of the disk persistence system. For detailed information about:
 
@@ -197,7 +197,7 @@ For implementation details, see:
 
 ## Purpose and Scope
 
-This document provides a detailed explanation of the DiskHandler struct and its asynchronous write path, which forms the foundation of go-broker's disk persistence layer. It covers the batching mechanism, the flushLoop goroutine, and the concurrency control strategies used to achieve high-throughput, durable message storage.
+This document provides a detailed explanation of the DiskHandler struct and its asynchronous write path, which forms the foundation of cursus's disk persistence layer. It covers the batching mechanism, the flushLoop goroutine, and the concurrency control strategies used to achieve high-throughput, durable message storage.
 
 For information about segment rotation and the DiskManager registry, see [Segment Management](./segment-management.md). For Linux-specific optimizations like sendfile and fadvise, see [Platform-Specific Optimizations](./platform-optimizations.md). For the complete disk persistence architecture, see [Disk Persistence System](./disk-persistence.md).
 
