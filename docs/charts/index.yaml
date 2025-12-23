@@ -1,0 +1,15 @@
+apiVersion: v1
+entries:
+  cursus:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2025-12-23T18:54:35.7452068+09:00"
+    description: lightweight message broker
+    digest: 8d554365d405b44963e1bfb154dfbe7a3233eb2a7cead82aba56ee06a8d5c45d
+    icon: https://raw.githubusercontent.com/downfa11-org/cursus/main/.github/cursus.png
+    name: cursus
+    type: application
+    urls:
+    - https://downfa11-org.github.io/cursus/charts/cursus-0.1.0.tgz
+    version: 0.1.0
+generated: "2025-12-23T18:54:35.7441983+09:00"
