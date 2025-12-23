@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src=".github/cursus-readme.png" alt="cursus" width="50%" height="50%"> 
+<img src=".github/cursus-readme.png" alt="cursus" width="60%" height="60%"> 
 
 [![GitHub](https://img.shields.io/github/stars/downfa11-org/cursus.svg?style=social)](https://github.com/downfa11-org/cursus)
 [![Contributors](https://img.shields.io/github/contributors/downfa11-org/cursus.svg)](https://github.com/downfa11-org/cursus/contributors)
@@ -18,27 +18,30 @@
 
 <br>
 
-Cursus is a **lightweight message broker** inspired by design philosophy —
+Cursus is a **lightweight message broker** inspired by design philosophy of
 _logically separated but physically distributed data management_.
 
 It aims to provide a minimal, efficient, and extensible messaging backbone for small-scale environments.
 
-## Key Features:
+## Key Features
 
-Simple configuration with fast startup capability, high throughput and low latency
+1. Simple configuration with fast startup capability
+2. High throughput and low latency
 
-**Topic-based Messaging**:
+<br>
+
+**Topic-based Messaging**
 - Parallel processing by partition unit
 - Synchronous, asynchronous, and batch-based message publishing with idempotent producers
 - Pull/Stream model consumption, consumer groups with automatic rebalancing
 
-**Persistence**:
+**Persistence**
 - Asynchronous disk writes with batching
-- Segment rotation (1MB default), efficient reads through mmap
+- Segment rotation, efficient reads through mmap
 
-**Flexibility**:
+**Flexibility**
 - Platform-specific optimizations (Linux: sendfile, fadvise)
-- Standalone (single node) and Distributed Cluster (Raft) mode selection possible
+- Stand-alone and Distributed Cluster (Raft) mode
 
 ## Documentation
 

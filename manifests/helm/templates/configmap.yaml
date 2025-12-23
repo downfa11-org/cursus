@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cursus.fullname" . }}-config
+data:
+  config.yaml: |
+    logLevel: {{ .Values.logLevel | default "info" }}
+    log_dir: {{ .Values.persistence.logDir.path }} 
+
+    disk_flush_batch_size: {{ .Values.performance.custom.diskFlushBatchSize | default (index .Values.performance .Values.performanceProfile "diskFlushBatchSize") }}  
+    linger_ms: {{ .Values.performance.custom.lingerMS | default (index .Values.performance .Values.performanceProfile "lingerMS") }}  
+    channel_buffer_size: {{ .Values.performance.custom.channelBufferSize | default (index .Values.performance .Values.performanceProfile "channelBufferSize") }}  
+    partition_channel_buffer_size: {{ .Values.performance.custom.partitionChannelBufSize | default (index .Values.performance .Values.performanceProfile "partitionChannelBufSize") }}  
+    consumer_channel_buffer_size: {{ .Values.performance.custom.consumerChannelBufSize | default (index .Values.performance .Values.performanceProfile "consumerChannelBufSize") }}

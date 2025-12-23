@@ -1,0 +1,82 @@
+replicaCount: 1
+
+image:
+  repository: docker.io/downfa11/cursus
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 9000
+  healthPort: 9080
+  metricsPort: 9100
+
+persistence:
+  enabled: true
+  storageClass: ""
+  config:
+    path: /root/config.yaml
+    size: 1Gi
+  logDir:
+    path: /root/logs
+
+tls:
+  enabled: false
+  secretName: cursus-tls
+  certPath: /root/tls/cert.pem
+  keyPath: /root/tls/key.pem
+
+podSecurityContext:
+  fsGroup: 1000
+  supplementalGroups: [1000]
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+serviceAccount:
+  create: true
+  name: ""
+
+logLevel: info
+broker:
+  config:
+    logLevel: {}
+
+nodeSelector: {}
+affinity: {}
+resources: {}
+tolerations: []
+
+monitoring:
+  enabled: false
+  serviceMonitor:
+    interval: 30s
+    scrapeTimeout: 10s
+
+performanceProfile: balanced  
+  
+performance:  
+  custom: {} 
+  
+  low-latency:  
+    diskFlushBatchSize: 50  
+    lingerMS: 10  
+    channelBufferSize: 1000  
+    partitionChannelBufSize: 2000  
+    consumerChannelBufSize: 500  
+      
+  balanced:  
+    diskFlushBatchSize: 500  
+    lingerMS: 100  
+    channelBufferSize: 1024  
+    partitionChannelBufSize: 10000  
+    consumerChannelBufSize: 1000  
+      
+  high-throughput:  
+    diskFlushBatchSize: 2000  
+    lingerMS: 500  
+    channelBufferSize: 50000  
+    partitionChannelBufSize: 50000  
+    consumerChannelBufSize: 5000

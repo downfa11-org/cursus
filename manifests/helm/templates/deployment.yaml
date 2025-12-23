@@ -1,0 +1,121 @@
+apiVersion: apps/v1  
+kind: Deployment  
+metadata:  
+  name: {{ include "cursus.fullname" . }}  
+  labels:  
+    {{- include "cursus.labels" . | nindent 4 }}  
+spec:  
+  replicas: {{ .Values.replicaCount }}  
+  selector:  
+    matchLabels:  
+      {{- include "cursus.selectorLabels" . | nindent 6 }}  
+  template:  
+    metadata:  
+      labels:  
+        {{- include "cursus.selectorLabels" . | nindent 8 }}  
+      annotations:  
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}  
+        {{- if .Values.tls.enabled }}  
+        checksum/tls: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}  
+        {{- end }}  
+    spec:  
+      serviceAccountName: {{ include "cursus.serviceAccountName" . }}  
+      securityContext:  
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}  
+      containers:  
+        - name: {{ .Chart.Name }}  
+          securityContext:  
+            {{- toYaml .Values.securityContext | nindent 12 }}  
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"  
+          imagePullPolicy: {{ .Values.image.pullPolicy }}  
+          ports:  
+            - name: broker  
+              containerPort: {{ .Values.service.port }}  
+              protocol: TCP  
+            - name: health  
+              containerPort: {{ .Values.service.healthPort }}  
+              protocol: TCP  
+            - name: metrics  
+              containerPort: {{ .Values.service.metricsPort }}  
+              protocol: TCP  
+          env:  
+            - name: CONFIG_PATH  
+              value: {{ .Values.persistence.config.path }}  
+            - name: BROKER_PORT  
+              value: "{{ .Values.service.port }}"  
+            - name: HEALTH_CHECK_PORT  
+              value: "{{ .Values.service.healthPort }}"  
+            - name: EXPORTER_PORT  
+              value: "{{ .Values.service.metricsPort }}"  
+            - name: LOG_LEVEL  
+              value: {{ .Values.logLevel | quote }}  
+            - name: LOG_DIR  
+              value: {{ .Values.persistence.logDir.path }}  
+            {{- if .Values.tls.enabled }}  
+            - name: TLS_CERT_PATH  
+              value: {{ .Values.tls.certPath }}  
+            - name: TLS_KEY_PATH  
+              value: {{ .Values.tls.keyPath }}  
+            {{- end }}  
+          livenessProbe:  
+            httpGet:  
+              path: /health  
+              port: health  
+            initialDelaySeconds: 30  
+            periodSeconds: 10  
+            timeoutSeconds: 5  
+            failureThreshold: 3  
+          readinessProbe:  
+            httpGet:  
+              path: /health  
+              port: health  
+            initialDelaySeconds: 5  
+            periodSeconds: 5  
+            timeoutSeconds: 3  
+            failureThreshold: 3  
+          volumeMounts:  
+            - name: logs  
+              mountPath: {{ .Values.persistence.logDir.path }}  
+            - name: config  
+              mountPath: {{ .Values.persistence.config.path }}  
+              subPath: config.yaml  
+            {{- if .Values.tls.enabled }}  
+            - name: tls  
+              mountPath: /root/tls  
+              readOnly: true  
+            {{- end }}  
+          resources:  
+            {{- toYaml .Values.resources | nindent 12 }}  
+      volumes:  
+        - name: logs  
+          {{- if .Values.persistence.enabled }}  
+          persistentVolumeClaim:  
+            claimName: {{ include "cursus.fullname" . }}-logs  
+          {{- else }}  
+          emptyDir: {}  
+          {{- end }}  
+        - name: config  
+          configMap:  
+            name: {{ include "cursus.fullname" . }}-config  
+        {{- if .Values.tls.enabled }}  
+        - name: tls  
+          secret:  
+            secretName: {{ .Values.tls.secretName }}  
+            items:  
+              - key: tls.crt  
+                path: cert.pem  
+              - key: tls.key  
+                path: key.pem  
+        {{- end }}  
+      {{- with .Values.nodeSelector }}  
+      nodeSelector:  
+        {{- toYaml . | nindent 8 }}  
+      {{- end }}  
+      {{- with .Values.affinity }}  
+      affinity:  
+        {{- toYaml . | nindent 8 }}  
+      {{- end }}  
+      {{- with .Values.tolerations }}  
+      tolerations:  
+        {{- toYaml . | nindent 8 }}  
+      {{- end }}

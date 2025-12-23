@@ -1,0 +1,13 @@
+{{- if .Values.monitoring.enabled }}  
+apiVersion: monitoring.coreos.com/v1  
+kind: ServiceMonitor  
+metadata:  
+  name: {{ include "cursus.fullname" . }}  
+spec:  
+  selector:  
+    matchLabels:  
+      app.kubernetes.io/name: {{ include "cursus.name" . }}  
+  endpoints:  
+    - port: metrics  
+      interval: 30s  
+{{- end }}

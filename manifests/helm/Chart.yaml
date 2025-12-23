@@ -1,0 +1,7 @@
+apiVersion: v2  
+name: cursus
+description: an lightweight message broker 
+type: application  
+version: 0.1.0  
+appVersion: "0.1.0"
+icon: https://github.com/downfa11-org/cursus/blob/main/.github/cursus.png
