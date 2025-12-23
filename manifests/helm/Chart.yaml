@@ -1,6 +1,7 @@
 apiVersion: v2  
-name: go-broker  
-description: A message broker built in Go  
+name: cursus
+description: an lightweight message broker 
 type: application  
 version: 0.1.0  
-appVersion: "latest"
+appVersion: "0.1.0"
+icon: https://github.com/downfa11-org/cursus/blob/main/.github/cursus.png

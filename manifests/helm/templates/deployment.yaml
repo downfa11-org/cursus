@@ -1,25 +1,25 @@
 apiVersion: apps/v1  
 kind: Deployment  
 metadata:  
-  name: {{ include "go-broker.fullname" . }}  
+  name: {{ include "cursus.fullname" . }}  
   labels:  
-    {{- include "go-broker.labels" . | nindent 4 }}  
+    {{- include "cursus.labels" . | nindent 4 }}  
 spec:  
   replicas: {{ .Values.replicaCount }}  
   selector:  
     matchLabels:  
-      {{- include "go-broker.selectorLabels" . | nindent 6 }}  
+      {{- include "cursus.selectorLabels" . | nindent 6 }}  
   template:  
     metadata:  
       labels:  
-        {{- include "go-broker.selectorLabels" . | nindent 8 }}  
+        {{- include "cursus.selectorLabels" . | nindent 8 }}  
       annotations:  
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}  
         {{- if .Values.tls.enabled }}  
         checksum/tls: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}  
         {{- end }}  
     spec:  
-      serviceAccountName: {{ include "go-broker.serviceAccountName" . }}  
+      serviceAccountName: {{ include "cursus.serviceAccountName" . }}  
       securityContext:  
         {{- toYaml .Values.podSecurityContext | nindent 8 }}  
       containers:  
@@ -57,10 +57,6 @@ spec:
             - name: TLS_KEY_PATH  
               value: {{ .Values.tls.keyPath }}  
             {{- end }}  
-            {{- range $key, $value := .Values.performance }}  
-            - name: {{ $key | upper }}  
-              value: "{{ $value }}"  
-            {{- end }}  
           livenessProbe:  
             httpGet:  
               path: /health  
@@ -94,13 +90,13 @@ spec:
         - name: logs  
           {{- if .Values.persistence.enabled }}  
           persistentVolumeClaim:  
-            claimName: {{ include "go-broker.fullname" . }}-logs  
+            claimName: {{ include "cursus.fullname" . }}-logs  
           {{- else }}  
           emptyDir: {}  
           {{- end }}  
         - name: config  
           configMap:  
-            name: {{ include "go-broker.fullname" . }}-config  
+            name: {{ include "cursus.fullname" . }}-config  
         {{- if .Values.tls.enabled }}  
         - name: tls  
           secret:  
