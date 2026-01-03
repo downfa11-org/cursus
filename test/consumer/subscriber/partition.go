@@ -44,9 +44,19 @@ func (pc *PartitionConsumer) runWorker() {
 	defer pc.consumer.wg.Done()
 
 	for batch := range pc.dataCh {
-		msgCount := len(batch.Messages)
-		if msgCount == 0 {
+		if pc.consumer.mainCtx.Err() != nil {
+			util.Warn("Partition [%d] dropping batch due to rebalance/close", pc.partitionID)
+			return
+		}
+
+		if len(batch.Messages) == 0 {
 			continue
+		}
+
+		if pc.consumer.metrics != nil {
+			for _, msg := range batch.Messages {
+				pc.consumer.metrics.RecordMessage(pc.partitionID, int64(msg.Offset), msg.ProducerID, msg.SeqNum)
+			}
 		}
 
 		if !pc.consumer.config.EnableBenchmark {
@@ -57,14 +67,33 @@ func (pc *PartitionConsumer) runWorker() {
 			util.Error("Partition [%d] process error: %v", pc.partitionID, err)
 		}
 
+		if pc.consumer.mainCtx.Err() != nil {
+			util.Warn("Partition [%d] skipping commit: ownership lost during processing", pc.partitionID)
+			return
+		}
+
 		lastOffset := batch.Messages[len(batch.Messages)-1].Offset
-		if err := pc.commitOffsetWithRetry(lastOffset + 1); err != nil {
+		commitOffset := lastOffset + 1
+
+		if err := pc.commitOffsetWithRetry(commitOffset); err != nil {
 			util.Error("Partition [%d] failed to commit offset: %v", pc.partitionID, err)
+		} else {
+			atomic.StoreUint64(&pc.offset, commitOffset)
+
+			pc.consumer.offsetsMu.Lock()
+			pc.consumer.currentOffsets[pc.partitionID] = commitOffset
+			pc.consumer.offsetsMu.Unlock()
 		}
 	}
 }
 
 func (pc *PartitionConsumer) pollAndProcess() {
+	select {
+	case <-pc.consumer.mainCtx.Done():
+		return
+	default:
+	}
+
 	pc.initWorker()
 
 	if err := pc.ensureConnection(); err != nil {
@@ -77,8 +106,6 @@ func (pc *PartitionConsumer) pollAndProcess() {
 	currentOffset := atomic.LoadUint64(&pc.offset)
 	pc.mu.Unlock()
 
-	util.Debug("Partition [%d] Polling at offset %d", pc.partitionID, currentOffset)
-
 	c := pc.consumer
 	c.mu.RLock()
 	memberID := c.memberID
@@ -87,7 +114,6 @@ func (pc *PartitionConsumer) pollAndProcess() {
 
 	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d group=%s generation=%d member=%s",
 		pc.consumer.config.Topic, pc.partitionID, currentOffset, pc.consumer.config.GroupID, generation, memberID)
-
 	if err := util.WriteWithLength(conn, util.EncodeMessage(pc.consumer.config.Topic, consumeCmd)); err != nil {
 		util.Error("Partition [%d] send command failed: %v", pc.partitionID, err)
 		pc.closeConnection()
@@ -98,10 +124,12 @@ func (pc *PartitionConsumer) pollAndProcess() {
 	if err != nil {
 		util.Error("Partition [%d] read batch error: %v", pc.partitionID, err)
 		pc.closeConnection()
+		time.Sleep(500 * time.Millisecond)
 		return
 	}
 
 	if pc.handleBrokerError(batchData) || len(batchData) == 0 {
+		time.Sleep(200 * time.Millisecond)
 		return
 	}
 
@@ -160,7 +188,7 @@ func (pc *PartitionConsumer) startStreamLoop() {
 
 		streamCmd := fmt.Sprintf("STREAM topic=%s partition=%d group=%s offset=%d generation=%d member=%s",
 			c.config.Topic, pid, c.config.GroupID, currentOffset, generation, memberID)
-		util.Debug("📤 Partition [%d] sending STREAM command with offset %d", pid, currentOffset)
+		util.Debug("Partition [%d] sending STREAM command with offset %d", pid, currentOffset)
 
 		if err := util.WriteWithLength(conn, util.EncodeMessage("", streamCmd)); err != nil {
 			util.Error("Partition [%d] STREAM command send failed: %v", pid, err)

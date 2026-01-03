@@ -6,7 +6,6 @@ import (
 	"github.com/downfa11-org/go-broker/test/e2e"
 )
 
-// o
 // TestISRWithAllAcks tests ISR behavior with acks=all
 func TestISRWithAllAcks(t *testing.T) {
 	ctx := GivenClusterRestart(t).
@@ -44,6 +43,9 @@ func TestExactlyOnceInCluster(t *testing.T) {
 		PublishMessages().
 		SimulateLeaderFailure().
 		RetryPublishMessages().
+		JoinGroup().
+		SyncGroup().
+		ConsumeMessages().
 		Then().
 		Expect(NoDuplicateMessages()).
 		And(e2e.MessagesConsumed(100))
@@ -68,7 +70,7 @@ func TestClusterReconfiguration(t *testing.T) {
 		PublishMoreMessages(50).
 		RemoveNodeFromCluster().
 		Then().
-		Expect(ClusterStable()).
+		Expect(ClusterStable(3)).
 		And(e2e.MessagesConsumed(100))
 }
 
@@ -112,12 +114,14 @@ func TestNetworkPartition(t *testing.T) {
 		SimulateNetworkPartition().
 		PublishMessagesDuringPartition().
 		HealNetworkPartition().
+		JoinGroup().
+		SyncGroup().
+		ConsumeMessages().
 		Then().
 		Expect(MessagesReplicatedAfterPartitionHeal()).
 		And(NoDataLossDuringPartition())
 }
 
-// x
 // TestSimultaneousNodeFailures tests multiple nodes failing simultaneously
 func TestSimultaneousNodeFailures(t *testing.T) {
 	ctx := GivenClusterRestart(t).
@@ -164,5 +168,5 @@ func TestRebalancingMessageLoss(t *testing.T) {
 		Then().
 		Expect(NoMessagesLostDuringRebalance()).
 		And(e2e.MessagesConsumed(100)).
-		And(ClusterStable())
+		And(ClusterStable(3))
 }

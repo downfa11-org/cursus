@@ -218,7 +218,7 @@ func (ch *CommandHandler) handleJoinGroup(cmd string, ctx *ClientContext) string
 
 	ctx.MemberID = consumerID
 	ctx.Generation = ch.Coordinator.GetGeneration(groupName)
-	util.Debug("✅ Joined group '%s' member '%s' generation '%d' with partitions: %v", groupName, ctx.MemberID, ctx.Generation, assignments)
+	util.Info("✅ Joined group '%s' member '%s' generation '%d' with partitions: %v", groupName, ctx.MemberID, ctx.Generation, assignments)
 	return fmt.Sprintf("OK generation=%d member=%s assignments=%v", ctx.Generation, ctx.MemberID, assignments)
 }
 
@@ -538,6 +538,7 @@ func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 		}
 		_, err := ch.applyAndWait("BATCH_OFFSET", batchCommitData)
 		if err != nil {
+			util.Error("❌ Raft batch apply failed: %v", err)
 			return fmt.Sprintf("❌ Raft batch apply failed: %v", err)
 		}
 	} else if ch.Coordinator != nil {

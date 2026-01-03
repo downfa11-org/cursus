@@ -12,7 +12,7 @@ type BrokerFSMSnapshot struct {
 	logs              map[uint64]*ReplicationEntry
 	brokers           map[string]*BrokerInfo
 	partitionMetadata map[string]*PartitionMetadata
-	producerState     map[string]uint64
+	producerState     map[string]map[int]map[string]int64
 }
 
 func (s *BrokerFSMSnapshot) Persist(sink raft.SnapshotSink) error {

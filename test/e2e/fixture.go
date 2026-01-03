@@ -196,6 +196,16 @@ func (bc *BrokerClient) GetGeneration() int {
 	return bc.generation
 }
 
+// GetProducerID returns the current producer ID
+func (c *TestContext) GetProducerID() string {
+	return c.producerID
+}
+
+// GetPublishedSeqNums returns the sequence numbers of published messages
+func (c *TestContext) GetPublishedSeqNums() []uint64 {
+	return c.publishedSeqNums
+}
+
 // Configuration methods (fluent interface)
 func (ctx *TestContext) WithTopic(topic string) *TestContext {
 	ctx.topic = topic

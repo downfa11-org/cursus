@@ -16,65 +16,80 @@ func (c *Coordinator) monitorHeartbeats() {
 	for {
 		select {
 		case <-ticker.C:
-			c.mu.Lock()
-			for groupName, group := range c.groups {
-				for memberID, member := range group.Members {
-					timeout := time.Duration(c.cfg.ConsumerSessionTimeoutMS) * time.Millisecond
-					timeSinceLastHeartbeat := time.Since(member.LastHeartbeat)
-
-					if timeSinceLastHeartbeat > timeout {
-						util.Error("⚠️ Consumer '%s' in group '%s' timed out (last heartbeat: %v ago, timeout: %v)",
-							memberID, groupName, timeSinceLastHeartbeat, timeout)
-						util.Debug("🔄 Triggering rebalance for group '%s' due to consumer '%s' timeout",
-							groupName, memberID)
-
-						delete(group.Members, memberID)
-
-						group.Generation++
-						util.Debug("⬆️ Group '%s' generation incremented to %d due to consumer '%s' timeout", groupName, group.Generation, memberID)
-
-						c.triggerRebalance(groupName)
-
-						util.Debug("❌ Consumer '%s' removed from group '%s'. Remaining members: %d",
-							memberID, groupName, len(group.Members))
-					} else {
-						util.Debug("✅ Consumer '%s' in group '%s' is healthy (last heartbeat: %v ago)",
-							memberID, groupName, timeSinceLastHeartbeat)
-					}
-				}
-			}
-			c.mu.Unlock()
+			c.checkAllGroupsTimeout()
 		case <-c.stopCh:
 			return
 		}
 	}
 }
 
-// triggerRebalance invokes the range-based rebalance strategy.
-func (c *Coordinator) triggerRebalance(groupName string) {
-	c.rebalanceRange(groupName)
+func (c *Coordinator) checkAllGroupsTimeout() {
+	c.mu.RLock()
+	groupNames := make([]string, 0, len(c.groups))
+	for name := range c.groups {
+		groupNames = append(groupNames, name)
+	}
+	c.mu.RUnlock()
+
+	timeout := time.Duration(c.cfg.ConsumerSessionTimeoutMS) * time.Millisecond
+	for _, name := range groupNames {
+		c.checkSingleGroupTimeout(name, timeout)
+	}
+}
+
+func (c *Coordinator) checkSingleGroupTimeout(groupName string, timeout time.Duration) {
+	c.mu.Lock()
+	group, exists := c.groups[groupName]
+	if !exists || len(group.Members) == 0 {
+		c.mu.Unlock()
+		return
+	}
+
+	var timedOutMembers []string
+	now := time.Now()
+
+	for id, member := range group.Members {
+		if now.Sub(member.LastHeartbeat) > timeout {
+			timedOutMembers = append(timedOutMembers, id)
+			delete(group.Members, id)
+		}
+	}
+
+	hasChanges := len(timedOutMembers) > 0
+	if hasChanges {
+		group.Generation++
+	}
+	c.mu.Unlock()
+
+	if hasChanges {
+		util.Warn("⚠️ Group '%s': %d members timed out. Triggering rebalance.", groupName, len(timedOutMembers))
+		c.triggerRebalance(groupName)
+	}
 }
 
 // RecordHeartbeat updates the consumer's last heartbeat timestamp.
 func (c *Coordinator) RecordHeartbeat(groupName, consumerID string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	group := c.groups[groupName]
 	if group == nil {
-		util.Error("❌ Heartbeat failed: group '%s' not found (ConsumerID: %s)", groupName, consumerID)
+		c.mu.Unlock()
 		return fmt.Errorf("group '%s' not found", groupName)
 	}
 
 	member := group.Members[consumerID]
 	if member == nil {
-		util.Error("❌ Heartbeat from '%s' failed: consumer not found in group '%s'", consumerID, groupName)
-		return fmt.Errorf("consumer '%s' not found in group '%s'", consumerID, groupName)
+		c.mu.Unlock()
+		return fmt.Errorf("consumer '%s' not found", consumerID)
 	}
 
-	old := member.LastHeartbeat
 	member.LastHeartbeat = time.Now()
+	c.mu.Unlock()
 
-	util.Debug("💓 Consumer '%s' in group '%s' sent heartbeat (previous: %v ago)", consumerID, groupName, time.Since(old))
+	util.Info("💓 Heartbeat from %s/%s", groupName, consumerID)
 	return nil
+}
+
+// triggerRebalance invokes the range-based rebalance strategy.
+func (c *Coordinator) triggerRebalance(groupName string) {
+	c.rebalanceRange(groupName)
 }

@@ -318,8 +318,12 @@ finalize:
 	d.ioMu.Lock()
 	defer d.ioMu.Unlock()
 	if d.writer != nil {
-		d.writer.Flush()
-		d.file.Sync()
+		if err := d.writer.Flush(); err != nil {
+			util.Error("writer flush failed", err)
+		}
+		if err := d.file.Sync(); err != nil {
+			util.Error("file sync failed", err)
+		}
 		d.file.Close()
 		d.file = nil
 	}

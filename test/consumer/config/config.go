@@ -27,9 +27,10 @@ type ConsumerConfig struct {
 	GroupID    string `yaml:"group_id" json:"group_id"`
 	ConsumerID string `yaml:"consumer_id" json:"consumer_id"`
 
-	EnableBenchmark bool         `yaml:"enable_benchmark" json:"enable_benchmark"`
-	NumMessages     int          `yaml:"num_messages" json:"num_messages"`
-	Mode            ConsumerMode `yaml:"mode" json:"mode"`
+	EnableBenchmark   bool         `yaml:"enable_benchmark" json:"enable_benchmark"`
+	EnableCorrectness bool         `yaml:"enable_correctness" json:"enable_correctness"`
+	NumMessages       int          `yaml:"num_messages" json:"num_messages"`
+	Mode              ConsumerMode `yaml:"mode" json:"mode"`
 
 	PollInterval  time.Duration `yaml:"poll_interval" json:"poll_interval"`
 	PollTimeoutMS int           `yaml:"poll_timeout_ms" json:"poll_timeout_ms"`
@@ -101,6 +102,7 @@ func LoadConfig() (*ConsumerConfig, error) {
 	flag.StringVar(&cfg.CompressionType, "compression-type", "none", "Compression type (none, gzip, snappy, lz4)")
 
 	benchmarkFlag := flag.Bool("benchmark", false, "Enable benchmark mode with detailed metrics")
+	correctnessFlag := flag.Bool("correctness", false, "Enable correctness mode with detailed metrics")
 	flag.IntVar(&cfg.NumMessages, "num-messages", 10, "Number of messages to publish")
 
 	configPath := flag.String("config", "/config.yaml", "Path to YAML/JSON config file")
@@ -200,8 +202,17 @@ func LoadConfig() (*ConsumerConfig, error) {
 	if *benchmarkFlag {
 		cfg.EnableBenchmark = true
 	}
+	if *correctnessFlag {
+		cfg.EnableCorrectness = true
+	}
 
-	if cfg.EnableBenchmark {
+	if !cfg.EnableBenchmark {
+		if cfg.EnableCorrectness {
+			util.Warn("enable_correctness is ignored because enable_benchmark is false")
+		}
+		cfg.EnableCorrectness = false
+		cfg.NumMessages = 0
+	} else {
 		if cfg.NumMessages <= 0 {
 			cfg.NumMessages = 10
 		}

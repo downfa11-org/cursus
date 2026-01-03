@@ -4,7 +4,6 @@ import (
 	"testing"
 )
 
-// x
 // TestDataReplication tests data replication across cluster
 func TestDataReplication(t *testing.T) {
 	ctx := GivenClusterRestart(t).
@@ -19,6 +18,9 @@ func TestDataReplication(t *testing.T) {
 		StartCluster().
 		CreateTopic().
 		PublishMessages().
+		JoinGroup().
+		SyncGroup().
+		ConsumeMessages().
 		Then().
 		Expect(MessagesReplicatedToAllNodes()).
 		And(OffsetsInSync())

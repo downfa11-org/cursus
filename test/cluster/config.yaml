@@ -1,21 +1,26 @@
-broker_port: 9000  
-health_check_port: 9080  
-enable_exporter: true  
-exporter_port: 9100  
-log_level: "debug"  
-log_dir: "broker-logs"  
-   
-enabled_distribution: true  
-raft_port: 7000  
-min_in_sync_replicas: 2  
-    
-disk_flush_batch_size: 500  
-linger_ms: 50  
+# cluster Options
+enabled_distribution: true
+min_insync_replicas: 2
+raft_port: 7000
+static_cluster_members: 
+  - "broker1@broker1:7000"
+  - "broker2@broker2:7000"
+  - "broker3@broker3:7000"
+
+# Broker settings
+broker_port: 9000
+health_check_port: 9080
+enable_exporter: true
+exporter_port: 9100
+log_level: "debug"
+log_dir: "broker-logs"
+
+# Performance settings
+disk_flush_batch_size: 500
+linger_ms: 200
 channel_buffer_size: 1024  
-disk_write_timeout_ms: 5  
-segment_size: 1048576  
-segment_roll_time_ms: 0  
-  
+disk_write_timeout_ms: 5 
+segment_size: 1048576
 partition_channel_buffer_size: 10000  
 consumer_channel_buffer_size: 1000  
 consumer_session_timeout_ms: 30000  

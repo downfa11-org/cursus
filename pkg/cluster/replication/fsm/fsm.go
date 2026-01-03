@@ -32,12 +32,12 @@ type BrokerInfo struct {
 }
 
 type BrokerFSMState struct {
-	Version           int                           `json:"version"`
-	Applied           uint64                        `json:"applied"`
-	Logs              map[uint64]*ReplicationEntry  `json:"logs"`
-	Brokers           map[string]*BrokerInfo        `json:"brokers"`
-	PartitionMetadata map[string]*PartitionMetadata `json:"partitionMetadata"`
-	ProducerState     map[string]uint64             `json:"producerState"`
+	Version           int                                 `json:"version"`
+	Applied           uint64                              `json:"applied"`
+	Logs              map[uint64]*ReplicationEntry        `json:"logs"`
+	Brokers           map[string]*BrokerInfo              `json:"brokers"`
+	PartitionMetadata map[string]*PartitionMetadata       `json:"partitionMetadata"`
+	ProducerState     map[string]map[int]map[string]int64 `json:"producerState"`
 }
 
 type BrokerFSM struct {
@@ -47,7 +47,7 @@ type BrokerFSM struct {
 	logs              map[uint64]*ReplicationEntry
 	brokers           map[string]*BrokerInfo
 	partitionMetadata map[string]*PartitionMetadata
-	producerState     map[string]uint64 // ProducerID -> LastSeqNum
+	producerState     map[string]map[int]map[string]int64 // Topic -> Partition -> ProducerID -> LastSeq
 	applied           uint64
 
 	dm *disk.DiskManager
@@ -61,7 +61,7 @@ func NewBrokerFSM(dm *disk.DiskManager, tm *topic.TopicManager, cd *coordinator.
 		logs:              make(map[uint64]*ReplicationEntry),
 		brokers:           make(map[string]*BrokerInfo),
 		partitionMetadata: make(map[string]*PartitionMetadata),
-		producerState:     make(map[string]uint64),
+		producerState:     make(map[string]map[int]map[string]int64),
 		dm:                dm,
 		tm:                tm,
 		cd:                cd,
@@ -98,7 +98,6 @@ func (f *BrokerFSM) SetCoordinator(cd *coordinator.Coordinator) {
 
 func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 	data := string(log.Data)
-	util.Debug("Applying log entry at index %d", log.Index)
 
 	var reqID string
 	if strings.Contains(data, "{") {
@@ -177,7 +176,7 @@ func (f *BrokerFSM) Restore(rc io.ReadCloser) error {
 
 	f.producerState = state.ProducerState
 	if f.producerState == nil {
-		f.producerState = make(map[string]uint64)
+		f.producerState = make(map[string]map[int]map[string]int64)
 	}
 
 	util.Info("FSM restore completed: %d logs, %d brokers, %d partitions", len(state.Logs), len(state.Brokers), len(state.PartitionMetadata))
@@ -203,7 +202,7 @@ func (f *BrokerFSM) Snapshot() (raft.FSMSnapshot, error) {
 		metaCopy := *v
 		metadataCopy[k] = &metaCopy
 	}
-	producerStateCopy := make(map[string]uint64, len(f.producerState))
+	producerStateCopy := make(map[string]map[int]map[string]int64, len(f.producerState))
 	for k, v := range f.producerState {
 		producerStateCopy[k] = v
 	}

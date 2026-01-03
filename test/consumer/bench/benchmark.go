@@ -14,93 +14,292 @@ import (
 
 const sep = "========================================"
 
+type Phase string
+
+const (
+	PhaseInitial    Phase = "initial"
+	PhaseRebalanced Phase = "rebalanced"
+)
+
+type PartitionMetrics struct {
+	ID int
+
+	firstSeen time.Time
+	lastSeen  time.Time
+
+	totalMsgs int64
+
+	lastSampleTime time.Time
+	lastSampleMsgs int64
+	tpsSamples     []float64
+}
+
+func (pm *PartitionMetrics) record(count int) {
+	now := time.Now()
+
+	if pm.firstSeen.IsZero() {
+		pm.firstSeen = now
+		pm.lastSampleTime = now
+	}
+
+	pm.totalMsgs += int64(count)
+	pm.lastSeen = now
+
+	elapsed := now.Sub(pm.lastSampleTime).Seconds()
+	if elapsed >= 0.01 {
+		delta := pm.totalMsgs - pm.lastSampleMsgs
+		pm.tpsSamples = append(pm.tpsSamples, float64(delta)/elapsed)
+		pm.lastSampleMsgs = pm.totalMsgs
+		pm.lastSampleTime = now
+	}
+}
+
+func (pm *PartitionMetrics) TPS() float64 {
+	if pm.firstSeen.IsZero() || pm.lastSeen.Equal(pm.firstSeen) {
+		return 0
+	}
+	elapsed := pm.lastSeen.Sub(pm.firstSeen).Seconds()
+	return float64(pm.totalMsgs) / elapsed
+}
+
+type PhaseMetrics struct {
+	startTime time.Time
+	endTime   time.Time
+
+	totalMsgs  int64
+	partitions map[int]*PartitionMetrics
+}
+
+type RebalanceEvent struct {
+	Start time.Time
+	End   time.Time
+}
+
 type ConsumerMetrics struct {
-	MsgCount        int64
-	ProcessedCount  int64
-	StartTime       time.Time
-	PartitionCounts map[int]*int64
-	TargetMessages  int64
+	startTime time.Time
+	started   bool
 
-	mu sync.RWMutex
+	totalMsgs    int64
+	currentPhase Phase
+	phases       map[Phase]*PhaseMetrics
+
+	enableCorrectness bool
+	expectedTotal     int64
+	seenOffsetFilter  *BloomFilter // partition+offset
+	seenIDFilter      *BloomFilter // messageID
+	dupCount          int64
+	dupOffsetCount    int64
+	missingCount      int64
+
+	mu        sync.RWMutex
+	rebalance *RebalanceEvent
 }
 
-func NewConsumerMetrics(target int64) *ConsumerMetrics {
+func NewConsumerMetrics(expected int64, enableCorrectness bool) *ConsumerMetrics {
+	var offsetBF, idBF *BloomFilter
+	if enableCorrectness {
+		offsetBF = NewBloomFilter(uint64(expected), 0.001)
+		idBF = NewBloomFilter(uint64(expected), 0.001)
+	}
+
 	return &ConsumerMetrics{
-		StartTime:       time.Now(),
-		PartitionCounts: make(map[int]*int64),
-		TargetMessages:  target,
+		currentPhase: PhaseInitial,
+		phases: map[Phase]*PhaseMetrics{
+			PhaseInitial: {partitions: make(map[int]*PartitionMetrics)},
+		},
+		expectedTotal:     expected,
+		enableCorrectness: enableCorrectness,
+		seenOffsetFilter:  offsetBF,
+		seenIDFilter:      idBF,
 	}
 }
 
-func (cm *ConsumerMetrics) RecordMessage(partition int) {
-	cm.mu.RLock()
-	ptr, ok := cm.PartitionCounts[partition]
-	cm.mu.RUnlock()
+func (pm *PhaseMetrics) TPS() float64 {
+	if pm.startTime.IsZero() {
+		return 0
+	}
 
-	if !ok {
-		cm.mu.Lock()
-		ptr, ok = cm.PartitionCounts[partition]
-		if !ok {
-			p := new(int64)
-			*p = 0
-			cm.PartitionCounts[partition] = p
-			ptr = p
+	end := pm.endTime
+	if end.IsZero() {
+		end = time.Now()
+	}
+
+	d := end.Sub(pm.startTime).Seconds()
+	if d <= 0 {
+		return 0
+	}
+	return float64(pm.totalMsgs) / d
+}
+
+func (m *ConsumerMetrics) RecordBatch(partition int, count int) {
+	if !m.started {
+		m.mu.Lock()
+		if !m.started {
+			now := time.Now()
+			m.startTime = now
+			m.started = true
+
+			if ph := m.phases[m.currentPhase]; ph.startTime.IsZero() {
+				ph.startTime = now
+			}
 		}
-		cm.mu.Unlock()
+		m.mu.Unlock()
 	}
 
-	atomic.AddInt64(ptr, 1)
-	atomic.AddInt64(&cm.MsgCount, 1)
+	atomic.AddInt64(&m.totalMsgs, int64(count))
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ph := m.phases[m.currentPhase]
+	if ph.startTime.IsZero() {
+		ph.startTime = time.Now()
+	}
+	ph.totalMsgs += int64(count)
+
+	pm := ph.partitions[partition]
+	if pm == nil {
+		pm = &PartitionMetrics{ID: partition}
+		ph.partitions[partition] = pm
+	}
+	pm.record(count)
 }
 
-func (cm *ConsumerMetrics) RecordProcessed(count int64) {
-	atomic.AddInt64(&cm.ProcessedCount, count)
+func (m *ConsumerMetrics) RecordMessage(partition int, offset int64, producerID string, seqNum uint64) {
+	if m.enableCorrectness {
+		offsetKey := encodeOffset(partition, offset)
+		if m.seenOffsetFilter.Add(offsetKey) {
+			atomic.AddInt64(&m.dupOffsetCount, 1)
+		}
+
+		messageKey := encodeMessageID(producerID, seqNum)
+		if m.seenIDFilter.Add(messageKey) {
+			atomic.AddInt64(&m.dupCount, 1)
+		}
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ph := m.phases[m.currentPhase]
+	if ph.startTime.IsZero() {
+		ph.startTime = time.Now()
+	}
+
+	pm := ph.partitions[partition]
+	if pm == nil {
+		pm = &PartitionMetrics{ID: partition}
+		ph.partitions[partition] = pm
+	}
 }
 
-func (m *ConsumerMetrics) IsDone() bool {
-	return atomic.LoadInt64(&m.MsgCount) >= m.TargetMessages
+func (m *ConsumerMetrics) RebalanceStart() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now()
+	m.rebalance = &RebalanceEvent{Start: now}
+
+	if _, ok := m.phases[PhaseRebalanced]; !ok {
+		m.phases[PhaseRebalanced] = &PhaseMetrics{
+			partitions: make(map[int]*PartitionMetrics),
+		}
+	}
+}
+
+func (m *ConsumerMetrics) OnFirstConsumeAfterRebalance() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.rebalance == nil || !m.rebalance.End.IsZero() {
+		return
+	}
+
+	now := time.Now()
+	m.rebalance.End = now
+
+	if pm := m.phases[PhaseInitial]; pm != nil && pm.endTime.IsZero() {
+		pm.endTime = now
+	}
+
+	reb := m.phases[PhaseRebalanced]
+	reb.startTime = now
+	m.currentPhase = PhaseRebalanced
+}
+
+func (m *ConsumerMetrics) IsFullyConsumed(expectedTotal int64) (bool, string) {
+	total := atomic.LoadInt64(&m.totalMsgs)
+	if total != expectedTotal {
+		return false, fmt.Sprintf(
+			"total mismatch (expected=%d, actual=%d)",
+			expectedTotal, total,
+		)
+	}
+	return true, ""
+}
+
+func (m *ConsumerMetrics) Finalize() {
+	consumed := atomic.LoadInt64(&m.totalMsgs)
+	if consumed < m.expectedTotal {
+		m.missingCount = m.expectedTotal - consumed
+	}
+}
+
+func percentile(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	i := int(float64(len(sorted)-1) * p)
+	return sorted[i]
 }
 
 func (m *ConsumerMetrics) PrintSummaryTo(w io.Writer) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	duration := time.Since(m.StartTime)
-	total := atomic.LoadInt64(&m.MsgCount)
-	processed := atomic.LoadInt64(&m.ProcessedCount)
+	elapsed := time.Since(m.startTime).Seconds()
+	total := atomic.LoadInt64(&m.totalMsgs)
 
-	seconds := duration.Seconds()
-	if seconds <= 0 {
-		seconds = 0.001
-	}
-
-	tps := float64(total) / duration.Seconds()
-	processedTps := float64(processed) / duration.Seconds()
-
-	fmt.Fprint(w, "\r\n")
+	fmt.Fprintln(w)
 	fmt.Fprintln(w, sep)
 	fmt.Fprintln(w, "📊 CONSUMER BENCHMARK SUMMARY")
-	fmt.Fprintf(w, "%-28s : %d\n", "Partitions Observed", len(m.PartitionCounts))
-	fmt.Fprintf(w, "%-28s : %d\n", "Total Target", m.TargetMessages)
-	fmt.Fprintf(w, "%-28s : %d\n", "Total messages consumed", total)
-	fmt.Fprintf(w, "%-28s : %d\n", "Actually processed", processed)
-	fmt.Fprintf(w, "%-28s : %d\n", "Duplicate/Extra", total-processed)
-	fmt.Fprintf(w, "%-28s : %.3fs\n", "Consume elapsed Time", seconds)
-	fmt.Fprintf(w, "%-28s : %.2f msg/s\n", "Consume Throughput", tps)
-	fmt.Fprintf(w, "%-28s : %.2f msg/s\n", "Processed Throughput", processedTps)
-	fmt.Fprint(w, "\r\n")
 
-	fmt.Fprintln(w, "Partition Breakdown:")
-	keys := make([]int, 0, len(m.PartitionCounts))
-	for k := range m.PartitionCounts {
-		keys = append(keys, k)
+	fmt.Fprintf(w, "Total Messages       : %d\n", total)
+	fmt.Fprintf(w, "Elapsed Time         : %.2fs\n", elapsed)
+	fmt.Fprintf(w, "Overall TPS          : %.2f msg/s\n", float64(total)/elapsed)
+	if m.enableCorrectness {
+		fmt.Fprintf(w, "Duplicate (MessageID) : %d (fp possible)\n", m.dupCount)
+		fmt.Fprintf(w, "Duplicate (Offset)    : %d (fp possible)\n", m.dupOffsetCount)
+		fmt.Fprintf(w, "Message missing       : %d\n", m.missingCount)
+	} else {
+		fmt.Fprintf(w, "Correctness Check     : disabled (no Bloom filter)\n")
 	}
-	sort.Ints(keys)
 
-	for _, pid := range keys {
-		count := atomic.LoadInt64(m.PartitionCounts[pid])
-		fmt.Fprintf(w, "  #%-2d  messages=%-10d  share=%.2f%%\n", pid, count, (float64(count)/float64(total))*100)
+	if m.rebalance != nil && !m.rebalance.End.IsZero() {
+		fmt.Fprintf(w, "Rebalancing Cost      : %d ms\n", m.rebalance.End.Sub(m.rebalance.Start).Milliseconds())
 	}
+
+	for phase, pm := range m.phases {
+		var partitionTPS []float64
+
+		for _, p := range pm.partitions {
+			tps := p.TPS()
+			partitionTPS = append(partitionTPS, tps)
+		}
+
+		sort.Float64s(partitionTPS)
+
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "▶ Phase: %s\n", phase)
+		fmt.Fprintf(w, "  Phase Total TPS       : %.2f\n", pm.TPS())
+		fmt.Fprintf(w, "  p95 Partition Avg TPS : %.2f\n", percentile(partitionTPS, 0.95))
+		fmt.Fprintf(w, "  p99 Partition Avg TPS : %.2f\n", percentile(partitionTPS, 0.99))
+
+		for _, p := range pm.partitions {
+			fmt.Fprintf(w, "    #%-2d total=%-8d avgTPS=%.1f\n", p.ID, p.totalMsgs, p.TPS())
+		}
+	}
+
 	fmt.Fprintln(w, sep)
 }
 

@@ -10,6 +10,10 @@ import (
 )
 
 func (pc *PartitionConsumer) ensureConnection() error {
+	if pc.consumer.mainCtx.Err() != nil {
+		return fmt.Errorf("consumer shutting down")
+	}
+
 	pc.mu.Lock()
 	if pc.conn != nil {
 		pc.mu.Unlock()
@@ -69,11 +73,15 @@ func (pc *PartitionConsumer) handleBrokerError(data []byte) bool {
 	}
 
 	if strings.Contains(respStr, "GEN_MISMATCH") || strings.Contains(respStr, "REBALANCE_REQUIRED") {
-		go pc.consumer.handleRebalanceSignal()
+		pc.close()
+		pc.consumer.handleRebalanceSignal()
+		return true
 	}
 
 	pc.closeConnection()
-	time.Sleep(time.Duration(pc.partitionID+1*10) * time.Millisecond) // jitter
+
+	wait := time.Duration(100+(pc.partitionID*50)) * time.Millisecond
+	time.Sleep(wait) // jitter
 	return true
 }
 
@@ -82,21 +90,47 @@ func (pc *PartitionConsumer) commitOffsetWithRetry(offset uint64) error {
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		if pc.consumer.mainCtx.Err() != nil {
+			return fmt.Errorf("stopping commit: consumer context cancelled")
+		}
+
+		resultCh := make(chan error, 1)
+
+		pc.consumer.commitResultMu.Lock()
+		pc.consumer.commitResultCh[pc.partitionID] = resultCh
+		pc.consumer.commitResultMu.Unlock()
+
 		select {
 		case pc.consumer.commitCh <- commitEntry{
 			partition: pc.partitionID,
 			offset:    offset,
 		}:
-			return nil
-		default:
-			if err := pc.consumer.directCommit(pc.partitionID, offset); err != nil {
-				lastErr = err
-				util.Warn("Partition [%d] Direct commit attempt %d failed: %v", pc.partitionID, attempt+1, err)
-				time.Sleep(time.Duration(100*(attempt+1)) * time.Millisecond)
-				continue
+			select {
+			case err := <-resultCh:
+				if err != nil {
+					util.Error("Partition %d batch commit result error: %v", pc.partitionID, err)
+					lastErr = err
+				} else {
+					util.Debug("Partition %d batch commit success for offset %d", pc.partitionID, offset)
+					return nil
+				}
+			case <-pc.consumer.mainCtx.Done():
+				return fmt.Errorf("commit cancelled due to rebalance")
+			case <-time.After(20 * time.Second):
+				util.Warn("Partition %d batch commit-timeout for offset %d", pc.partitionID, offset)
+				return fmt.Errorf("commit timeout")
 			}
-			return nil
+		default:
+			util.Warn("Partition %d commitCh full, attempting directCommit for offset %d", pc.partitionID, offset)
+			if err := pc.consumer.directCommit(pc.partitionID, offset); err != nil {
+				util.Error("Partition %d directCommit failed: %v", pc.partitionID, err)
+				lastErr = err
+			} else {
+				return nil
+			}
 		}
+		backoff := time.Duration(200*(attempt+1)) * time.Millisecond
+		time.Sleep(backoff)
 	}
 
 	return fmt.Errorf("commit failed after %d attempts: %w", maxRetries, lastErr)
@@ -140,19 +174,23 @@ func (pc *PartitionConsumer) printConsumedMessage(batch *types.Batch) {
 func (pc *PartitionConsumer) close() {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
+
 	if pc.closed {
 		return
 	}
+
 	pc.closed = true
 	if pc.conn != nil {
 		pc.conn.Close()
 		pc.conn = nil
 	}
+	pc.closeDataCh()
 }
 
 func (pc *PartitionConsumer) closeConnection() {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
+
 	if pc.conn != nil {
 		pc.conn.Close()
 		pc.conn = nil

@@ -126,7 +126,16 @@ func (f *BrokerFSM) applySingle(cmd *MessageCommand) interface{} {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	lastSeq, ok := f.producerState[msg.ProducerID]
+	var lastSeq int64 = -1
+	exists := false
+	if pMap, ok := f.producerState[cmd.Topic]; ok {
+		if sMap, ok := pMap[cmd.Partition]; ok {
+			if seq, ok := sMap[msg.ProducerID]; ok {
+				lastSeq = seq
+				exists = true
+			}
+		}
+	}
 
 	resp := types.AckResponse{
 		Status:        "OK",
@@ -137,13 +146,13 @@ func (f *BrokerFSM) applySingle(cmd *MessageCommand) interface{} {
 		SeqEnd:        msg.SeqNum,
 	}
 
-	if ok {
-		if msg.SeqNum <= lastSeq {
-			util.Debug("Duplicate message detected for producer %s (lastSeq: %d, current: %d)", msg.ProducerID, lastSeq, msg.SeqNum)
+	if exists {
+		if int64(msg.SeqNum) <= lastSeq {
+			util.Debug("Duplicate message detected for partition %d...", cmd.Partition)
 			return resp
 		}
-		if msg.SeqNum > lastSeq+1 {
-			return errorAckResponse("Out of order sequence: gap detected", msg.ProducerID, msg.Epoch)
+		if int64(msg.SeqNum) > lastSeq+1 {
+			return errorAckResponse("Out of order sequence", msg.ProducerID, msg.Epoch)
 		}
 	}
 
@@ -151,7 +160,14 @@ func (f *BrokerFSM) applySingle(cmd *MessageCommand) interface{} {
 		return errorAckResponse(err.Error(), msg.ProducerID, msg.Epoch)
 	}
 
-	f.producerState[msg.ProducerID] = msg.SeqNum
+	if f.producerState[cmd.Topic] == nil {
+		f.producerState[cmd.Topic] = make(map[int]map[string]int64)
+	}
+	if f.producerState[cmd.Topic][cmd.Partition] == nil {
+		f.producerState[cmd.Topic][cmd.Partition] = make(map[string]int64)
+	}
+	f.producerState[cmd.Topic][cmd.Partition][msg.ProducerID] = int64(msg.SeqNum)
+
 	return resp
 }
 
@@ -162,10 +178,19 @@ func (f *BrokerFSM) applyBatch(cmd *MessageCommand) interface{} {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	lastSeq, exists := f.producerState[first.ProducerID]
+	var lastSeq int64 = -1
+	exists := false
+	if pMap, ok := f.producerState[cmd.Topic]; ok {
+		if sMap, ok := pMap[cmd.Partition]; ok {
+			if seq, ok := sMap[first.ProducerID]; ok {
+				lastSeq = seq
+				exists = true
+			}
+		}
+	}
 
-	if exists && last.SeqNum <= lastSeq {
-		util.Debug("Duplicate batch detected for producer %s (lastSeq: %d, batchEnd: %d)", first.ProducerID, lastSeq, last.SeqNum)
+	if exists && int64(last.SeqNum) <= lastSeq {
+		util.Debug("Duplicate batch detected for partition %d...", cmd.Partition)
 		return types.AckResponse{
 			Status:        "OK",
 			ProducerID:    first.ProducerID,
@@ -176,16 +201,21 @@ func (f *BrokerFSM) applyBatch(cmd *MessageCommand) interface{} {
 		}
 	}
 
-	if exists && first.SeqNum > lastSeq+1 {
-		return errorAckResponse("Out of order sequence: gap detected", first.ProducerID, first.Epoch)
+	if exists && int64(first.SeqNum) > lastSeq+1 {
+		return errorAckResponse("Out of order batch gap", first.ProducerID, first.Epoch)
 	}
 
 	if err := f.persistBatch(cmd.Topic, cmd.Partition, cmd.Messages); err != nil {
-		m := cmd.Messages[0]
-		return errorAckResponse(fmt.Sprintf("batch persist failed: %v", err), m.ProducerID, m.Epoch)
+		return errorAckResponse(err.Error(), first.ProducerID, first.Epoch)
 	}
 
-	f.producerState[first.ProducerID] = last.SeqNum
+	if f.producerState[cmd.Topic] == nil {
+		f.producerState[cmd.Topic] = make(map[int]map[string]int64)
+	}
+	if f.producerState[cmd.Topic][cmd.Partition] == nil {
+		f.producerState[cmd.Topic][cmd.Partition] = make(map[string]int64)
+	}
+	f.producerState[cmd.Topic][cmd.Partition][first.ProducerID] = int64(last.SeqNum)
 
 	return types.AckResponse{
 		Status:        "OK",
@@ -267,13 +297,17 @@ func (f *BrokerFSM) applyOffsetSyncCommand(jsonData string) interface{} {
 		return err
 	}
 
-	err := f.cd.CommitOffset(cmd.Group, cmd.Topic, cmd.Partition, cmd.Offset)
+	err := f.cd.ApplyOffsetUpdateFromFSM(cmd.Group, cmd.Topic,
+		[]coordinator.OffsetItem{
+			{
+				Partition: cmd.Partition,
+				Offset:    cmd.Offset,
+			},
+		})
 	if err != nil {
 		util.Error("FSM: Failed to sync offset: %v", err)
 		return err
 	}
-
-	util.Debug("FSM: Synced OFFSET group=%s topic=%s p=%d o=%d", cmd.Group, cmd.Topic, cmd.Partition, cmd.Offset)
 	return nil
 }
 
@@ -301,7 +335,12 @@ func (f *BrokerFSM) applyBatchOffsetSyncCommand(jsonData string) interface{} {
 		return err
 	}
 
-	util.Debug("FSM: Synced BATCH_OFFSET group=%s topic=%s count=%d", cmd.Group, cmd.Topic, len(cmd.Offsets))
+	if len(cmd.Offsets) > 0 {
+		first := cmd.Offsets[0]
+		last := cmd.Offsets[len(cmd.Offsets)-1]
+
+		util.Debug("FSM: Synced BATCH_OFFSET group=%s topic=%s range=[Partition %d:Offset %d ~ Partition %d:Offset %d] count=%d", cmd.Group, cmd.Topic, first.Partition, first.Offset, last.Partition, last.Offset, len(cmd.Offsets))
+	}
 	return nil
 }
 
