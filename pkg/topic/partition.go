@@ -40,7 +40,7 @@ func (p *Partition) Enqueue(msg types.Message) {
 		util.Warn("⚠️ DiskHandler does not implement AppendMessage [partition-%d]\n", p.id)
 	}
 
-	p.broadcastToStreams(msg)
+	go p.broadcastToStreams(msg)
 }
 
 func (p *Partition) EnqueueSync(msg types.Message) error {
@@ -66,7 +66,7 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 		return fmt.Errorf("disk handler does not support sync write")
 	}
 
-	p.broadcastToStreams(msg)
+	go p.broadcastToStreams(msg)
 	return nil
 }
 
@@ -78,11 +78,15 @@ func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
 		return fmt.Errorf("partition %d is closed", p.id)
 	}
 
-	appender, ok := p.dh.(interface {
-		AppendMessageSync(topic string, partition int, offset uint64, payload string) error
-	})
+	appender, ok := p.dh.(DiskAppender)
 	if !ok {
-		return fmt.Errorf("disk handler does not support sync write")
+		return fmt.Errorf("disk handler does not implement async write")
+	}
+
+	offsetProvider, ok := p.dh.(AbsoluteOffsetProvider)
+	if !ok {
+		util.Error("❌ Critical: DiskHandler for %s[%d] missing AbsoluteOffsetProvider!", p.topic, p.id)
+		return fmt.Errorf("absolute offset provider not implemented")
 	}
 
 	for _, msg := range msgs {
@@ -91,14 +95,16 @@ func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
 			util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
 			return err
 		}
-		if err := appender.AppendMessageSync(p.topic, p.id, msg.Offset, string(serialized)); err != nil {
+
+		offset := offsetProvider.GetAbsoluteOffset()
+		if err := appender.AppendMessageSync(p.topic, p.id, offset, string(serialized)); err != nil {
 			return fmt.Errorf("disk write failed for partition %d: %w", p.id, err)
 		}
 	}
 	p.NotifyNewMessage()
 
 	for _, msg := range msgs {
-		p.broadcastToStreams(msg)
+		go p.broadcastToStreams(msg)
 	}
 	return nil
 }
@@ -130,7 +136,7 @@ func (p *Partition) EnqueueBatch(msgs []types.Message) error {
 	}
 
 	for _, msg := range msgs {
-		p.broadcastToStreams(msg)
+		go p.broadcastToStreams(msg)
 	}
 	return nil
 }
@@ -142,18 +148,23 @@ func (p *Partition) broadcastToStreams(msg types.Message) {
 
 	streams := p.streamManager.GetStreamsForPartition(p.topic, p.id)
 	for _, stream := range streams {
-		select {
-		case <-stream.StopCh():
-			util.Debug("Stream stopped, skipping broadcast for partition %d", p.id)
+		conn := stream.Conn()
+		if conn == nil {
 			continue
-		default:
-			if err := util.WriteWithLength(stream.Conn(), []byte(msg.Payload)); err != nil {
-				util.Warn("Failed to broadcast to stream for topic '%s' partition %d: %v", p.topic, p.id, err)
-				continue
-			}
-			stream.IncrementOffset()
-			stream.SetLastActive(time.Now())
 		}
+
+		if err := conn.SetWriteDeadline(time.Now().Add(1 * time.Second)); err != nil {
+			util.Error("⚠️ SetWriteDeadline error: %v", err)
+			return
+		}
+
+		if err := util.WriteWithLength(stream.Conn(), []byte(msg.Payload)); err != nil {
+			util.Warn("Failed to broadcast to stream for topic '%s' partition %d: %v", p.topic, p.id, err)
+			continue
+		}
+		stream.IncrementOffset()
+		stream.SetLastActive(time.Now())
+
 	}
 }
 

@@ -10,15 +10,15 @@ services:
     environment:    
       - CONFIG_PATH=/root/config.yaml    
     ports:    
-      - "9000:9000"    
-      - "9100:9100"    
-      - "9080:9080"    
+      - "10000:9000"    
+      - "10100:9100"    
+      - "10080:9080"    
     stdin_open: true    
     tty: true    
     networks:    
       - test_network  
     healthcheck:    
-      test: ["CMD", "curl", "-f", "http://localhost:9080/health"]    
+      test: ["CMD", "curl", "-f", "http://localhost:10080/health"]    
       interval: 10s    
       timeout: 5s    
       retries: 5    

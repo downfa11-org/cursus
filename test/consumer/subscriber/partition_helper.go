@@ -3,7 +3,6 @@ package subscriber
 import (
 	"fmt"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/downfa11-org/go-broker/consumer/types"
@@ -11,16 +10,20 @@ import (
 )
 
 func (pc *PartitionConsumer) ensureConnection() error {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
+	if pc.consumer.mainCtx.Err() != nil {
+		return fmt.Errorf("consumer shutting down")
+	}
 
+	pc.mu.Lock()
 	if pc.conn != nil {
+		pc.mu.Unlock()
 		return nil
 	}
-
 	if pc.closed {
+		pc.mu.Unlock()
 		return fmt.Errorf("partition consumer closed")
 	}
+	pc.mu.Unlock()
 
 	bo := newBackoff(
 		time.Duration(pc.consumer.config.ConnectRetryBackoffMS)*time.Millisecond, 5*time.Second,
@@ -28,9 +31,23 @@ func (pc *PartitionConsumer) ensureConnection() error {
 
 	var err error
 	for attempt := 0; attempt < pc.consumer.config.MaxConnectRetries; attempt++ {
+		pc.mu.Lock()
+		if pc.closed {
+			pc.mu.Unlock()
+			return fmt.Errorf("partition consumer closed during connection attempts")
+		}
+		pc.mu.Unlock()
+
 		conn, broker, connectErr := pc.consumer.client.ConnectWithFailover()
 		if connectErr == nil {
+			pc.mu.Lock()
+			if pc.closed {
+				conn.Close()
+				pc.mu.Unlock()
+				return fmt.Errorf("partition consumer closed")
+			}
 			pc.conn = conn
+			pc.mu.Unlock()
 			util.Info("Partition [%d] connected to %s", pc.partitionID, broker)
 			return nil
 		}
@@ -56,31 +73,16 @@ func (pc *PartitionConsumer) handleBrokerError(data []byte) bool {
 	}
 
 	if strings.Contains(respStr, "GEN_MISMATCH") || strings.Contains(respStr, "REBALANCE_REQUIRED") {
-		go pc.consumer.handleRebalanceSignal()
+		pc.close()
+		pc.consumer.handleRebalanceSignal()
+		return true
 	}
 
 	pc.closeConnection()
-	time.Sleep(time.Duration(pc.partitionID*10) * time.Millisecond) // jitter
+
+	wait := time.Duration(100+(pc.partitionID*50)) * time.Millisecond
+	time.Sleep(wait) // jitter
 	return true
-}
-
-func (pc *PartitionConsumer) updateOffsetAndCommit(msgs []types.Message) {
-	lastOffset := msgs[len(msgs)-1].Offset
-	atomic.StoreUint64(&pc.offset, lastOffset+1)
-
-	select {
-	case pc.consumer.commitCh <- commitEntry{
-		partition: pc.partitionID,
-		offset:    lastOffset,
-	}:
-	default:
-		util.Warn("Partition [%d] commit channel full. falling back to directCommit for offset %d", pc.partitionID, lastOffset)
-		go func(o uint64) {
-			if err := pc.commitOffsetWithRetry(o); err != nil {
-				util.Error("Partition [%d] offset %d commit permanent failure: %v", pc.partitionID, o, err)
-			}
-		}(lastOffset)
-	}
 }
 
 func (pc *PartitionConsumer) commitOffsetWithRetry(offset uint64) error {
@@ -88,21 +90,47 @@ func (pc *PartitionConsumer) commitOffsetWithRetry(offset uint64) error {
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		if pc.consumer.mainCtx.Err() != nil {
+			return fmt.Errorf("stopping commit: consumer context cancelled")
+		}
+
+		resultCh := make(chan error, 1)
+
+		pc.consumer.commitResultMu.Lock()
+		pc.consumer.commitResultCh[pc.partitionID] = resultCh
+		pc.consumer.commitResultMu.Unlock()
+
 		select {
 		case pc.consumer.commitCh <- commitEntry{
 			partition: pc.partitionID,
 			offset:    offset,
 		}:
-			return nil
-		default:
-			if err := pc.consumer.directCommit(pc.partitionID, offset); err != nil {
-				lastErr = err
-				util.Warn("Partition [%d] Direct commit attempt %d failed: %v", pc.partitionID, attempt+1, err)
-				time.Sleep(time.Duration(100*(attempt+1)) * time.Millisecond)
-				continue
+			select {
+			case err := <-resultCh:
+				if err != nil {
+					util.Error("Partition %d batch commit result error: %v", pc.partitionID, err)
+					lastErr = err
+				} else {
+					util.Debug("Partition %d batch commit success for offset %d", pc.partitionID, offset)
+					return nil
+				}
+			case <-pc.consumer.mainCtx.Done():
+				return fmt.Errorf("commit cancelled due to rebalance")
+			case <-time.After(20 * time.Second):
+				util.Warn("Partition %d batch commit-timeout for offset %d", pc.partitionID, offset)
+				return fmt.Errorf("commit timeout")
 			}
-			return nil
+		default:
+			util.Warn("Partition %d commitCh full, attempting directCommit for offset %d", pc.partitionID, offset)
+			if err := pc.consumer.directCommit(pc.partitionID, offset); err != nil {
+				util.Error("Partition %d directCommit failed: %v", pc.partitionID, err)
+				lastErr = err
+			} else {
+				return nil
+			}
 		}
+		backoff := time.Duration(200*(attempt+1)) * time.Millisecond
+		time.Sleep(backoff)
 	}
 
 	return fmt.Errorf("commit failed after %d attempts: %w", maxRetries, lastErr)
@@ -114,54 +142,55 @@ func (pc *PartitionConsumer) printConsumedMessage(batch *types.Batch) {
 	}
 
 	util.Info("📥 Partition [%d] Batch Received: Topic='%s', TotalMessages=%d", pc.partitionID, batch.Topic, len(batch.Messages))
+	util.Info("   ├─ Message Details (First 5 messages):")
 
-	if len(batch.Messages) > 0 {
-		util.Info("   ├─ Message Details (First 5 messages):")
+	limit := 5
+	if len(batch.Messages) < limit {
+		limit = len(batch.Messages)
+	}
 
-		limit := 5
-		if len(batch.Messages) < limit {
-			limit = len(batch.Messages)
+	for i := 0; i < limit; i++ {
+		msg := batch.Messages[i]
+
+		payload := msg.Payload
+		if len(payload) > 50 {
+			payload = payload[:50] + "..."
 		}
 
-		for i := 0; i < limit; i++ {
-			msg := batch.Messages[i]
-
-			payload := msg.Payload
-			if len(payload) > 50 {
-				payload = payload[:50] + "..."
-			}
-
-			if msg.Key == "" {
-				util.Info("   │  └─ Msg %d: Payload='%s'", i, payload)
-			} else {
-				util.Info("   │  └─ Msg %d: Key=%s, Payload='%s'", i, msg.Key, payload)
-			}
-		}
-
-		if len(batch.Messages) > 5 {
-			util.Info("   └─ ... and %d more messages.", len(batch.Messages)-5)
+		if msg.Key == "" {
+			util.Info("   │  └─ Msg %d: Payload='%s'", i, payload)
 		} else {
-			util.Info("   └─ All messages listed above.")
+			util.Info("   │  └─ Msg %d: Key=%s, Payload='%s'", i, msg.Key, payload)
 		}
+	}
+
+	if len(batch.Messages) > 5 {
+		util.Info("   └─ ... and %d more messages.", len(batch.Messages)-5)
+	} else {
+		util.Info("   └─ All messages listed above.")
 	}
 }
 
 func (pc *PartitionConsumer) close() {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
+
 	if pc.closed {
 		return
 	}
+
 	pc.closed = true
 	if pc.conn != nil {
 		pc.conn.Close()
 		pc.conn = nil
 	}
+	pc.closeDataCh()
 }
 
 func (pc *PartitionConsumer) closeConnection() {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
+
 	if pc.conn != nil {
 		pc.conn.Close()
 		pc.conn = nil

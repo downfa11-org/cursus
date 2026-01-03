@@ -25,13 +25,15 @@ func (d *DiskHandler) flushLoop() {
 		select {
 		case msg, ok := <-d.writeCh:
 			if !ok {
-				continue
+				d.drainAndShutdown(batch)
+				return
 			}
+
 			batch = append(batch, msg)
 			util.Debug("Received message, batch size now: %d/%d", len(batch), d.batchSize)
 
 			if len(batch) >= d.batchSize {
-				util.Debug("🔥 Batch size threshold reached, flushing %d messages", len(batch))
+				util.Debug("Batch size threshold reached, flushing %d messages", len(batch))
 				if err := d.writeBatch(batch); err != nil {
 					util.Error("writeBatch failed: %v", err)
 				}
@@ -39,18 +41,13 @@ func (d *DiskHandler) flushLoop() {
 			}
 		case <-ticker.C:
 			if len(batch) > 0 {
-				util.Debug("🔥 Flushing %d messages on timer", len(batch))
+				util.Debug("Flushing %d messages on timer", len(batch))
 				if err := d.writeBatch(batch); err != nil {
 					util.Error("writeBatch failed: %v", err)
 				}
 				batch = batch[:0]
 			}
-		case <-func() <-chan time.Time {
-			if segmentTicker != nil {
-				return segmentTicker.C
-			}
-			return nil
-		}():
+		case <-d.getSegmentTickerChan(segmentTicker):
 			// Time-based segment rotation
 			d.mu.Lock()
 			d.ioMu.Lock()
@@ -64,48 +61,7 @@ func (d *DiskHandler) flushLoop() {
 
 		case <-d.done:
 			// Gracefully drain all pending writes before shutdown
-			draining := true
-			for draining {
-				if len(batch) >= d.batchSize {
-					if err := d.writeBatch(batch); err != nil {
-						util.Error("writeBatch failed: %v", err)
-					}
-					batch = batch[:0]
-					continue
-				}
-				select {
-				case msg, ok := <-d.writeCh:
-					if !ok {
-						draining = false
-						continue
-					}
-					batch = append(batch, msg)
-				default:
-					draining = false
-				}
-			}
-
-			if len(batch) > 0 {
-				if err := d.writeBatch(batch); err != nil {
-					util.Error("writeBatch failed: %v", err)
-				}
-			}
-
-			d.ioMu.Lock()
-			if d.file != nil {
-				if err := d.writer.Flush(); err != nil {
-					util.Error("flush failed in shutdown: %v", err)
-				}
-				if err := d.file.Sync(); err != nil {
-					util.Error("sync failed during shutdown: %v", err)
-				}
-				if err := d.file.Close(); err != nil {
-					util.Error("close failed during shutdown: %v", err)
-				}
-				d.file = nil
-				d.writer = nil
-			}
-			d.ioMu.Unlock()
+			d.drainAndShutdown(batch)
 			return
 		}
 	}
@@ -324,4 +280,58 @@ func (d *DiskHandler) GetCurrentSegment() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.CurrentSegment
+}
+
+func (d *DiskHandler) drainAndShutdown(batch []types.DiskMessage) {
+	if len(batch) > 0 {
+		if err := d.writeBatch(batch); err != nil {
+			util.Error("writeBatch failed: %v", err)
+		}
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case msg, ok := <-d.writeCh:
+			if !ok {
+				goto finalize
+			}
+			batch = append(batch, msg)
+			if len(batch) >= d.batchSize {
+				if err := d.writeBatch(batch); err != nil {
+					util.Error("writeBatch failed: %v", err)
+				}
+				batch = batch[:0]
+			}
+		default:
+			goto finalize
+		}
+	}
+
+finalize:
+	if len(batch) > 0 {
+		if err := d.writeBatch(batch); err != nil {
+			util.Error("writeBatch failed: %v", err)
+		}
+	}
+
+	d.ioMu.Lock()
+	defer d.ioMu.Unlock()
+	if d.writer != nil {
+		if err := d.writer.Flush(); err != nil {
+			util.Error("writer flush failed", err)
+		}
+		if err := d.file.Sync(); err != nil {
+			util.Error("file sync failed", err)
+		}
+		d.file.Close()
+		d.file = nil
+	}
+}
+
+func (d *DiskHandler) getSegmentTickerChan(ticker *time.Ticker) <-chan time.Time {
+	if ticker != nil {
+		return ticker.C
+	}
+	return nil
 }

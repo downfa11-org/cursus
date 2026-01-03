@@ -50,6 +50,7 @@ type GroupStatus struct {
 	GroupName      string       `json:"group_name"`
 	TopicName      string       `json:"topic_name"`
 	State          string       `json:"state"` // "Stable", "Rebalancing", "Dead"
+	Generation     int          `json:"generation"`
 	MemberCount    int          `json:"member_count"`
 	PartitionCount int          `json:"partition_count"`
 	Members        []MemberInfo `json:"members"`
@@ -115,18 +116,23 @@ func (c *Coordinator) Stop() {
 // GetAssignments returns the current partition assignments for each group member.
 func (c *Coordinator) GetAssignments(groupName string) map[string][]int {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	group := c.groups[groupName]
-	if group == nil {
+	if group == nil || len(group.Members) == 0 {
+		c.mu.RUnlock()
 		return map[string][]int{}
 	}
 
-	result := make(map[string][]int)
+	result := make(map[string][]int, len(group.Members))
 	for id, member := range group.Members {
-		cp := append([]int(nil), member.Assignments...)
+		if len(member.Assignments) == 0 {
+			result[id] = []int{}
+			continue
+		}
+		cp := make([]int, len(member.Assignments))
+		copy(cp, member.Assignments)
 		result[id] = cp
 	}
+	c.mu.RUnlock()
 	return result
 }
 
@@ -141,11 +147,12 @@ func (c *Coordinator) GetMemberAssignments(groupName string, memberID string) []
 	}
 
 	member, exists := group.Members[memberID]
-	if !exists {
-		return nil
+	if !exists || len(member.Assignments) == 0 {
+		return []int{}
 	}
 
-	cp := append([]int(nil), member.Assignments...)
+	cp := make([]int, len(member.Assignments))
+	copy(cp, member.Assignments)
 	return cp
 }
 
@@ -163,35 +170,46 @@ func (c *Coordinator) ListGroups() []string {
 // GetGroupStatus returns the current status of a consumer group
 func (c *Coordinator) GetGroupStatus(groupName string) (*GroupStatus, error) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	group := c.groups[groupName]
 	if group == nil {
+		c.mu.RUnlock()
 		return nil, fmt.Errorf("group '%s' not found", groupName)
 	}
 
-	state := "Stable"
-	if len(group.Members) == 0 {
-		state = "Dead"
-	}
+	gName := groupName
+	tName := group.TopicName
+	gen := group.Generation
+	lRebalance := group.LastRebalance
+	mCount := len(group.Members)
+	pCount := len(group.Partitions)
 
-	members := make([]MemberInfo, 0, len(group.Members))
+	members := make([]MemberInfo, 0, mCount)
 	for _, member := range group.Members {
+		asgn := make([]int, len(member.Assignments))
+		copy(asgn, member.Assignments)
+
 		members = append(members, MemberInfo{
 			MemberID:      member.ID,
 			LastHeartbeat: member.LastHeartbeat,
-			Assignments:   append([]int(nil), member.Assignments...),
+			Assignments:   asgn,
 		})
+	}
+	c.mu.RUnlock()
+
+	state := "Stable"
+	if mCount == 0 {
+		state = "Dead"
 	}
 
 	return &GroupStatus{
-		GroupName:      groupName,
-		TopicName:      group.TopicName,
+		GroupName:      gName,
+		TopicName:      tName,
 		State:          state,
-		MemberCount:    len(group.Members),
-		PartitionCount: len(group.Partitions),
+		Generation:     gen,
+		MemberCount:    mCount,
+		PartitionCount: pCount,
 		Members:        members,
-		LastRebalance:  group.LastRebalance,
+		LastRebalance:  lRebalance,
 	}, nil
 }
 

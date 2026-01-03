@@ -2,10 +2,8 @@ package producer
 
 import (
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"net"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,7 +33,23 @@ type ProducerClient struct {
 	conns   atomic.Pointer[[]net.Conn]
 	config  *config.PublisherConfig
 
-	leader atomic.Value
+	leader atomic.Pointer[leaderInfo]
+}
+
+func NewProducerClient(partitions int, config *config.PublisherConfig) *ProducerClient {
+	pc := &ProducerClient{
+		ID:      uuid.New().String(),
+		Epoch:   time.Now().UnixNano(),
+		seqNums: make([]atomic.Uint64, partitions),
+		config:  config,
+	}
+
+	pc.leader.Store(&leaderInfo{
+		addr:    "",
+		updated: time.Time{},
+	})
+
+	return pc
 }
 
 func (pc *ProducerClient) CommitSeqRange(partition int, endSeq uint64) {
@@ -52,46 +66,6 @@ func (pc *ProducerClient) CommitSeqRange(partition int, endSeq uint64) {
 			return
 		}
 	}
-}
-
-func NewProducerClient(partitions int, config *config.PublisherConfig) *ProducerClient {
-	pc := &ProducerClient{
-		ID:      uuid.New().String(),
-		Epoch:   time.Now().UnixNano(),
-		seqNums: make([]atomic.Uint64, partitions),
-		config:  config,
-	}
-
-	pc.leader.Store(&leaderInfo{})
-	if err := pc.loadState(); err != nil {
-		fmt.Printf("Warning: failed to load producer state: %v\n", err)
-	}
-	return pc
-}
-
-func (pc *ProducerClient) loadState() error {
-	data, err := os.ReadFile("producer_state.json")
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-
-	var state ProducerState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return err
-	}
-
-	pc.ID = state.ProducerID
-	pc.Epoch = state.Epoch
-
-	for partition, seq := range state.LastSeqNums {
-		if partition < len(pc.seqNums) {
-			pc.seqNums[partition].Store(seq)
-		}
-	}
-	return nil
 }
 
 func (pc *ProducerClient) NextSeqNum(partition int) uint64 {
@@ -177,21 +151,23 @@ func (pc *ProducerClient) Close() error {
 }
 
 func (pc *ProducerClient) GetLeaderAddr() string {
-	info, ok := pc.leader.Load().(*leaderInfo)
-	if !ok || info.addr == "" {
+	info := pc.leader.Load()
+	if info == nil || info.addr == "" {
 		return ""
 	}
 	return info.addr
 }
 
 func (pc *ProducerClient) UpdateLeader(leaderAddr string) {
-	old := pc.leader.Load().(*leaderInfo)
-	if old.addr != leaderAddr {
-		pc.leader.Store(&leaderInfo{
-			addr:    leaderAddr,
-			updated: time.Now(),
-		})
+	old := pc.leader.Load()
+	if old != nil && old.addr == leaderAddr {
+		return
 	}
+
+	pc.leader.Store(&leaderInfo{
+		addr:    leaderAddr,
+		updated: time.Now(),
+	})
 }
 
 func (pc *ProducerClient) selectBroker() string {
@@ -199,9 +175,8 @@ func (pc *ProducerClient) selectBroker() string {
 		return ""
 	}
 
-	threshold := defaultLeaderStalenessThreshold
-	info, ok := pc.leader.Load().(*leaderInfo)
-	if ok && info.addr != "" && time.Since(info.updated) < threshold {
+	info := pc.leader.Load()
+	if info != nil && info.addr != "" && time.Since(info.updated) < defaultLeaderStalenessThreshold {
 		return info.addr
 	}
 

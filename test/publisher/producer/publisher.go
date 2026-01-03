@@ -148,6 +148,7 @@ func (p *Publisher) CreateTopic(topic string, partitions int) error {
 		return fmt.Errorf("broker error: %s", string(resp))
 	}
 
+	util.Info("create topic %s partition %d", topic, partitions)
 	return nil
 }
 
@@ -187,8 +188,13 @@ func (p *Publisher) partitionSender(part int) {
 	linger := time.Duration(p.config.LingerMS) * time.Millisecond
 
 	timer := time.NewTimer(linger)
+	defer timer.Stop()
+
 	if !timer.Stop() {
-		<-timer.C
+		select {
+		case <-timer.C:
+		default:
+		}
 	}
 
 	for {
@@ -427,7 +433,11 @@ func (p *Publisher) sendWithRetry(payload []byte, part int) (*types.AckResponse,
 			}
 		}
 
-		_ = conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.WriteTimeoutMS) * time.Millisecond))
+		if err := conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.WriteTimeoutMS) * time.Millisecond)); err != nil {
+			util.Error("⚠️ SetWriteDeadline error: %v", err)
+			continue
+		}
+
 		if _, err := conn.Write(payload); err != nil {
 			lastErr = fmt.Errorf("write failed: %w", err)
 			brokerAddr := p.producer.selectBroker()
@@ -506,8 +516,6 @@ func (p *Publisher) parseAckResponse(resp []byte) (*types.AckResponse, error) {
 		return nil, fmt.Errorf("invalid ack format: %v, %w", string(resp), err)
 	}
 
-	util.Debug("parse: %v", ackResp)
-
 	if ackResp.Leader != "" {
 		if ackResp.Leader != p.producer.GetLeaderAddr() {
 			p.producer.UpdateLeader(ackResp.Leader)
@@ -515,13 +523,23 @@ func (p *Publisher) parseAckResponse(resp []byte) (*types.AckResponse, error) {
 	}
 
 	if ackResp.ProducerID == "" {
-		ackStr, _ := json.Marshal(ackResp)
+		ackStr, err := json.Marshal(ackResp)
+		if err != nil {
+			util.Error("Failed to marshal response: %v", err)
+			return nil, err
+		}
+
 		util.Info("producerID mismatch: expected %d, got %d, ack=%s", p.producer.Epoch, ackResp.ProducerEpoch, ackStr)
 		return nil, fmt.Errorf("incomplete ack response: missing required fields")
 	}
 
 	if ackResp.ProducerEpoch != p.producer.Epoch {
-		ackStr, _ := json.Marshal(ackResp)
+		ackStr, err := json.Marshal(ackResp)
+		if err != nil {
+			util.Error("Failed to marshal response: %v", err)
+			return nil, err
+		}
+
 		util.Info("epoch mismatch: expected %d, got %d, ack=%s", p.producer.Epoch, ackResp.ProducerEpoch, ackStr)
 		return nil, fmt.Errorf("epoch mismatch: expected %d, got %d", p.producer.Epoch, ackResp.ProducerEpoch)
 	}
@@ -623,18 +641,31 @@ func (p *Publisher) FlushBenchmark(expectedTotal int) {
 }
 
 func (p *Publisher) batchStateGC() {
-	for range p.gcTicker.C {
-		cutoff := time.Now().Add(-1 * time.Minute)
+	for {
+		select {
+		case <-p.gcTicker.C:
+			now := time.Now()
+			ackedCutoff := now.Add(-1 * time.Minute)
+			staleCutoff := now.Add(-5 * time.Minute)
 
-		for part := 0; part < p.partitions; part++ {
-			p.partitionBatchMus[part].Lock()
+			for part := 0; part < p.partitions; part++ {
+				p.partitionBatchMus[part].Lock()
 
-			for id, st := range p.partitionBatchStates[part] {
-				if st.Acked && st.SentTime.Before(cutoff) {
-					delete(p.partitionBatchStates[part], id)
+				for id, st := range p.partitionBatchStates[part] {
+					if st.Acked && st.SentTime.Before(ackedCutoff) {
+						delete(p.partitionBatchStates[part], id)
+						continue
+					}
+
+					if !st.Acked && st.SentTime.Before(staleCutoff) {
+						util.Warn("GC: Dropping unacked stale batch state: %s", id)
+						delete(p.partitionBatchStates[part], id)
+					}
 				}
+				p.partitionBatchMus[part].Unlock()
 			}
-			p.partitionBatchMus[part].Unlock()
+		case <-p.done:
+			return
 		}
 	}
 }

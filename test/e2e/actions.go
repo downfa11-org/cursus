@@ -12,7 +12,7 @@ type Actions struct {
 
 func (a *Actions) StartBroker() *Actions {
 	a.ctx.t.Log("Waiting for broker to be ready...")
-	if err := CheckBrokerHealth(); err != nil {
+	if err := CheckBrokerHealth(StandAloneHealthCheckAddr); err != nil {
 		a.ctx.t.Fatalf("Broker health check failed: %v", err)
 	}
 
@@ -57,8 +57,8 @@ func (a *Actions) PublishMessages() *Actions {
 		)
 
 		if err != nil {
-			a.ctx.t.Errorf("Failed to publish message %d: %v", i, err)
-			continue
+			a.ctx.lastError = err
+			return a
 		}
 
 		a.ctx.publishedSeqNums = append(a.ctx.publishedSeqNums, a.ctx.seqNum)
@@ -101,7 +101,7 @@ func (a *Actions) JoinGroup() *Actions {
 	a.ctx.t.Logf("Joining group '%s' for topic '%s'...", a.ctx.consumerGroup, a.ctx.topic)
 	client := a.ctx.getClient()
 
-	_, _, err := client.joinGroup(a.ctx.topic, a.ctx.consumerGroup)
+	_, _, err := client.JoinGroup(a.ctx.topic, a.ctx.consumerGroup)
 	if err != nil {
 		a.ctx.t.Fatalf("Group join failed: %v", err)
 	}
@@ -160,7 +160,16 @@ func (a *Actions) ConsumeMessagesFromTopic(topic string) *Actions {
 			a.ctx.t.Fatalf("Consume assigned partition %d failed: %v", partition, err)
 		}
 
+		count := len(messages)
 		totalConsumed += len(messages)
+
+		if count > 0 {
+			err := client.CommitOffset(topic, partition, a.ctx.consumerGroup, uint64(count))
+			if err != nil {
+				a.ctx.t.Fatalf("Failed to auto-commit offset for partition %d: %v", partition, err)
+			}
+			a.ctx.t.Logf("Successfully committed offset %d for partition %d", count, partition)
+		}
 	}
 
 	a.ctx.consumedCount = totalConsumed
@@ -179,6 +188,18 @@ func (a *Actions) CommitOffset(partition int, offset uint64) *Actions {
 
 	return a
 }
+
+func (a *Actions) CommitAllOffsets(offset uint64) *Actions {
+	client := a.ctx.getClient()
+	for _, partition := range a.ctx.assignedPartitions {
+		err := client.CommitOffset(a.ctx.topic, partition, a.ctx.consumerGroup, offset)
+		if err != nil {
+			a.ctx.t.Fatalf("Failed to commit offset for partition %d: %v", partition, err)
+		}
+	}
+	return a
+}
+
 func (a *Actions) SimulateNetworkFailure() *Actions {
 	a.ctx.t.Log("Simulating network failure...")
 	time.Sleep(100 * time.Millisecond)

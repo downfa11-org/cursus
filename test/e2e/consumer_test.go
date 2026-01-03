@@ -67,7 +67,6 @@ func TestWithCustomConsumerGroup(t *testing.T) {
 
 // TestDefaultGroupOffsetSharing verifies offset sharing between consumers in same group
 func TestDefaultGroupOffsetSharing(t *testing.T) {
-	// First consumer reads all messages
 	ctx1 := Given(t)
 	defer ctx1.Cleanup()
 
@@ -87,7 +86,6 @@ func TestDefaultGroupOffsetSharing(t *testing.T) {
 		Then().
 		Expect(MessagesConsumed(10))
 
-	// Second consumer in same group should see no new messages
 	ctx2 := Given(t)
 	defer ctx2.Cleanup()
 
@@ -139,4 +137,46 @@ func TestConsumerHeartbeat(t *testing.T) {
 		ConsumeMessages().
 		Then().
 		Expect(HeartbeatsSent())
+}
+
+// TestConsumerOptionsComprehensive tests all consumer configuration options
+func TestConsumerOptionsComprehensive(t *testing.T) {
+	testCases := []struct {
+		name              string
+		group             string
+		sessionTimeoutMS  int
+		heartbeatInterval int
+		autoCommit        bool
+		expectedBehavior  string
+	}{
+		{"default_group", "", 10000, 3000, true, "normal"},
+		{"custom_group", "test-group", 5000, 1000, false, "manual_commit"},
+		{"short_timeout", "", 1000, 500, true, "rebalance"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := Given(t).
+				WithTopic("consumer-options-" + tc.name).
+				WithPartitions(2).
+				WithNumMessages(30)
+
+			if tc.group != "" {
+				ctx = ctx.WithConsumerGroup(tc.group)
+			}
+			defer ctx.Cleanup()
+
+			ctx.When().
+				StartBroker().
+				CreateTopic().
+				PublishMessages().
+				JoinGroup().
+				SyncGroup().
+				ConsumeMessages().
+				CommitAllOffsets(30).
+				Then().
+				Expect(MessagesConsumed(30)).
+				And(OffsetsCommitted())
+		})
+	}
 }

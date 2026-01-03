@@ -56,13 +56,13 @@ func NewTopicManager(cfg *config.Config, hp HandlerProvider, sm *stream.StreamMa
 
 func (tm *TopicManager) CreateTopic(name string, partitionCount int) {
 	tm.mu.Lock()
+	defer tm.mu.Unlock()
 
 	if existing, ok := tm.topics[name]; ok {
 		current := len(existing.Partitions)
 		switch {
 		case partitionCount < current:
 			util.Error("⚠️ cannot decrease partitions for topic '%s' (%d → %d)\n", name, current, partitionCount)
-			tm.mu.Unlock()
 			return
 		case partitionCount > current:
 			existing.AddPartitions(partitionCount-current, tm.hp)
@@ -77,14 +77,9 @@ func (tm *TopicManager) CreateTopic(name string, partitionCount int) {
 	t, err := NewTopic(name, partitionCount, tm.hp, tm.cfg, tm.StreamManager)
 	if err != nil {
 		util.Error("❌ failed to create topic '%s': %v\n", name, err)
-		tm.mu.Unlock()
 		return
 	}
 	tm.topics[name] = t
-	tm.mu.Unlock()
-
-	t.RegisterConsumerGroup("default-group", 1)
-	util.Info("✅ topic '%s' created with %d partitions\n", name, partitionCount)
 }
 
 func (tm *TopicManager) GetTopic(name string) *Topic {

@@ -189,6 +189,10 @@ func LoadPublisherConfig() (*PublisherConfig, error) {
 		cfg.Topic = "default-topic"
 	}
 
+	if cfg.LeaderStaleness <= 0 {
+		cfg.LeaderStaleness = 30 * time.Second
+	}
+
 	if cfg.UseTLS && (cfg.TLSCertPath == "" || cfg.TLSKeyPath == "") {
 		return nil, fmt.Errorf("TLS enabled but cert/key paths not provided")
 	}

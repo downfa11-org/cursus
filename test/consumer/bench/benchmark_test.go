@@ -4,88 +4,105 @@ import (
 	"bytes"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/downfa11-org/go-broker/consumer/bench"
 )
 
-func TestConsumerMetrics_RecordMessage(t *testing.T) {
-	metrics := bench.NewConsumerMetrics(10)
+func TestConsumerMetrics_PhaseSeparation(t *testing.T) {
+	m := bench.NewConsumerMetrics(12, false)
 
-	metrics.RecordMessage(0)
-	metrics.RecordMessage(1)
-	metrics.RecordMessage(0)
+	m.RecordBatch(0, 5)
 
-	if atomic.LoadInt64(&metrics.MsgCount) != 3 {
-		t.Errorf("Expected total MsgCount=3, got %d", metrics.MsgCount)
-	}
+	m.RebalanceStart()
+	time.Sleep(10 * time.Millisecond)
 
-	if metrics.PartitionCounts[0] == nil || atomic.LoadInt64(metrics.PartitionCounts[0]) != 2 {
-		t.Errorf("Expected partition 0 count=2, got %v", metrics.PartitionCounts[0])
-	}
-	if metrics.PartitionCounts[1] == nil || atomic.LoadInt64(metrics.PartitionCounts[1]) != 1 {
-		t.Errorf("Expected partition 1 count=1, got %v", metrics.PartitionCounts[1])
+	m.OnFirstConsumeAfterRebalance()
+	m.RecordBatch(1, 7)
+
+	ok, reason := m.IsFullyConsumed(12)
+	if !ok {
+		t.Fatalf("expected fully consumed, got reason: %s", reason)
 	}
 }
 
-func TestConsumerMetrics_IsDone(t *testing.T) {
-	metrics := bench.NewConsumerMetrics(3)
-	if metrics.IsDone() {
-		t.Errorf("Expected not done initially")
-	}
+func TestConsumerMetrics_RecordBatch_TotalCount(t *testing.T) {
+	m := bench.NewConsumerMetrics(10, false)
 
-	metrics.RecordMessage(0)
-	metrics.RecordMessage(1)
-	if metrics.IsDone() {
-		t.Errorf("Expected not done yet")
-	}
+	m.RecordBatch(0, 3)
+	m.RecordBatch(1, 2)
+	m.RecordBatch(0, 5)
 
-	metrics.RecordMessage(2)
-	if !metrics.IsDone() {
-		t.Errorf("Expected done after reaching target")
+	ok, reason := m.IsFullyConsumed(10)
+	if !ok {
+		t.Fatalf("expected fully consumed, got: %s", reason)
 	}
 }
 
-func TestConsumerMetrics_PrintSummary(t *testing.T) {
-	metrics := bench.NewConsumerMetrics(2)
-	metrics.RecordMessage(0)
-	metrics.RecordMessage(1)
+func TestConsumerMetrics_PrintSummary_Output(t *testing.T) {
+	m := bench.NewConsumerMetrics(30, false)
+
+	// initial
+	m.RecordBatch(0, 10)
+	time.Sleep(1100 * time.Millisecond)
+	m.RecordBatch(0, 10)
+
+	// rebalance
+	m.RebalanceStart()
+	time.Sleep(5 * time.Millisecond)
+	m.OnFirstConsumeAfterRebalance()
+
+	// rebalanced
+	m.RecordBatch(1, 5)
+	time.Sleep(1100 * time.Millisecond)
+	m.RecordBatch(1, 5)
 
 	var buf bytes.Buffer
-	metrics.PrintSummaryTo(&buf)
+	m.PrintSummaryTo(&buf)
 
-	output := buf.String()
-	if !strings.Contains(output, "Total messages consumed: 2") {
-		t.Errorf("Summary output missing total messages: %s", output)
+	out := buf.String()
+
+	required := []string{
+		"CONSUMER BENCHMARK SUMMARY",
+		"Overall TPS",
+		"Rebalancing Cost",
+		"Phase: initial",
+		"Phase: rebalanced",
+		"p95 Partition Avg TPS",
+		"p99 Partition Avg TPS",
 	}
-	if !strings.Contains(output, "Partition [0]: 1 messages") ||
-		!strings.Contains(output, "Partition [1]: 1 messages") {
-		t.Errorf("Summary output missing partition counts: %s", output)
+
+	for _, r := range required {
+		if !strings.Contains(out, r) {
+			t.Fatalf("summary output missing %q\n%s", r, out)
+		}
 	}
 }
 
-func TestConsumerMetrics_Concurrency(t *testing.T) {
-	metrics := bench.NewConsumerMetrics(100)
-	wg := sync.WaitGroup{}
-	for i := 0; i < 10; i++ {
+func TestConsumerMetrics_Concurrency_BenchOnly(t *testing.T) {
+	const (
+		partitions = 4
+		perWorker  = 100
+	)
+
+	m := bench.NewConsumerMetrics(int64(partitions*perWorker), false)
+
+	var wg sync.WaitGroup
+	for pid := 0; pid < partitions; pid++ {
 		wg.Add(1)
-		go func(pid int) {
+		go func(p int) {
 			defer wg.Done()
-			for j := 0; j < 10; j++ {
-				metrics.RecordMessage(pid)
+			for i := 0; i < perWorker; i++ {
+				m.RecordBatch(p, 1)
 			}
-		}(i)
+		}(pid)
 	}
+
 	wg.Wait()
 
-	if atomic.LoadInt64(&metrics.MsgCount) != 100 {
-		t.Errorf("Expected MsgCount=100, got %d", metrics.MsgCount)
-	}
-
-	for i := 0; i < 10; i++ {
-		if c := atomic.LoadInt64(metrics.PartitionCounts[i]); c != 10 {
-			t.Errorf("Partition %d expected count=10, got %d", i, c)
-		}
+	ok, reason := m.IsFullyConsumed(int64(partitions * perWorker))
+	if !ok {
+		t.Fatalf("concurrency test failed: %s", reason)
 	}
 }

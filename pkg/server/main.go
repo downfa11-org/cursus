@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
@@ -34,6 +35,8 @@ var brokerReady = &atomic.Bool{}
 
 // RunServer starts the broker with optional TLS and gzip
 func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager, cd *coordinator.Coordinator, sm *stream.StreamManager) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	if cfg.EnableExporter {
 		metrics.StartMetricsServer(cfg.ExporterPort)
@@ -79,9 +82,7 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 			return fmt.Errorf("failed to create raft replication manager: %w", err)
 		}
 
-		sDiscovery := clusterController.NewServiceDiscovery(rm, brokerID, localAddr)
-		sd := &sDiscovery
-
+		sd := clusterController.NewServiceDiscovery(rm, brokerID, localAddr)
 		discoveryAddr := fmt.Sprintf(":%d", cfg.DiscoveryPort)
 		cs := cluster.NewClusterServer(*sd)
 		go func() {
@@ -90,7 +91,7 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 			}
 		}()
 
-		cc = clusterController.NewClusterController(cfg, rm, sd)
+		cc = clusterController.NewClusterController(ctx, cfg, rm, sd)
 
 		go func() {
 			util.Info("🔄 Starting cluster leader election monitor...")
@@ -120,7 +121,7 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 	for i := 0; i < maxWorkers; i++ {
 		go func() {
 			for conn := range workerCh {
-				HandleConnection(conn, tm, dm, cfg, cd, sm, cc)
+				HandleConnection(ctx, conn, tm, dm, cfg, cd, sm, cc)
 			}
 		}()
 	}
@@ -136,18 +137,34 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 }
 
 // HandleConnection processes a single client connection
-func HandleConnection(conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, cd *coordinator.Coordinator, sm *stream.StreamManager, cc *clusterController.ClusterController) {
+func HandleConnection(ctx context.Context, conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, cd *coordinator.Coordinator, sm *stream.StreamManager, cc *clusterController.ClusterController) {
 	defer conn.Close()
 
-	cmdHandler, ctx := initializeConnection(cfg, tm, dm, cd, sm, cc)
+	clientCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	cmdHandler, cmdCtx := initializeConnection(cfg, tm, dm, cd, sm, cc)
 
 	for {
-		data, err := readMessage(conn, cfg.CompressionType)
-		if err != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			util.Error("⚠️ SetReadDeadline error: %v", err)
 			return
 		}
 
-		shouldExit, err := processMessage(data, cmdHandler, ctx, conn)
+		data, err := readMessage(conn, cfg.CompressionType)
+		if err != nil {
+			select {
+			case <-clientCtx.Done():
+				return
+			default:
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					continue
+				}
+				return
+			}
+		}
+
+		shouldExit, err := processMessage(data, cmdHandler, cmdCtx, conn)
 		if err != nil || shouldExit {
 			return
 		}

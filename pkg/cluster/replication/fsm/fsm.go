@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,15 @@ type BrokerInfo struct {
 	LastSeen time.Time `json:"last_seen"`
 }
 
+type BrokerFSMState struct {
+	Version           int                                 `json:"version"`
+	Applied           uint64                              `json:"applied"`
+	Logs              map[uint64]*ReplicationEntry        `json:"logs"`
+	Brokers           map[string]*BrokerInfo              `json:"brokers"`
+	PartitionMetadata map[string]*PartitionMetadata       `json:"partitionMetadata"`
+	ProducerState     map[string]map[int]map[string]int64 `json:"producerState"`
+}
+
 type BrokerFSM struct {
 	notifiers map[string]chan interface{}
 	mu        sync.RWMutex
@@ -37,7 +47,7 @@ type BrokerFSM struct {
 	logs              map[uint64]*ReplicationEntry
 	brokers           map[string]*BrokerInfo
 	partitionMetadata map[string]*PartitionMetadata
-	producerState     map[string]uint64 // ProducerID -> LastSeqNum
+	producerState     map[string]map[int]map[string]int64 // Topic -> Partition -> ProducerID -> LastSeq
 	applied           uint64
 
 	dm *disk.DiskManager
@@ -51,7 +61,7 @@ func NewBrokerFSM(dm *disk.DiskManager, tm *topic.TopicManager, cd *coordinator.
 		logs:              make(map[uint64]*ReplicationEntry),
 		brokers:           make(map[string]*BrokerInfo),
 		partitionMetadata: make(map[string]*PartitionMetadata),
-		producerState:     make(map[string]uint64),
+		producerState:     make(map[string]map[int]map[string]int64),
 		dm:                dm,
 		tm:                tm,
 		cd:                cd,
@@ -69,6 +79,17 @@ func (f *BrokerFSM) GetBrokers() []BrokerInfo {
 	return brokers
 }
 
+func (f *BrokerFSM) GetAllPartitionKeys() []string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	keys := make([]string, 0, len(f.partitionMetadata))
+	for k := range f.partitionMetadata {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 func (f *BrokerFSM) SetCoordinator(cd *coordinator.Coordinator) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -77,7 +98,6 @@ func (f *BrokerFSM) SetCoordinator(cd *coordinator.Coordinator) {
 
 func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 	data := string(log.Data)
-	util.Debug("Applying log entry at index %d", log.Index)
 
 	var reqID string
 	if strings.Contains(data, "{") {
@@ -95,6 +115,8 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 		res = f.applyRegisterCommand(strings.TrimPrefix(data, "REGISTER:"))
 	case strings.HasPrefix(data, "DEREGISTER:"):
 		res = f.applyDeregisterCommand(strings.TrimPrefix(data, "DEREGISTER:"))
+	case strings.HasPrefix(data, "JOIN_GROUP:"):
+		res = f.applyJoinGroupCommand(strings.TrimPrefix(data, "JOIN_GROUP:"))
 	case strings.HasPrefix(data, "MESSAGE:"):
 		res = f.applyMessageCommand(strings.TrimPrefix(data, "MESSAGE:"))
 	case strings.HasPrefix(data, "BATCH:"):
@@ -129,37 +151,33 @@ func (f *BrokerFSM) Restore(rc io.ReadCloser) error {
 
 	util.Info("Starting FSM restore from snapshot")
 
-	var state struct {
-		Applied           uint64                        `json:"applied"`
-		Logs              map[uint64]*ReplicationEntry  `json:"logs"`
-		Brokers           map[string]*BrokerInfo        `json:"brokers"`
-		PartitionMetadata map[string]*PartitionMetadata `json:"partitionMetadata"`
-		ProducerState     map[string]uint64             `json:"producerState"`
-	}
-
+	var state BrokerFSMState
 	if err := json.NewDecoder(rc).Decode(&state); err != nil {
 		util.Error("Failed to decode snapshot: %v", err)
 		return fmt.Errorf("failed to restore snapshot: %w", err)
 	}
 
+	switch state.Version {
+	case 0:
+		util.Warn("FSM Restore: Legacy snapshot detected (Version 0).")
+	case 1:
+		util.Info("FSM Restore: Validating snapshot Version 1")
+	default:
+		return fmt.Errorf("unknown snapshot version: %d.", state.Version)
+	}
+
 	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	f.logs = state.Logs
 	f.brokers = state.Brokers
 	f.partitionMetadata = state.PartitionMetadata
+	f.applied = state.Applied
 
 	f.producerState = state.ProducerState
 	if f.producerState == nil {
-		f.producerState = make(map[string]uint64)
+		f.producerState = make(map[string]map[int]map[string]int64)
 	}
-
-	maxIndex := uint64(0)
-	for index := range f.logs {
-		if index > maxIndex {
-			maxIndex = index
-		}
-	}
-	f.applied = maxIndex
-	f.mu.Unlock()
 
 	util.Info("FSM restore completed: %d logs, %d brokers, %d partitions", len(state.Logs), len(state.Brokers), len(state.PartitionMetadata))
 	return nil
@@ -184,7 +202,7 @@ func (f *BrokerFSM) Snapshot() (raft.FSMSnapshot, error) {
 		metaCopy := *v
 		metadataCopy[k] = &metaCopy
 	}
-	producerStateCopy := make(map[string]uint64, len(f.producerState))
+	producerStateCopy := make(map[string]map[int]map[string]int64, len(f.producerState))
 	for k, v := range f.producerState {
 		producerStateCopy[k] = v
 	}
@@ -205,7 +223,9 @@ func (f *BrokerFSM) persistMessage(topicName string, partition int, msg *types.M
 		return fmt.Errorf("failed to get disk handler for topic %s: %w", topicName, err)
 	}
 
-	msg.Offset = dh.GetAbsoluteOffset()
+	assignedOffset := dh.GetAbsoluteOffset()
+	msg.Offset = assignedOffset
+
 	serialized, err := util.SerializeMessage(*msg)
 	if err != nil {
 		return fmt.Errorf("failed to serialize message: %w", err)
@@ -225,15 +245,21 @@ func (f *BrokerFSM) persistBatch(topicName string, partition int, msgs []types.M
 	}
 
 	base := dh.GetAbsoluteOffset()
+	serializedBatch := make([]string, len(msgs))
 	for i := range msgs {
-		msgs[i].Offset = base + uint64(i)
-		serialized, err := util.SerializeMessage(msgs[i])
-		if err != nil {
-			return fmt.Errorf("failed to serialize message at index %d: %w", i, err)
-		}
+		m := msgs[i]
+		m.Offset = base + uint64(i)
 
-		if err := dh.WriteDirect(topicName, partition, msgs[i].Offset, string(serialized)); err != nil {
-			return fmt.Errorf("WriteDirect failed: %w", err)
+		data, err := util.SerializeMessage(m)
+		if err != nil {
+			return fmt.Errorf("serialization error at index %d: %w", i, err)
+		}
+		serializedBatch[i] = string(data)
+	}
+
+	for i, data := range serializedBatch {
+		if err := dh.WriteDirect(topicName, partition, base+uint64(i), data); err != nil {
+			return fmt.Errorf("partial batch failure at index %d: %w", i, err)
 		}
 	}
 
@@ -257,8 +283,14 @@ func (f *BrokerFSM) getCurrentRaftLeaderID() string {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	for id := range f.brokers {
-		return id
+	if len(f.brokers) == 0 {
+		return ""
 	}
-	return "unknown-leader"
+
+	var ids []string
+	for id := range f.brokers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids[0]
 }

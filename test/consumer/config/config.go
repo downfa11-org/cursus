@@ -27,9 +27,10 @@ type ConsumerConfig struct {
 	GroupID    string `yaml:"group_id" json:"group_id"`
 	ConsumerID string `yaml:"consumer_id" json:"consumer_id"`
 
-	EnableBenchmark bool         `yaml:"enable_benchmark" json:"enable_benchmark"`
-	NumMessages     int          `yaml:"num_messages" json:"num_messages"`
-	Mode            ConsumerMode `yaml:"mode" json:"mode"`
+	EnableBenchmark   bool         `yaml:"enable_benchmark" json:"enable_benchmark"`
+	EnableCorrectness bool         `yaml:"enable_correctness" json:"enable_correctness"`
+	NumMessages       int          `yaml:"num_messages" json:"num_messages"`
+	Mode              ConsumerMode `yaml:"mode" json:"mode"`
 
 	PollInterval  time.Duration `yaml:"poll_interval" json:"poll_interval"`
 	PollTimeoutMS int           `yaml:"poll_timeout_ms" json:"poll_timeout_ms"`
@@ -45,6 +46,9 @@ type ConsumerConfig struct {
 
 	EnableAutoCommit   bool          `yaml:"enable_auto_commit" json:"enable_auto_commit"`
 	AutoCommitInterval time.Duration `yaml:"auto_commit_interval" json:"auto_commit_interval"`
+
+	MaxCommitRetries   int           `yaml:"max_commit_retries" json:"max_commit_retries"`
+	CommitRetryBackoff time.Duration `yaml:"commit_retry_backoff" json:"commit_retry_backoff"`
 
 	StreamingCommitInterval  time.Duration `yaml:"streaming_commit_interval" json:"streaming_commit_interval"`
 	EnableImmediateCommit    bool          `yaml:"enable_immediate_commit" json:"enable_immediate_commit"`
@@ -85,6 +89,9 @@ func LoadConfig() (*ConsumerConfig, error) {
 	flag.BoolVar(&cfg.EnableAutoCommit, "enable-auto-commit", true, "Enable auto commit")
 	flag.DurationVar(&cfg.AutoCommitInterval, "auto-commit-interval", 5*time.Second, "Auto commit interval")
 
+	flag.IntVar(&cfg.MaxCommitRetries, "max-commit-retries", 5, "Max retries for offset commit")
+	flag.DurationVar(&cfg.CommitRetryBackoff, "commit-retry-backoff", 500*time.Millisecond, "Backoff time between commit retries")
+
 	flag.DurationVar(&cfg.LeaderStaleness, "leader-staleness", 30*time.Second, "Maximum age of leader info before considering it stale (e.g., 30s, 1m)")
 
 	flag.DurationVar(&cfg.StreamingCommitInterval, "streaming-commit-interval", 1*time.Second, "Streaming commit interval")
@@ -95,6 +102,7 @@ func LoadConfig() (*ConsumerConfig, error) {
 	flag.StringVar(&cfg.CompressionType, "compression-type", "none", "Compression type (none, gzip, snappy, lz4)")
 
 	benchmarkFlag := flag.Bool("benchmark", false, "Enable benchmark mode with detailed metrics")
+	correctnessFlag := flag.Bool("correctness", false, "Enable correctness mode with detailed metrics")
 	flag.IntVar(&cfg.NumMessages, "num-messages", 10, "Number of messages to publish")
 
 	configPath := flag.String("config", "/config.yaml", "Path to YAML/JSON config file")
@@ -148,6 +156,12 @@ func LoadConfig() (*ConsumerConfig, error) {
 	if cfg.AutoCommitInterval == 0 {
 		cfg.AutoCommitInterval = 5 * time.Second
 	}
+	if cfg.MaxCommitRetries == 0 {
+		cfg.MaxCommitRetries = 5
+	}
+	if cfg.CommitRetryBackoff == 0 {
+		cfg.CommitRetryBackoff = 500 * time.Millisecond
+	}
 	if cfg.StreamingCommitInterval == 0 {
 		cfg.StreamingCommitInterval = 1 * time.Second
 	}
@@ -188,8 +202,17 @@ func LoadConfig() (*ConsumerConfig, error) {
 	if *benchmarkFlag {
 		cfg.EnableBenchmark = true
 	}
+	if *correctnessFlag {
+		cfg.EnableCorrectness = true
+	}
 
-	if cfg.EnableBenchmark {
+	if !cfg.EnableBenchmark {
+		if cfg.EnableCorrectness {
+			util.Warn("enable_correctness is ignored because enable_benchmark is false")
+		}
+		cfg.EnableCorrectness = false
+		cfg.NumMessages = 0
+	} else {
 		if cfg.NumMessages <= 0 {
 			cfg.NumMessages = 10
 		}

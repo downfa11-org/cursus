@@ -33,7 +33,7 @@ func GenerateMessage(size int, seqNum int) string {
 	return header + padding
 }
 
-func PrintBenchmarkSummaryFixedTo(w io.Writer, partitionStats []PartitionStat, sentMessages int, totalDuration time.Duration) {
+func PrintBenchmarkSummaryFixedTo(w io.Writer, partitionStats []PartitionStat, sentMessages int, totalTarget int, totalDuration time.Duration, errSummary map[string]uint64) {
 	totalBatches := 0
 	for _, ps := range partitionStats {
 		totalBatches += ps.BatchCount
@@ -46,9 +46,14 @@ func PrintBenchmarkSummaryFixedTo(w io.Writer, partitionStats []PartitionStat, s
 	batchesPerSec := float64(totalBatches) / seconds
 	messagesPerSec := float64(sentMessages) / seconds
 
+	failedCount := totalTarget - sentMessages
+	if failedCount < 0 {
+		failedCount = 0
+	}
+
 	fmt.Fprint(w, "\r\n")
 	fmt.Fprintln(w, sep)
-	fmt.Fprintln(w, "BENCHMARK SUMMARY")
+	fmt.Fprintln(w, "📊 PRODUCER BENCHMARK SUMMARY")
 	fmt.Fprintf(w, "%-28s : %d\n", "Partitions", len(partitionStats))
 	fmt.Fprintf(w, "%-28s : %d\n", "Total Batches", totalBatches)
 	fmt.Fprintf(w, "%-28s : %d\n", "Total messages published", sentMessages)
@@ -61,10 +66,18 @@ func PrintBenchmarkSummaryFixedTo(w io.Writer, partitionStats []PartitionStat, s
 	for _, ps := range partitionStats {
 		fmt.Fprintf(w, "  #%d  batches=%d  avg_batch=%.3fms\n", ps.PartitionID, ps.BatchCount, float64(ps.AvgDuration.Microseconds())/1000.0)
 	}
+
+	if len(errSummary) > 0 {
+		fmt.Fprintln(w, "\n❌ Error Root Cause Analysis:")
+		for msg, count := range errSummary {
+			fmt.Fprintf(w, "  - [%d occurrences]: %s\n", count, msg)
+		}
+	}
+
 	fmt.Fprintln(w, sep)
 }
 
-func PrintBenchmarkSummaryFixed(partitionStats []PartitionStat, sentMessages int, totalDuration time.Duration) {
+func PrintBenchmarkSummaryFixed(partitionStats []PartitionStat, sentMessages int, totalTarget int, totalDuration time.Duration, errSummary map[string]uint64) {
 	util.Info("🎉 Benchmark completed successfully!")
-	PrintBenchmarkSummaryFixedTo(os.Stdout, partitionStats, sentMessages, totalDuration)
+	PrintBenchmarkSummaryFixedTo(os.Stdout, partitionStats, sentMessages, totalTarget, totalDuration, errSummary)
 }

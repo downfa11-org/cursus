@@ -9,6 +9,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const DefaultFSMApplyTimeout = 5 * time.Second
+
 func (ch *CommandHandler) ProcessCommand(cmd string) string {
 	ctx := NewClientContext("default-group", 0)
 	return ch.HandleCommand(cmd, ctx)
@@ -53,6 +55,9 @@ func (ch *CommandHandler) isLeaderAndForward(cmd string) (string, bool, error) {
 }
 
 func (ch *CommandHandler) applyAndWait(cmdType string, payload map[string]interface{}) (interface{}, error) {
+	if ch.Cluster == nil {
+		return nil, fmt.Errorf("cluster controller is not initialized")
+	}
 	if ch.Cluster.RaftManager == nil {
 		return nil, fmt.Errorf("raft manager not available")
 	}
@@ -83,7 +88,7 @@ func (ch *CommandHandler) applyAndWait(cmdType string, payload map[string]interf
 			return nil, err
 		}
 		return res, nil
-	case <-time.After(5 * time.Second):
+	case <-time.After(DefaultFSMApplyTimeout):
 		return nil, fmt.Errorf("timeout waiting for FSM")
 	}
 }

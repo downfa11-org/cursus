@@ -27,7 +27,7 @@ func (bc *BrokerClient) PublishIdempotent(topic, producerID string, seqNum uint6
 		topic, acks, producerID, seqNum, epoch, payload)
 
 	if acks == "0" {
-		conn, err := net.Dial("tcp", bc.addr)
+		conn, err := net.Dial("tcp", bc.addrs[0])
 		if err != nil {
 			return fmt.Errorf("connect: %w", err)
 		}
@@ -44,7 +44,7 @@ func (bc *BrokerClient) PublishSimple(topic, payload, acks string) error {
 	publishCmd := fmt.Sprintf("PUBLISH topic=%s acks=%s message=%s", topic, acks, payload)
 
 	if acks == "0" {
-		conn, err := net.Dial("tcp", bc.addr)
+		conn, err := net.Dial("tcp", bc.addrs[0])
 		if err != nil {
 			return fmt.Errorf("connect: %w", err)
 		}
@@ -123,7 +123,7 @@ func (bc *BrokerClient) FetchCommittedOffset(topic string, partition int, groupI
 }
 
 // joinGroup executes the JOIN_GROUP command and extracts generation and memberID.
-func (bc *BrokerClient) joinGroup(topic, group string) (int, string, error) {
+func (bc *BrokerClient) JoinGroup(topic, group string) (int, string, error) {
 	bc.mu.Lock()
 	if bc.memberID == "" {
 		bc.memberID = fmt.Sprintf("e2e-consumer-%d", time.Now().UnixNano())

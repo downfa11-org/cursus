@@ -171,34 +171,22 @@ func (d *DiskHandler) AppendMessage(topic string, partition int, offset uint64, 
 		Payload:   payload,
 	}
 
-	for {
+	if d.writeTimeout > 0 {
+		timer := time.NewTimer(d.writeTimeout)
+		defer timer.Stop()
+
 		select {
 		case <-d.done:
-			util.Debug("done channel closed for %s", d.BaseName)
+			util.Debug("DiskHandler done channel closed for %s", d.BaseName)
 			return
 		case d.writeCh <- diskMsg:
-			util.Debug("Message sent to writeCh for %s", d.BaseName)
+			util.Debug("Message successfully sent to writeCh for %s", d.BaseName)
 			return
-		default:
-			util.Debug("writeCh full for %s, retrying...", d.BaseName)
+		case <-timer.C:
+			util.Error("❌ DiskHandler enqueue timed out after %s for topic %s", d.writeTimeout, topic)
+			return
 		}
-
-		if d.writeTimeout > 0 {
-			timer := time.NewTimer(d.writeTimeout)
-			select {
-			case <-d.done:
-				timer.Stop()
-				return
-			case d.writeCh <- diskMsg:
-				timer.Stop()
-				return
-			case <-timer.C:
-				timer.Stop()
-				util.Error("⚠️ DiskHandler enqueue timed out after %s; retrying", d.writeTimeout)
-			}
-			continue
-		}
-
+	} else {
 		select {
 		case <-d.done:
 			return

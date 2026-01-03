@@ -43,14 +43,23 @@ func (f *BrokerFSM) RegisterNotifier(requestID string) chan interface{} {
 func (f *BrokerFSM) UnregisterNotifier(requestID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	delete(f.notifiers, requestID)
+
+	if ch, ok := f.notifiers[requestID]; ok {
+		close(ch)
+		delete(f.notifiers, requestID)
+	}
 }
 
 func (f *BrokerFSM) notify(requestID string, result interface{}) {
 	f.mu.RLock()
 	ch, ok := f.notifiers[requestID]
 	f.mu.RUnlock()
+
 	if ok {
-		ch <- result
+		select {
+		case ch <- result:
+		default:
+			util.Debug("notification skipped for %s (channel closed or full)", requestID)
+		}
 	}
 }

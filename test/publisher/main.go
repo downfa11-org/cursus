@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -39,7 +40,12 @@ func main() {
 	total := cfg.NumMessages
 	start := time.Now()
 
-	var wg sync.WaitGroup
+	var (
+		errorCount uint64
+		wg         sync.WaitGroup
+		errSummary sync.Map
+	)
+
 	numWorkers := runtime.NumCPU()
 	chunkSize := total / numWorkers
 
@@ -62,7 +68,20 @@ func main() {
 				}
 
 				if _, err := pub.PublishMessage(msg); err != nil {
-					util.Error("publish failed: %v", err)
+					atomic.AddUint64(&errorCount, 1)
+
+					errMsg := err.Error()
+					if val, ok := errSummary.Load(errMsg); ok {
+						atomic.AddUint64(val.(*uint64), 1)
+					} else {
+						var count uint64 = 1
+						actual, loaded := errSummary.LoadOrStore(errMsg, &count)
+						if loaded {
+							atomic.AddUint64(actual.(*uint64), 1)
+						}
+					}
+
+					util.Debug("publish failed: %v", err)
 				}
 			}
 		}(w)
@@ -75,18 +94,22 @@ func main() {
 	} else {
 		pub.FlushBenchmark(total)
 		duration := time.Since(start)
+		sentMessages := pub.GetSentMessageCount()
+
+		errors := make(map[string]uint64)
+		errSummary.Range(func(key, value interface{}) bool {
+			errors[key.(string)] = atomic.LoadUint64(value.(*uint64))
+			return true
+		})
 
 		if err := pub.VerifySentSequences(total); err != nil {
 			util.Info("verify failed: %v", err)
 		}
 
-		partitionStats := make([]bench.PartitionStat, 0, pub.GetPartitionCount())
 		stats := pub.GetPartitionStats()
-		partitionStats = append(partitionStats, stats...)
+		bench.PrintBenchmarkSummaryFixed(stats, sentMessages, total, duration, errors)
 
-		sentMessages := pub.GetSentMessageCount()
-
-		bench.PrintBenchmarkSummaryFixed(partitionStats, sentMessages, duration)
+		time.Sleep(time.Second)
 		os.Exit(0)
 	}
 

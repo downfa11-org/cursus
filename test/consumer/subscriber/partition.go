@@ -19,45 +19,81 @@ type PartitionConsumer struct {
 	mu          sync.Mutex
 	closed      bool
 
-	dataCh chan []byte
-	once   sync.Once
+	dataCh    chan *types.Batch
+	once      sync.Once
+	closeOnce sync.Once
 }
 
 func (pc *PartitionConsumer) initWorker() {
 	pc.once.Do(func() {
-		pc.dataCh = make(chan []byte, 1000)
+		pc.dataCh = make(chan *types.Batch, 1000)
+		pc.consumer.wg.Add(1)
 		go pc.runWorker()
 	})
 }
 
+func (pc *PartitionConsumer) closeDataCh() {
+	pc.closeOnce.Do(func() {
+		if pc.dataCh != nil {
+			close(pc.dataCh)
+		}
+	})
+}
+
 func (pc *PartitionConsumer) runWorker() {
-	for {
-		select {
-		case <-pc.consumer.doneCh:
+	defer pc.consumer.wg.Done()
+
+	for batch := range pc.dataCh {
+		if pc.consumer.mainCtx.Err() != nil {
+			util.Warn("Partition [%d] dropping batch due to rebalance/close", pc.partitionID)
 			return
-		case batchData := <-pc.dataCh:
-			batch, err := types.DecodeBatchMessages(batchData)
-			if err != nil {
-				util.Error("Partition [%d] decode error: %v", pc.partitionID, err)
-				continue
-			}
+		}
 
-			if len(batch.Messages) > 0 {
-				if pc.consumer.config.EnableBenchmark {
-				} else {
-					pc.printConsumedMessage(batch)
-				}
+		if len(batch.Messages) == 0 {
+			continue
+		}
 
-				if err := pc.consumer.processBatchSync(batch.Messages, pc.partitionID); err != nil {
-					util.Error("Partition [%d] process error: %v", pc.partitionID, err)
-				}
-				pc.updateOffsetAndCommit(batch.Messages)
+		if pc.consumer.metrics != nil {
+			for _, msg := range batch.Messages {
+				pc.consumer.metrics.RecordMessage(pc.partitionID, int64(msg.Offset), msg.ProducerID, msg.SeqNum)
 			}
+		}
+
+		if !pc.consumer.config.EnableBenchmark {
+			pc.printConsumedMessage(batch)
+		}
+
+		if err := pc.consumer.processBatchSync(batch.Messages, pc.partitionID); err != nil {
+			util.Error("Partition [%d] process error: %v", pc.partitionID, err)
+		}
+
+		if pc.consumer.mainCtx.Err() != nil {
+			util.Warn("Partition [%d] skipping commit: ownership lost during processing", pc.partitionID)
+			return
+		}
+
+		lastOffset := batch.Messages[len(batch.Messages)-1].Offset
+		commitOffset := lastOffset + 1
+
+		if err := pc.commitOffsetWithRetry(commitOffset); err != nil {
+			util.Error("Partition [%d] failed to commit offset: %v", pc.partitionID, err)
+		} else {
+			atomic.StoreUint64(&pc.offset, commitOffset)
+
+			pc.consumer.offsetsMu.Lock()
+			pc.consumer.currentOffsets[pc.partitionID] = commitOffset
+			pc.consumer.offsetsMu.Unlock()
 		}
 	}
 }
 
 func (pc *PartitionConsumer) pollAndProcess() {
+	select {
+	case <-pc.consumer.mainCtx.Done():
+		return
+	default:
+	}
+
 	pc.initWorker()
 
 	if err := pc.ensureConnection(); err != nil {
@@ -70,8 +106,6 @@ func (pc *PartitionConsumer) pollAndProcess() {
 	currentOffset := atomic.LoadUint64(&pc.offset)
 	pc.mu.Unlock()
 
-	util.Debug("Partition [%d] Polling at offset %d", pc.partitionID, currentOffset)
-
 	c := pc.consumer
 	c.mu.RLock()
 	memberID := c.memberID
@@ -80,7 +114,6 @@ func (pc *PartitionConsumer) pollAndProcess() {
 
 	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d group=%s generation=%d member=%s",
 		pc.consumer.config.Topic, pc.partitionID, currentOffset, pc.consumer.config.GroupID, generation, memberID)
-
 	if err := util.WriteWithLength(conn, util.EncodeMessage(pc.consumer.config.Topic, consumeCmd)); err != nil {
 		util.Error("Partition [%d] send command failed: %v", pc.partitionID, err)
 		pc.closeConnection()
@@ -91,24 +124,25 @@ func (pc *PartitionConsumer) pollAndProcess() {
 	if err != nil {
 		util.Error("Partition [%d] read batch error: %v", pc.partitionID, err)
 		pc.closeConnection()
+		time.Sleep(500 * time.Millisecond)
 		return
 	}
-	if pc.handleBrokerError(batchData) {
+
+	if pc.handleBrokerError(batchData) || len(batchData) == 0 {
+		time.Sleep(200 * time.Millisecond)
 		return
 	}
 
-	if len(batchData) > 0 {
-		if pc.consumer.metrics != nil && pc.consumer.metrics.IsDone() {
-			return
-		}
+	batch, err := types.DecodeBatchMessages(batchData)
+	if err != nil {
+		util.Error("Partition [%d] decode error: %v", pc.partitionID, err)
+		return
+	}
 
-		batch, err := types.DecodeBatchMessages(batchData)
-		if err == nil && len(batch.Messages) > 0 {
-			lastOffset := batch.Messages[len(batch.Messages)-1].Offset
-			atomic.StoreUint64(&pc.offset, lastOffset+1)
-		}
-
-		pc.dataCh <- batchData
+	select {
+	case pc.dataCh <- batch:
+	case <-c.doneCh:
+		pc.closeDataCh()
 	}
 }
 
@@ -117,17 +151,14 @@ func (pc *PartitionConsumer) startStreamLoop() {
 	pid := pc.partitionID
 	c := pc.consumer
 
-	pc.consumer.wg.Add(1)
-	go pc.workerLoop()
-
 	minRetry := time.Duration(c.config.StreamingRetryIntervalMS) * time.Millisecond
 	bo := newBackoff(minRetry, 30*time.Second)
+	defer pc.closeDataCh()
 
 	for {
 		select {
 		case <-c.doneCh:
 			pc.closeConnection()
-			close(pc.dataCh)
 			return
 		default:
 		}
@@ -157,7 +188,7 @@ func (pc *PartitionConsumer) startStreamLoop() {
 
 		streamCmd := fmt.Sprintf("STREAM topic=%s partition=%d group=%s offset=%d generation=%d member=%s",
 			c.config.Topic, pid, c.config.GroupID, currentOffset, generation, memberID)
-		util.Debug("📤 Partition [%d] sending STREAM command with offset %d", pid, currentOffset)
+		util.Debug("Partition [%d] sending STREAM command with offset %d", pid, currentOffset)
 
 		if err := util.WriteWithLength(conn, util.EncodeMessage("", streamCmd)); err != nil {
 			util.Error("Partition [%d] STREAM command send failed: %v", pid, err)
@@ -185,46 +216,22 @@ func (pc *PartitionConsumer) startStreamLoop() {
 				break
 			}
 
-			if len(batchData) == 0 {
-				continue // keepalive
+			if len(batchData) == 0 || pc.handleBrokerError(batchData) {
+				continue
 			}
 
-			if pc.handleBrokerError(batchData) {
-				break
+			batch, err := types.DecodeBatchMessages(batchData)
+			if err != nil {
+				continue
 			}
 
 			select {
-			case pc.dataCh <- batchData:
+			case pc.dataCh <- batch:
 			case <-c.doneCh:
 				return
 			}
 			bo.reset()
 		}
 		time.Sleep(bo.duration())
-	}
-}
-
-func (pc *PartitionConsumer) workerLoop() {
-	defer pc.consumer.wg.Done()
-	for data := range pc.dataCh {
-		batch, err := types.DecodeBatchMessages(data)
-		if err != nil {
-			util.Error("Decode error on P[%d]: %v", pc.partitionID, err)
-			continue
-		}
-
-		pc.consumer.processBatchSync(batch.Messages, pc.partitionID)
-
-		if len(batch.Messages) > 0 {
-			lastOffset := batch.Messages[len(batch.Messages)-1].Offset
-			nextOffset := lastOffset + 1
-			atomic.StoreUint64(&pc.offset, nextOffset)
-			pc.consumer.commitCh <- commitEntry{
-				pc.partitionID,
-				nextOffset,
-			}
-
-			time.Sleep(2 * time.Millisecond)
-		}
 	}
 }

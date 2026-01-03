@@ -41,4 +41,5 @@ func main() {
 	if err := c.Close(); err != nil {
 		util.Error("Error closing consumer: %v", err)
 	}
+	os.Exit(0)
 }

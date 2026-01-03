@@ -12,7 +12,6 @@ mode: "polling"
 
 poll_interval: 50ms
 poll-timeout-ms: 5000
-auto_commit_interval: 50ms
 session_timeout_ms: 10000
 heartbeat_interval_ms: 3000
 streaming_read_deadline_ms: 10000
