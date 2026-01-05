@@ -2,7 +2,6 @@ package e2e_cluster
 
 import (
 	"fmt"
-	"os/exec"
 	"testing"
 
 	"github.com/downfa11-org/go-broker/test/e2e"
@@ -66,17 +65,17 @@ func GivenCluster(t *testing.T) *ClusterTestContext {
 }
 
 func GivenClusterRestart(t *testing.T) *ClusterTestContext {
-	_ = exec.Command("docker-compose", "-f", composeFile, "down", "-v", "--remove-orphans").Run()
-	cmd := exec.Command("docker-compose", "-f", composeFile, "up", "-d", "--force-recreate")
+	_ = e2e.RunCompose("-f", composeFile, "down", "-v", "--remove-orphans").Run()
+	cmd := e2e.RunCompose("-f", composeFile, "up", "-d", "--force-recreate")
 	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("Failed to start docker-compose: %v\nOutput: %s", err, string(output))
+		t.Fatalf("Failed to start docker compose: %v\nOutput: %s", err, string(output))
 	}
 
 	t.Cleanup(func() {
-		cmd := exec.Command("docker-compose", "-f", composeFile, "down", "-v")
+		cmd := e2e.RunCompose("-f", composeFile, "down", "-v")
 
 		if err := cmd.Run(); err != nil {
-			t.Logf("Cleanup warning: failed to bring down docker-compose: %v", err)
+			t.Logf("Cleanup warning: failed to bring down docker compose: %v", err)
 		}
 	})
 

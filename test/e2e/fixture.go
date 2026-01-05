@@ -13,6 +13,7 @@ import (
 )
 
 var (
+	composeFile               = "docker-compose.yml"
 	envOnce                   sync.Once
 	defaultBrokerAddrs        = []string{"localhost:10000"}
 	StandAloneHealthCheckAddr = []string{"http://localhost:10080/health"}
@@ -72,14 +73,27 @@ func Given(t *testing.T) *TestContext {
 	}
 }
 
+func getComposeCommand() []string {
+	if _, err := exec.LookPath("docker-compose"); err == nil {
+		return []string{"docker-compose"}
+	}
+	return []string{"docker", "compose"}
+}
+
+func RunCompose(args ...string) *exec.Cmd {
+	base := getComposeCommand()
+	fullArgs := append(base[1:], args...)
+	return exec.Command(base[0], fullArgs...)
+}
+
 // GivenRestart starts the broker environment and returns a new context
 func initEnvironment(t *testing.T) {
 	envOnce.Do(func() {
-		t.Log("Starting docker-compose environment...")
+		t.Log("Starting docker compose environment...")
 
-		cmd := exec.Command("docker-compose", "-f", "docker-compose.yml", "up", "-d")
+		cmd := RunCompose("-f", composeFile, "up", "-d")
 		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("Failed to start docker-compose: %v\nOutput: %s", err, string(output))
+			t.Fatalf("Failed to start docker compose: %v\nOutput: %s", err, string(output))
 		}
 		time.Sleep(10 * time.Second)
 	})
@@ -88,11 +102,11 @@ func initEnvironment(t *testing.T) {
 func TestMain(m *testing.M) {
 	code := m.Run()
 
-	fmt.Println("All tests finished. Cleaning up docker-compose environment...")
-	cmd := exec.Command("docker-compose", "-f", "docker-compose.yml", "down", "-v")
+	fmt.Println("All tests finished. Cleaning up docker compose environment...")
+	cmd := RunCompose("-f", composeFile, "down", "-v")
 
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: docker-compose down failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: docker compose down failed: %v\n", err)
 	}
 
 	os.Exit(code)
