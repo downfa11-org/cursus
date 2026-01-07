@@ -152,21 +152,22 @@ func countMessagesInFile(filePath string) (int, error) {
 	return count, nil
 }
 
-func (d *DiskHandler) AppendMessageSync(topic string, partition int, payload string) error {
+func (d *DiskHandler) AppendMessageSync(topic string, partition int, msg *types.Message) error {
 	d.mu.Lock()
 	offset := d.AbsoluteOffset
 	d.AbsoluteOffset++
 	d.mu.Unlock()
 
-	if err := d.WriteDirect(topic, partition, offset, payload); err != nil {
+	msg.Offset = offset
+	if err := d.WriteDirect(topic, partition, *msg); err != nil {
 		return fmt.Errorf("WriteDirect failed: %w", err)
 	}
 	return nil
 }
 
 // AppendMessage sends a message to the internal write channel for asynchronous disk persistence.
-func (d *DiskHandler) AppendMessage(topic string, partition int, payload string) {
-	util.Debug("Attempting to append message (len=%d) to disk.writeCh (cap=%d, len=%d)", len(payload), cap(d.writeCh), len(d.writeCh))
+func (d *DiskHandler) AppendMessage(topic string, partition int, msg *types.Message) {
+	util.Debug("Attempting to append message (len=%d) to disk.writeCh (cap=%d, len=%d)", len(msg.Payload), cap(d.writeCh), len(d.writeCh))
 
 	d.mu.Lock()
 	offset := d.AbsoluteOffset
@@ -177,7 +178,9 @@ func (d *DiskHandler) AppendMessage(topic string, partition int, payload string)
 		Topic:     topic,
 		Partition: int32(partition),
 		Offset:    offset,
-		Payload:   payload,
+		SeqNum:    msg.SeqNum,
+		Epoch:     msg.Epoch,
+		Payload:   msg.Payload,
 	}
 
 	if d.writeTimeout > 0 {
@@ -295,8 +298,9 @@ func (dh *DiskHandler) readMessagesFromSegment(reader *mmap.ReaderAt, startOffse
 				util.Error("deserialize message failed: %v", err)
 				continue
 			}
+			calculatedOffset := segmentStartOffset + currentMsgIndex
 			msg := types.Message{
-				Offset:     segmentStartOffset + currentMsgIndex,
+				Offset:     calculatedOffset,
 				ProducerID: diskMsg.ProducerID,
 				SeqNum:     diskMsg.SeqNum,
 				Epoch:      diskMsg.Epoch,

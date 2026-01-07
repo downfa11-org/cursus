@@ -42,10 +42,10 @@ func TestConsumerMetrics_RecordBatch_TotalCount(t *testing.T) {
 
 func TestConsumerMetrics_PrintSummary_Output(t *testing.T) {
 	m := bench.NewConsumerMetrics(30, false)
-
+	const shortDelay = 15 * time.Millisecond
 	// initial
 	m.RecordBatch(0, 10)
-	time.Sleep(1100 * time.Millisecond)
+	time.Sleep(shortDelay)
 	m.RecordBatch(0, 10)
 
 	// rebalance
@@ -60,7 +60,6 @@ func TestConsumerMetrics_PrintSummary_Output(t *testing.T) {
 
 	var buf bytes.Buffer
 	m.PrintSummaryTo(&buf)
-
 	out := buf.String()
 
 	required := []string{

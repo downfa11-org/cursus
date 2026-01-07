@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/publisher/bench"
 	"github.com/downfa11-org/go-broker/publisher/config"
-	"github.com/downfa11-org/go-broker/publisher/types"
 	"github.com/downfa11-org/go-broker/util"
 )
 
@@ -55,7 +55,10 @@ type Publisher struct {
 
 	partitionSentMus  []sync.Mutex
 	partitionSentSeqs []map[uint64]struct{}
-	ackedCount        atomic.Uint64
+
+	ackedCount     atomic.Uint64
+	uniqueCount    atomic.Uint64
+	publishedCount atomic.Uint64
 
 	partitionBatchStates []map[string]*BatchState
 	partitionBatchMus    []sync.Mutex
@@ -302,7 +305,7 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 	}
 	p.partitionBatchMus[part].Unlock()
 
-	data, err := types.EncodeBatchMessages(p.config.Topic, part, p.config.Acks, batch)
+	data, err := util.EncodeBatchMessages(p.config.Topic, part, p.config.Acks, batch)
 	if err != nil {
 		util.Error("encode batch failed: %v", err)
 		p.cleanupBatchState(part, batchID)
@@ -310,7 +313,7 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 		return
 	}
 
-	payload, err := types.CompressMessage(data, p.config.CompressionType)
+	payload, err := util.CompressMessage(data, p.config.CompressionType)
 	if err != nil {
 		util.Error("compress batch failed: %v", err)
 		p.cleanupBatchState(part, batchID)
@@ -321,6 +324,8 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 	lenBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(lenBuf, uint32(len(payload)))
 	payload = append(lenBuf, payload...)
+
+	p.publishedCount.Add(uint64(len(batch)))
 
 	ackResp, err := p.sendWithRetry(payload, part)
 	if err != nil {
@@ -337,7 +342,7 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 			p.partitionSentSeqs[part][m.SeqNum] = struct{}{}
 		}
 		p.partitionSentMus[part].Unlock()
-		p.markBatchAckedByID(part, batchID)
+		p.markBatchAckedByID(part, batchID, len(batch))
 	case "PARTIAL":
 		util.Warn("Partial success for batch %s", batchID)
 		p.cleanupBatchState(part, batchID)
@@ -481,7 +486,7 @@ func (p *Publisher) sendWithRetry(payload []byte, part int) (*types.AckResponse,
 	return nil, lastErr
 }
 
-func (p *Publisher) markBatchAckedByID(part int, batchID string) {
+func (p *Publisher) markBatchAckedByID(part int, batchID string, batchLen int) {
 	p.partitionBatchMus[part].Lock()
 	state, ok := p.partitionBatchStates[part][batchID]
 	if !ok || state.Acked {
@@ -490,10 +495,12 @@ func (p *Publisher) markBatchAckedByID(part int, batchID string) {
 	}
 
 	state.Acked = true
+	p.uniqueCount.Add(uint64(batchLen))
+
 	delete(p.partitionBatchStates[part], batchID)
 	p.partitionBatchMus[part].Unlock()
 
-	p.ackedCount.Add(uint64(state.EndSeqNum - state.StartSeqNum + 1))
+	p.ackedCount.Store(state.EndSeqNum)
 	p.producer.CommitSeqRange(part, state.EndSeqNum)
 
 	elapsed := time.Since(state.SentTime)
@@ -636,7 +643,7 @@ func (p *Publisher) FlushBenchmark(expectedTotal int) {
 		}
 
 		if allInFlightClear {
-			sentCount := p.GetSentMessageCount()
+			ackedSoFar := p.GetUniqueAckCount()
 			totalPending := 0
 			for part := 0; part < p.partitions; part++ {
 				p.partitionBatchMus[part].Lock()
@@ -644,7 +651,7 @@ func (p *Publisher) FlushBenchmark(expectedTotal int) {
 				p.partitionBatchMus[part].Unlock()
 			}
 
-			if sentCount >= expectedTotal && totalPending == 0 {
+			if ackedSoFar >= expectedTotal && totalPending == 0 {
 				util.Info("Flush completed - all expected messages (%d) acknowledged. (Elapsed: %.3fs)", expectedTotal, time.Since(deadline.Add(-timeout)).Seconds())
 				return
 			}
@@ -731,6 +738,16 @@ func (p *Publisher) GetPartitionStats() []bench.PartitionStat {
 // GetSentMessageCount returns the number of successfully sent messages
 func (p *Publisher) GetSentMessageCount() int {
 	return int(p.ackedCount.Load())
+}
+
+// GetUniqueAckCount returns the number of unique messages
+func (p *Publisher) GetUniqueAckCount() int {
+	return int(p.uniqueCount.Load())
+}
+
+// GetPublishedCount returns the number of published messages
+func (p *Publisher) GetPublishedCount() int {
+	return int(p.publishedCount.Load())
 }
 
 // GetPartitionCount returns the number of partitions

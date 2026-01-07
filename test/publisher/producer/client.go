@@ -26,22 +26,22 @@ type ProducerState struct {
 }
 
 type ProducerClient struct {
-	ID      string
-	seqNums []atomic.Uint64
-	Epoch   int64
-	mu      sync.RWMutex
-	conns   atomic.Pointer[[]net.Conn]
-	config  *config.PublisherConfig
+	ID           string
+	globalSeqNum atomic.Uint64
+
+	Epoch  int64
+	mu     sync.RWMutex
+	conns  atomic.Pointer[[]net.Conn]
+	config *config.PublisherConfig
 
 	leader atomic.Pointer[leaderInfo]
 }
 
 func NewProducerClient(partitions int, config *config.PublisherConfig) *ProducerClient {
 	pc := &ProducerClient{
-		ID:      uuid.New().String(),
-		Epoch:   time.Now().UnixNano(),
-		seqNums: make([]atomic.Uint64, partitions),
-		config:  config,
+		ID:     uuid.New().String(),
+		Epoch:  time.Now().UnixNano(),
+		config: config,
 	}
 
 	pc.leader.Store(&leaderInfo{
@@ -53,26 +53,26 @@ func NewProducerClient(partitions int, config *config.PublisherConfig) *Producer
 }
 
 func (pc *ProducerClient) CommitSeqRange(partition int, endSeq uint64) {
-	if partition < 0 || partition >= len(pc.seqNums) {
+	if partition < 0 {
 		panic(fmt.Sprintf("invalid partition index in CommitSeqRange: %d", partition))
 	}
 
 	for {
-		current := pc.seqNums[partition].Load()
+		current := pc.globalSeqNum.Load()
 		if endSeq <= current {
 			return
 		}
-		if pc.seqNums[partition].CompareAndSwap(current, endSeq) {
+		if pc.globalSeqNum.CompareAndSwap(current, endSeq) {
 			return
 		}
 	}
 }
 
 func (pc *ProducerClient) NextSeqNum(partition int) uint64 {
-	if partition < 0 || partition >= len(pc.seqNums) {
+	if partition < 0 {
 		panic(fmt.Sprintf("invalid partition index: %d", partition))
 	}
-	return pc.seqNums[partition].Add(1)
+	return pc.globalSeqNum.Add(1)
 }
 
 func (pc *ProducerClient) connectPartitionLocked(idx int, addr string, useTLS bool, certPath, keyPath string) error {

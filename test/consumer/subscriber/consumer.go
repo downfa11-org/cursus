@@ -29,8 +29,6 @@ type Consumer struct {
 	commitCh       chan commitEntry
 	commitMu       sync.Mutex
 	commitRetryMap map[int]uint64
-	commitResultCh map[int]chan error // partition -> result channel
-	commitResultMu sync.Mutex
 
 	currentOffsets map[int]uint64
 	offsetsMu      sync.Mutex
@@ -59,6 +57,7 @@ type Consumer struct {
 type commitEntry struct {
 	partition int
 	offset    uint64
+	respCh    chan error
 }
 
 func NewConsumer(cfg *config.ConsumerConfig) (*Consumer, error) {
@@ -82,12 +81,19 @@ func NewConsumer(cfg *config.ConsumerConfig) (*Consumer, error) {
 	}
 
 	c.commitCh = make(chan commitEntry, 1024)
-	c.commitResultCh = make(map[int]chan error)
 	return c, nil
 }
 
+func (c *Consumer) Done() <-chan struct{} {
+	return c.doneCh
+}
+
+func (c *Consumer) GetMetrics() *bench.ConsumerMetrics {
+	return c.metrics
+}
+
 func (c *Consumer) getLeaderConn() (net.Conn, error) {
-	conn, addr, err := c.client.ConnectWithFailover()
+	conn, _, err := c.client.ConnectWithFailover()
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +103,6 @@ func (c *Consumer) getLeaderConn() (net.Conn, error) {
 		tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
-	util.Debug("Connected to broker: %s", addr)
 	return conn, nil
 }
 
@@ -147,7 +152,12 @@ func (c *Consumer) Start() error {
 		c.offsets[pid] = offset
 		c.mu.Unlock()
 
-		pc := &PartitionConsumer{partitionID: pid, consumer: c, offset: offset}
+		pc := &PartitionConsumer{
+			partitionID:  pid,
+			consumer:     c,
+			fetchOffset:  offset,
+			commitOffset: offset,
+		}
 		c.partitionConsumers[pid] = pc
 	}
 
@@ -161,10 +171,12 @@ func (c *Consumer) Start() error {
 	}
 
 	if c.config.EnableBenchmark {
-		c.waitForBenchmarkCompletion()
-	} else {
-		<-c.mainCtx.Done()
+		go func() {
+			c.waitForBenchmarkCompletion()
+			c.Close()
+		}()
 	}
+	<-c.mainCtx.Done()
 	return nil
 }
 
@@ -176,50 +188,43 @@ func (c *Consumer) startCommitWorker() {
 		defer ticker.Stop()
 
 		pendingOffsets := make(map[int]uint64)
-		var pendingMu sync.Mutex
+		respChannels := make(map[int][]chan error)
 
 		for {
 			select {
-			case entry := <-c.commitCh:
-				pendingMu.Lock()
-				if existing, ok := pendingOffsets[entry.partition]; !ok || entry.offset > existing {
+			case entry, ok := <-c.commitCh:
+				if !ok {
+					return
+				}
+
+				if existing, exists := pendingOffsets[entry.partition]; !exists || entry.offset > existing {
 					pendingOffsets[entry.partition] = entry.offset
 				}
-				pendingMu.Unlock()
 
-				if len(pendingOffsets) == len(c.partitionConsumers) {
-					c.commitBatch(pendingOffsets)
-					pendingMu.Lock()
+				if entry.respCh != nil {
+					respChannels[entry.partition] = append(respChannels[entry.partition], entry.respCh)
+				}
+
+				if len(pendingOffsets) > 0 {
+					c.commitBatch(pendingOffsets, respChannels)
 					pendingOffsets = make(map[int]uint64)
-					pendingMu.Unlock()
+					respChannels = make(map[int][]chan error)
 				}
 
 			case <-ticker.C:
-				pendingMu.Lock()
-				if len(pendingOffsets) > 0 {
-					offsetsToCommit := make(map[int]uint64)
-					for k, v := range pendingOffsets {
-						offsetsToCommit[k] = v
-					}
-					c.commitBatch(offsetsToCommit)
-					pendingOffsets = make(map[int]uint64)
-				}
-				pendingMu.Unlock()
-
 				c.flushOffsets()
+
+				if len(pendingOffsets) > 0 {
+					c.commitBatch(pendingOffsets, respChannels)
+					pendingOffsets = make(map[int]uint64)
+					respChannels = make(map[int][]chan error)
+				}
 				c.processRetryQueue()
 
 			case <-c.mainCtx.Done():
-				return
-
-			case <-c.doneCh:
-				pendingMu.Lock()
 				if len(pendingOffsets) > 0 {
-					c.commitBatch(pendingOffsets)
+					c.commitBatch(pendingOffsets, respChannels)
 				}
-				pendingMu.Unlock()
-
-				c.flushOffsets()
 				return
 			}
 		}
@@ -237,21 +242,20 @@ func (c *Consumer) rebalanceMonitorLoop() {
 	}
 }
 
-func (c *Consumer) commitBatch(offsets map[int]uint64) {
+func (c *Consumer) commitBatch(offsets map[int]uint64, respChannels map[int][]chan error) {
 	success := c.sendBatchCommit(offsets)
 
-	c.commitResultMu.Lock()
-	for partition := range offsets {
-		if resultCh, ok := c.commitResultCh[partition]; ok {
-			if success {
-				resultCh <- nil
-			} else {
-				resultCh <- fmt.Errorf("batch commit failed")
+	for pid, channels := range respChannels {
+		var err error
+		if !success {
+			err = fmt.Errorf("batch commit failed for partition %d", pid)
+		}
+		for _, ch := range channels {
+			if ch != nil {
+				ch <- err
 			}
-			delete(c.commitResultCh, partition)
 		}
 	}
-	c.commitResultMu.Unlock()
 }
 
 func (c *Consumer) waitForBenchmarkCompletion() {
@@ -263,9 +267,7 @@ func (c *Consumer) waitForBenchmarkCompletion() {
 		case <-ticker.C:
 			ok, reason := c.metrics.IsFullyConsumed(int64(c.config.NumMessages))
 			if ok {
-				util.Info("✅ All messages consumed without duplication.")
-				c.TriggerBenchmarkStop()
-				os.Exit(0)
+				util.Info("✅ All messages consumed.")
 				return
 			}
 			if reason != "" {
@@ -273,6 +275,8 @@ func (c *Consumer) waitForBenchmarkCompletion() {
 			}
 
 		case <-c.mainCtx.Done():
+			return
+		case <-c.doneCh:
 			return
 		}
 	}
@@ -284,22 +288,29 @@ func (c *Consumer) flushOffsets() {
 	}
 
 	c.offsetsMu.Lock()
+	defer c.offsetsMu.Unlock()
+
 	if len(c.currentOffsets) == 0 {
-		c.offsetsMu.Unlock()
 		return
 	}
 
-	toCommit := make(map[int]uint64, len(c.currentOffsets))
 	for pid, offset := range c.currentOffsets {
-		if existing, ok := c.offsets[pid]; !ok || offset > existing {
-			c.offsets[pid] = offset
+		c.mu.RLock()
+		lastCommitted := c.offsets[pid]
+		c.mu.RUnlock()
+
+		if offset > lastCommitted {
+			select {
+			case c.commitCh <- commitEntry{
+				partition: pid,
+				offset:    offset,
+				respCh:    nil,
+			}:
+			default:
+			}
 		}
-		toCommit[pid] = offset
 	}
 	c.currentOffsets = make(map[int]uint64)
-	c.offsetsMu.Unlock()
-
-	c.enqueueCommit(toCommit)
 }
 
 func (c *Consumer) processRetryQueue() {
@@ -336,40 +347,6 @@ func (c *Consumer) processRetryQueue() {
 	}
 }
 
-func (c *Consumer) enqueueCommit(offsets map[int]uint64) {
-	go func() {
-		retries := 0
-		baseBackoff := c.config.CommitRetryBackoff
-		maxBackoff := 10 * time.Second
-
-		for {
-			if c.sendBatchCommit(offsets) {
-				return
-			}
-			retries++
-			if retries >= c.config.MaxCommitRetries {
-				util.Error("Failed to commit offsets after %d retries, enqueueing for later", retries)
-				c.commitMu.Lock()
-				for p, o := range offsets {
-					if current, ok := c.commitRetryMap[p]; !ok || o > current {
-						c.commitRetryMap[p] = o
-					}
-				}
-				c.commitMu.Unlock()
-				return
-			}
-			sleepTime := baseBackoff * time.Duration(1<<(uint(retries)-1))
-
-			if sleepTime > maxBackoff {
-				sleepTime = maxBackoff
-			}
-
-			util.Debug("Commit failed (%d/%d)), retrying in %v...", retries, c.config.MaxCommitRetries, sleepTime)
-			time.Sleep(sleepTime)
-		}
-	}()
-}
-
 func (c *Consumer) handleLeaderRedirection(resp string) {
 	if strings.Contains(resp, "LEADER_IS") {
 		// "ERROR NOT_LEADER LEADER_IS 192.168.0.10:9000"
@@ -401,7 +378,6 @@ func (c *Consumer) heartbeatLoop() {
 			c.hbMu.Unlock()
 
 			if conn == nil {
-				util.Debug("Heartbeat connection is nil, establishing new connection...")
 				newConn, err := c.getLeaderConn()
 				if err != nil {
 					util.Error("heartbeat could not get connection: %v", err)
@@ -413,8 +389,8 @@ func (c *Consumer) heartbeatLoop() {
 				conn = c.hbConn
 				c.hbMu.Unlock()
 			}
-			conn.SetDeadline(time.Now().Add(5 * time.Second))
 
+			conn.SetDeadline(time.Now().Add(5 * time.Second))
 			hb := fmt.Sprintf("HEARTBEAT topic=%s group=%s member=%s generation=%d", c.config.Topic, c.config.GroupID, c.memberID, c.generation)
 			if err := util.WriteWithLength(conn, util.EncodeMessage("", hb)); err != nil {
 				util.Error("heartbeat send failed: %v", err)
@@ -466,7 +442,21 @@ func (c *Consumer) handleRebalanceSignal() {
 	util.Info("🔄 Rebalance started - Stop existing workers")
 
 	c.mainCancel()
+
+	drainDone := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-c.commitCh:
+			case <-time.After(200 * time.Millisecond):
+				close(drainDone)
+				return
+			}
+		}
+	}()
+
 	c.wg.Wait()
+	<-drainDone
 
 	c.resetHeartbeatConn()
 	c.commitMu.Lock()
@@ -503,19 +493,22 @@ func (c *Consumer) handleRebalanceSignal() {
 		}
 
 		pc := &PartitionConsumer{
-			partitionID: pid,
-			consumer:    c,
-			offset:      offset,
+			partitionID:  pid,
+			consumer:     c,
+			fetchOffset:  offset,
+			commitOffset: offset,
 		}
 		c.partitionConsumers[pid] = pc
 		util.Info("✅ Partition %d assigned at offset %d (Generation: %d)", pid, offset, gen)
 	}
 	c.mu.Unlock()
 
+	c.startCommitWorker()
+
 	if c.config.Mode != config.ModePolling {
-		c.startStreaming()
+		go c.startStreaming()
 	} else {
-		c.startConsuming()
+		go c.startConsuming()
 	}
 
 	util.Info("🚀 Rebalance completed - All %d partitions are being consumed", len(assignments))
@@ -544,8 +537,6 @@ func (c *Consumer) startConsuming() {
 		go func(pid int, pc *PartitionConsumer) {
 			defer c.wg.Done()
 
-			ticker := time.NewTicker(c.config.PollInterval)
-			defer ticker.Stop()
 			for {
 				select {
 				case <-c.doneCh:
@@ -553,11 +544,18 @@ func (c *Consumer) startConsuming() {
 				case <-c.mainCtx.Done():
 					util.Info("Partition %d's worker stopping due to rebalance", pid)
 					return
-				case <-ticker.C:
+				default:
 					if !c.ownsPartition(pid) {
+						util.Warn("Partition %d is no longer owned, stopping worker", pid)
 						return
 					}
 					pc.pollAndProcess()
+
+					select {
+					case <-time.After(c.config.PollInterval):
+					case <-c.mainCtx.Done():
+						return
+					}
 				}
 			}
 		}(pid, pc)
@@ -585,8 +583,7 @@ func (c *Consumer) TriggerBenchmarkStop() {
 		c.metrics.PrintSummary()
 	}
 
-	time.Sleep(time.Second)
-	os.Exit(0)
+	go c.Close()
 }
 
 func (c *Consumer) joinGroup() (generation int64, memberID string, assignments []int, err error) {
@@ -712,12 +709,17 @@ func (c *Consumer) syncGroup(generation int64, memberID string) ([]int, error) {
 }
 
 func (c *Consumer) fetchOffset(partition int) (uint64, error) {
+	if err := c.mainCtx.Err(); err != nil {
+		return 0, err
+	}
+
 	conn, err := c.getLeaderConn()
 	if err != nil {
 		return 0, err
 	}
 	defer conn.Close()
 
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
 	fetchCmd := fmt.Sprintf("FETCH_OFFSET topic=%s partition=%d group=%s", c.config.Topic, partition, c.config.GroupID)
 	if err := util.WriteWithLength(conn, util.EncodeMessage("", fetchCmd)); err != nil {
 		return 0, fmt.Errorf("fetch offset send failed: %v", err)
@@ -818,7 +820,6 @@ func (c *Consumer) sendBatchCommit(offsets map[int]uint64) bool {
 
 	respStr := string(resp)
 	if strings.HasPrefix(respStr, "OK") {
-		util.Debug("Batch commit success: %s", respStr)
 		return true
 	}
 

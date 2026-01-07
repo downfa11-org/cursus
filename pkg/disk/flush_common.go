@@ -148,7 +148,7 @@ func (d *DiskHandler) WriteBatch(batch []types.DiskMessage) error {
 }
 
 // WriteDirect writes a single message immediately without batching.
-func (d *DiskHandler) WriteDirect(topic string, partition int, offset uint64, payload string) error {
+func (d *DiskHandler) WriteDirect(topic string, partition int, msg types.Message) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
@@ -157,8 +157,10 @@ func (d *DiskHandler) WriteDirect(topic string, partition int, offset uint64, pa
 	diskMsg := types.DiskMessage{
 		Topic:     topic,
 		Partition: int32(partition),
-		Offset:    offset,
-		Payload:   payload,
+		Offset:    msg.Offset,
+		SeqNum:    msg.SeqNum,
+		Epoch:     msg.Epoch,
+		Payload:   msg.Payload,
 	}
 
 	serialized, err := util.SerializeDiskMessage(diskMsg)
@@ -243,6 +245,7 @@ func (d *DiskHandler) Flush() {
 perform_write:
 	if len(batch) > 0 {
 		if err := d.WriteBatch(batch); err != nil {
+			util.Error("Flush write failed: %v", err)
 			return
 		}
 		return

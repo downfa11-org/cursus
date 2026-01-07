@@ -2,8 +2,11 @@ package topic
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
+	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/go-broker/pkg/stream"
 	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
 )
@@ -12,12 +15,46 @@ type AbsoluteOffsetProvider interface {
 	GetAbsoluteOffset() uint64
 }
 
+type DiskAppender interface {
+	AppendMessage(topic string, partition int, msg *types.Message)
+	AppendMessageSync(topic string, partition int, msg *types.Message) error
+}
+
+// Partition handles messages for one shard of a topic.
+type Partition struct {
+	id            int
+	topic         string
+	mu            sync.RWMutex
+	dh            interface{}
+	closed        bool
+	streamManager *stream.StreamManager
+	newMessageCh  chan struct{}
+	broadcastCh   chan types.Message
+}
+
+// NewPartition creates a partition instance.
+func NewPartition(id int, topic string, dh interface{}, sm *stream.StreamManager, cfg *config.Config) *Partition {
+	bufSize := DefaultBufSize
+	if cfg != nil && cfg.BroadcastChannelBufferSize > 0 {
+		bufSize = cfg.BroadcastChannelBufferSize
+	}
+
+	p := &Partition{
+		id:            id,
+		topic:         topic,
+		dh:            dh,
+		streamManager: sm,
+		newMessageCh:  make(chan struct{}, 1),
+		broadcastCh:   make(chan types.Message, bufSize),
+	}
+	go p.runBroadcaster()
+	return p
+}
+
 func (p *Partition) runBroadcaster() {
-	util.Debug("🚀 partition %d: Broadcaster worker started", p.id)
 	for msg := range p.broadcastCh {
 		p.broadcastToStreams(msg)
 	}
-	util.Debug("🛑 partition %d: Broadcaster worker stopped", p.id)
 }
 
 // Enqueue pushes a message into the partition queue.
@@ -31,12 +68,7 @@ func (p *Partition) Enqueue(msg types.Message) {
 
 	if appender, ok := p.dh.(DiskAppender); ok {
 		util.Debug("Calling AppendMessage for disk persistence [partition-%d]", p.id)
-		serialized, err := util.SerializeMessage(msg)
-		if err != nil {
-			util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
-			return
-		}
-		appender.AppendMessage(p.topic, p.id, string(serialized))
+		appender.AppendMessage(p.topic, p.id, &msg)
 		p.NotifyNewMessage()
 	} else {
 		util.Warn("⚠️ DiskHandler does not implement AppendMessage [partition-%d]\n", p.id)
@@ -52,15 +84,8 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 		return fmt.Errorf("partition %d is closed", p.id)
 	}
 
-	if appender, ok := p.dh.(interface {
-		AppendMessageSync(topic string, partition int, payload string) error
-	}); ok {
-		serialized, err := util.SerializeMessage(msg)
-		if err != nil {
-			util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
-			return err
-		}
-		if err := appender.AppendMessageSync(p.topic, p.id, string(serialized)); err != nil {
+	if appender, ok := p.dh.(DiskAppender); ok {
+		if err := appender.AppendMessageSync(p.topic, p.id, &msg); err != nil {
 			return fmt.Errorf("disk write failed: %w", err)
 		}
 		p.NotifyNewMessage()
@@ -87,13 +112,7 @@ func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
 	}
 
 	for _, msg := range msgs {
-		serialized, err := util.SerializeMessage(msg)
-		if err != nil {
-			util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
-			return err
-		}
-
-		if err := appender.AppendMessageSync(p.topic, p.id, string(serialized)); err != nil {
+		if err := appender.AppendMessageSync(p.topic, p.id, &msg); err != nil {
 			return fmt.Errorf("disk write failed for partition %d: %w", p.id, err)
 		}
 		p.enqueueToBroadcast(msg)
@@ -112,12 +131,7 @@ func (p *Partition) EnqueueBatch(msgs []types.Message) error {
 
 	if appender, ok := p.dh.(DiskAppender); ok {
 		for _, msg := range msgs {
-			serialized, err := util.SerializeMessage(msg)
-			if err != nil {
-				util.Warn("⚠️ Failed to serialize message for disk persistence [partition-%d]: %v", p.id, err)
-				return err
-			}
-			appender.AppendMessage(p.topic, p.id, string(serialized))
+			appender.AppendMessage(p.topic, p.id, &msg)
 			p.enqueueToBroadcast(msg)
 		}
 		p.NotifyNewMessage()
@@ -160,7 +174,6 @@ func (p *Partition) broadcastToStreams(msg types.Message) {
 
 		stream.IncrementOffset()
 		stream.SetLastActive(time.Now())
-
 	}
 }
 

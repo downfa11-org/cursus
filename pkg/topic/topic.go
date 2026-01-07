@@ -25,23 +25,6 @@ type Topic struct {
 	streamManager  *stream.StreamManager
 }
 
-// Partition handles messages for one shard of a topic.
-type Partition struct {
-	id            int
-	topic         string
-	mu            sync.RWMutex
-	dh            interface{}
-	closed        bool
-	streamManager *stream.StreamManager
-	newMessageCh  chan struct{}
-	broadcastCh   chan types.Message
-}
-
-type DiskAppender interface {
-	AppendMessage(topic string, partition int, payload string)
-	AppendMessageSync(topic string, partition int, payload string) error
-}
-
 // NewTopic initializes a topic with partitions.
 func NewTopic(name string, partitionCount int, hp HandlerProvider, cfg *config.Config, sm *stream.StreamManager) (*Topic, error) {
 	partitions := make([]*Partition, partitionCount)
@@ -59,25 +42,6 @@ func NewTopic(name string, partitionCount int, hp HandlerProvider, cfg *config.C
 		cfg:            cfg,
 		streamManager:  sm,
 	}, nil
-}
-
-// NewPartition creates a partition instance.
-func NewPartition(id int, topic string, dh interface{}, sm *stream.StreamManager, cfg *config.Config) *Partition {
-	bufSize := DefaultBufSize
-	if cfg != nil && cfg.BroadcastChannelBufferSize > 0 {
-		bufSize = cfg.BroadcastChannelBufferSize
-	}
-
-	p := &Partition{
-		id:            id,
-		topic:         topic,
-		dh:            dh,
-		streamManager: sm,
-		newMessageCh:  make(chan struct{}, 1),
-		broadcastCh:   make(chan types.Message, bufSize),
-	}
-	go p.runBroadcaster()
-	return p
 }
 
 func (t *Topic) GetPartitionForMessage(msg types.Message) int {
@@ -203,6 +167,21 @@ func (t *Topic) applyAssignments(groupName string, assignments map[string][]int)
 	}
 
 	util.Debug("Applied assignments for group '%s': %v", groupName, assignments)
+}
+
+func (t *Topic) calculatePartition(msg types.Message) int {
+	partitionsLen := uint64(len(t.Partitions))
+	if partitionsLen == 0 {
+		return -1
+	}
+
+	if msg.Key != "" {
+		keyID := util.GenerateID(msg.Key)
+		return int(keyID % partitionsLen)
+	}
+
+	oldCounter := atomic.AddUint64(&t.counter, 1) - 1
+	return int(oldCounter % partitionsLen)
 }
 
 func (t *Topic) GetCommittedOffset(groupName string, partition int) (uint64, bool) {

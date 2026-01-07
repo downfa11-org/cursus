@@ -32,6 +32,8 @@ type ConsumerConfig struct {
 	NumMessages       int          `yaml:"num_messages" json:"num_messages"`
 	Mode              ConsumerMode `yaml:"mode" json:"mode"`
 
+	WorkerChannelSize int `yaml:"worker_channel_size" json:"worker_channel_size"`
+
 	PollInterval  time.Duration `yaml:"poll_interval" json:"poll_interval"`
 	PollTimeoutMS int           `yaml:"poll_timeout_ms" json:"poll_timeout_ms"`
 	BatchSize     int           `yaml:"batch_size" json:"batch_size"`
@@ -79,6 +81,8 @@ func LoadConfig() (*ConsumerConfig, error) {
 	flag.StringVar(&cfg.ConsumerID, "consumer-id", "consumer-1", "Consumer ID")
 	flag.StringVar(&cfg.GroupID, "group-id", "default-group", "Consumer group ID")
 	flag.StringVar(&cfg.Topic, "topic", "", "Topic to consume")
+
+	flag.IntVar(&cfg.WorkerChannelSize, "worker-channel-size", 1000, "Capacity of the internal message channel")
 
 	flag.DurationVar(&cfg.PollInterval, "poll-interval", 500*time.Millisecond, "Poll interval")
 	flag.IntVar(&cfg.PollTimeoutMS, "poll-timeout-ms", 30000, "Maximum time in milliseconds to wait for new messages in a poll (Long Polling)")
@@ -143,6 +147,9 @@ func LoadConfig() (*ConsumerConfig, error) {
 
 	if len(cfg.BrokerAddrs) == 0 {
 		cfg.BrokerAddrs = []string{"localhost:9000"}
+	}
+	if cfg.WorkerChannelSize <= 0 {
+		cfg.WorkerChannelSize = 1000
 	}
 	if cfg.PollInterval == 0 {
 		cfg.PollInterval = 500 * time.Millisecond

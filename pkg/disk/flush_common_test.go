@@ -8,6 +8,7 @@ import (
 
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/disk"
+	"github.com/downfa11-org/go-broker/pkg/types"
 )
 
 func setupDiskHandler(t *testing.T) *disk.DiskHandler {
@@ -34,7 +35,11 @@ func TestWriteDirectAndFlush(t *testing.T) {
 	defer dh.Close()
 
 	for i := 0; i < 3; i++ {
-		if err := dh.AppendMessageSync("testTopic", 0, "msg"+string(rune('A'+i))); err != nil {
+		msg := types.Message{
+			Payload: "msg" + string(rune('A'+i)),
+			SeqNum:  uint64(i),
+		}
+		if err := dh.AppendMessageSync("testTopic", 0, &msg); err != nil {
 			t.Fatalf("WriteDirect failed: %v", err)
 		}
 	}
@@ -55,15 +60,15 @@ func TestWriteBatchRotation(t *testing.T) {
 	dh := setupDiskHandler(t)
 	defer dh.Close()
 
-	msg := make([]byte, dh.SegmentSize/2)
-	for i := range msg {
-		msg[i] = 'x'
+	payload := make([]byte, dh.SegmentSize/2)
+	for i := range payload {
+		payload[i] = 'x'
 	}
 
-	if err := dh.WriteDirect("testTopic", 0, 0, string(msg)); err != nil {
+	if err := dh.WriteDirect("testTopic", 0, types.Message{Offset: 0, Payload: string(payload), SeqNum: 0}); err != nil {
 		t.Fatalf("WriteDirect failed: %v", err)
 	}
-	if err := dh.WriteDirect("testTopic", 0, 1, string(msg)); err != nil {
+	if err := dh.WriteDirect("testTopic", 0, types.Message{Offset: 1, Payload: string(payload), SeqNum: 1}); err != nil {
 		t.Fatalf("WriteDirect failed: %v", err)
 	}
 
@@ -77,9 +82,9 @@ func TestFlushLoopAsync(t *testing.T) {
 	dh := setupDiskHandler(t)
 	defer dh.Close()
 
-	dh.AppendMessage("testTopic", 0, "async1")
-	dh.AppendMessage("testTopic", 0, "async2")
-	dh.AppendMessage("testTopic", 0, "async3")
+	dh.AppendMessage("testTopic", 0, &types.Message{Payload: "async1", SeqNum: 1})
+	dh.AppendMessage("testTopic", 0, &types.Message{Payload: "async2", SeqNum: 2})
+	dh.AppendMessage("testTopic", 0, &types.Message{Payload: "async3", SeqNum: 3})
 
 	t.Logf("waiting for flushLoop to process messages...")
 	<-time.After(200 * time.Millisecond)
@@ -98,14 +103,20 @@ func TestReadMessagesWithMetadata(t *testing.T) {
 		partition int
 		offset    uint64
 		payload   string
+		seqNum    uint64
 	}{
-		{"testTopic", 0, 0, "message1"},
-		{"testTopic", 0, 1, "message2"},
-		{"testTopic", 0, 2, "message3"},
+		{"testTopic", 0, 0, "message1", 100},
+		{"testTopic", 0, 1, "message2", 101},
+		{"testTopic", 0, 2, "message3", 102},
 	}
 
-	for _, msg := range testMessages {
-		if err := dh.WriteDirect(msg.topic, msg.partition, msg.offset, msg.payload); err != nil {
+	for _, tm := range testMessages {
+		msg := types.Message{
+			Offset:  tm.offset,
+			Payload: tm.payload,
+			SeqNum:  tm.seqNum,
+		}
+		if err := dh.WriteDirect(tm.topic, tm.partition, msg); err != nil {
 			t.Fatalf("WriteDirect failed: %v", err)
 		}
 	}
@@ -129,6 +140,9 @@ func TestReadMessagesWithMetadata(t *testing.T) {
 		if msg.Payload != expected.payload {
 			t.Errorf("message %d: expected payload %q, got %q", i, expected.payload, msg.Payload)
 		}
+		if msg.SeqNum != expected.seqNum {
+			t.Errorf("message %d: expected seqNum %d, got %d", i, expected.seqNum, msg.SeqNum)
+		}
 	}
 }
 
@@ -149,8 +163,8 @@ func TestDrainAndShutdown(t *testing.T) {
 	}
 
 	testMsgs := []string{"shutdown_1", "shutdown_2"}
-	for _, m := range testMsgs {
-		dh.AppendMessage("testTopic", 0, m)
+	for i, m := range testMsgs {
+		dh.AppendMessage("testTopic", 0, &types.Message{Payload: m, SeqNum: uint64(i)})
 	}
 
 	dh.Close()

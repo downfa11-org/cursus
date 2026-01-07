@@ -7,17 +7,19 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/downfa11-org/go-broker/consumer/types"
+	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/util"
 )
 
 type PartitionConsumer struct {
 	partitionID int
 	consumer    *Consumer
-	offset      uint64
-	conn        net.Conn
-	mu          sync.Mutex
-	closed      bool
+
+	fetchOffset  uint64
+	commitOffset uint64
+	conn         net.Conn
+	mu           sync.Mutex
+	closed       bool
 
 	dataCh    chan *types.Batch
 	once      sync.Once
@@ -26,7 +28,8 @@ type PartitionConsumer struct {
 
 func (pc *PartitionConsumer) initWorker() {
 	pc.once.Do(func() {
-		pc.dataCh = make(chan *types.Batch, 1000)
+		channelSize := pc.consumer.config.WorkerChannelSize
+		pc.dataCh = make(chan *types.Batch, channelSize)
 		pc.consumer.wg.Add(1)
 		go pc.runWorker()
 	})
@@ -44,22 +47,25 @@ func (pc *PartitionConsumer) runWorker() {
 	defer pc.consumer.wg.Done()
 
 	for batch := range pc.dataCh {
-		if pc.consumer.mainCtx.Err() != nil {
-			util.Warn("Partition [%d] dropping batch due to rebalance/close", pc.partitionID)
+		select {
+		case <-pc.consumer.mainCtx.Done():
+			util.Warn("Partition [%d] worker stopping: context cancelled", pc.partitionID)
 			return
+		default:
 		}
 
 		if len(batch.Messages) == 0 {
 			continue
 		}
 
+		// message actual process
 		if pc.consumer.metrics != nil {
 			pc.consumer.metrics.OnFirstConsumeAfterRebalance()
+
 			for _, msg := range batch.Messages {
 				pc.consumer.metrics.RecordMessage(pc.partitionID, int64(msg.Offset), msg.ProducerID, msg.SeqNum)
 			}
 			pc.consumer.metrics.RecordBatch(pc.partitionID, len(batch.Messages))
-
 		}
 
 		if !pc.consumer.config.EnableBenchmark {
@@ -67,8 +73,14 @@ func (pc *PartitionConsumer) runWorker() {
 		}
 
 		if pc.consumer.mainCtx.Err() != nil {
-			util.Warn("Partition [%d] skipping commit: ownership lost during processing", pc.partitionID)
-			return
+			util.Warn("Partition %d: ownership lost, skipping commit for offset %d", pc.partitionID, batch.Messages[len(batch.Messages)-1].Offset)
+
+			pc.consumer.offsetsMu.Lock()
+			if committed, ok := pc.consumer.offsets[pc.partitionID]; ok {
+				atomic.StoreUint64(&pc.fetchOffset, committed)
+			}
+			pc.consumer.offsetsMu.Unlock()
+			continue
 		}
 
 		lastOffset := batch.Messages[len(batch.Messages)-1].Offset
@@ -77,10 +89,11 @@ func (pc *PartitionConsumer) runWorker() {
 		if err := pc.commitOffsetWithRetry(commitOffset); err != nil {
 			util.Error("Partition [%d] failed to commit offset: %v", pc.partitionID, err)
 		} else {
-			atomic.StoreUint64(&pc.offset, commitOffset)
+			atomic.StoreUint64(&pc.commitOffset, commitOffset)
 
 			pc.consumer.offsetsMu.Lock()
 			pc.consumer.currentOffsets[pc.partitionID] = commitOffset
+			pc.consumer.offsets[pc.partitionID] = commitOffset
 			pc.consumer.offsetsMu.Unlock()
 		}
 	}
@@ -102,7 +115,7 @@ func (pc *PartitionConsumer) pollAndProcess() {
 
 	pc.mu.Lock()
 	conn := pc.conn
-	currentOffset := atomic.LoadUint64(&pc.offset)
+	currentOffset := atomic.LoadUint64(&pc.fetchOffset)
 	pc.mu.Unlock()
 
 	c := pc.consumer
@@ -132,7 +145,7 @@ func (pc *PartitionConsumer) pollAndProcess() {
 		return
 	}
 
-	batch, err := types.DecodeBatchMessages(batchData)
+	batch, err := util.DecodeBatchMessages(batchData)
 	if err != nil {
 		util.Error("Partition [%d] decode error: %v", pc.partitionID, err)
 		return
@@ -140,6 +153,19 @@ func (pc *PartitionConsumer) pollAndProcess() {
 
 	select {
 	case pc.dataCh <- batch:
+		if len(batch.Messages) > 0 {
+			firstMsg := batch.Messages[0]
+			lastMsg := batch.Messages[len(batch.Messages)-1]
+
+			expectedOffset := atomic.LoadUint64(&pc.fetchOffset)
+			if expectedOffset > 0 && firstMsg.Offset > expectedOffset {
+				util.Error("🚨 Partition [%d] offset gap deteced. expected: %d, received: %d (missing: %d messages)", pc.partitionID, expectedOffset, firstMsg.Offset, firstMsg.Offset-expectedOffset)
+			}
+
+			newOffset := lastMsg.Offset + 1
+			atomic.StoreUint64(&pc.fetchOffset, newOffset)
+			util.Info("Partition [%d] batch: range [%d - %d], count=%d, nextFetch=%d", pc.partitionID, firstMsg.Offset, lastMsg.Offset, len(batch.Messages), lastMsg.Offset+1)
+		}
 	case <-c.doneCh:
 		pc.closeDataCh()
 	}
@@ -174,11 +200,18 @@ func (pc *PartitionConsumer) startStreamLoop() {
 			continue
 		}
 
+		pc.consumer.offsetsMu.Lock()
+		if committed, ok := pc.consumer.offsets[pid]; ok {
+			atomic.StoreUint64(&pc.fetchOffset, committed)
+			util.Info("Partition [%d] reconnected. Rolling back offset to committed: %d", pid, committed)
+		}
+		pc.consumer.offsetsMu.Unlock()
+
 		bo.reset()
 
 		pc.mu.Lock()
 		conn := pc.conn
-		currentOffset := atomic.LoadUint64(&pc.offset)
+		currentOffset := atomic.LoadUint64(&pc.fetchOffset)
 		pc.mu.Unlock()
 
 		c.mu.RLock()
@@ -219,13 +252,17 @@ func (pc *PartitionConsumer) startStreamLoop() {
 				continue
 			}
 
-			batch, err := types.DecodeBatchMessages(batchData)
+			batch, err := util.DecodeBatchMessages(batchData)
 			if err != nil {
 				continue
 			}
 
 			select {
 			case pc.dataCh <- batch:
+				if len(batch.Messages) > 0 {
+					lastOffset := batch.Messages[len(batch.Messages)-1].Offset
+					atomic.StoreUint64(&pc.fetchOffset, lastOffset+1)
+				}
 			case <-c.doneCh:
 				return
 			}

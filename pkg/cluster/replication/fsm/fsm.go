@@ -238,12 +238,7 @@ func (f *BrokerFSM) persistMessage(topicName string, partition int, msg *types.M
 	assignedOffset := dh.GetAbsoluteOffset()
 	msg.Offset = assignedOffset
 
-	serialized, err := util.SerializeMessage(*msg)
-	if err != nil {
-		return fmt.Errorf("failed to serialize message: %w", err)
-	}
-
-	if err := dh.WriteDirect(topicName, partition, msg.Offset, string(serialized)); err != nil {
+	if err := dh.WriteDirect(topicName, partition, *msg); err != nil {
 		return fmt.Errorf("WriteDirect failed: %w", err)
 	}
 	util.Debug("FSM persisted message: topic=%s, offset=%d", topicName, msg.Offset)
@@ -257,11 +252,9 @@ func (f *BrokerFSM) persistBatch(topicName string, partition int, msgs []types.M
 	}
 
 	base := dh.GetAbsoluteOffset()
-
 	diskMsgs := make([]types.DiskMessage, len(msgs))
 	for i := range msgs {
 		msgs[i].Offset = base + uint64(i)
-
 		serialized, err := util.SerializeMessage(msgs[i])
 		if err != nil {
 			return fmt.Errorf("failed to serialize message at index %d: %w", i, err)

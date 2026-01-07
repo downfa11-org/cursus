@@ -3,7 +3,6 @@ package topic
 import (
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/downfa11-org/go-broker/pkg/config"
@@ -90,130 +89,104 @@ func (tm *TopicManager) GetTopic(name string) *Topic {
 
 // Async (acks=0)
 func (tm *TopicManager) Publish(topicName string, msg *types.Message) error {
-	return tm.publishInternal(topicName, msg, false)
+	t := tm.GetTopic(topicName)
+	if t == nil {
+		return fmt.Errorf("topic '%s' does not exist", topicName)
+	}
+
+	partition := t.GetPartitionForMessage(*msg)
+	return tm.publishInternal(topicName, partition, msg, false)
 }
 
 // Sync (acks=1)
 func (tm *TopicManager) PublishWithAck(topicName string, msg *types.Message) error {
-	return tm.publishInternal(topicName, msg, true)
+	t := tm.GetTopic(topicName)
+	if t == nil {
+		return fmt.Errorf("topic '%s' does not exist", topicName)
+	}
+
+	partition := t.GetPartitionForMessage(*msg)
+	return tm.publishInternal(topicName, partition, msg, true)
+}
+
+func (tm *TopicManager) processBatchMessages(topicName string, messages []types.Message, async bool) error {
+	if len(messages) == 0 {
+		return nil
+	}
+
+	t := tm.GetTopic(topicName)
+	if t == nil {
+		return fmt.Errorf("topic '%s' does not exist", topicName)
+	}
+
+	var partition int
+	partitioned := make(map[int][]types.Message)
+	for _, m := range messages {
+		msg := m
+		partition = t.calculatePartition(msg)
+		if partition == -1 {
+			continue
+		}
+
+		if tm.checkAndMarkDuplicate(topicName, partition, &msg) {
+			util.Debug("Duplicate message detected: topic: %s, partition=%d, seqNum=%d", topicName, partition, msg.SeqNum)
+			continue
+		}
+		partitioned[partition] = append(partitioned[partition], msg)
+	}
+	return tm.executeBatch(t, partitioned, async)
+}
+
+func (tm *TopicManager) executeBatch(t *Topic, partitioned map[int][]types.Message, async bool) error {
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(partitioned))
+
+	for idx, msgs := range partitioned {
+		wg.Add(1)
+
+		targetPartition := t.Partitions[idx]
+		batch := msgs
+
+		go func(p *Partition, msgs []types.Message) {
+			defer wg.Done()
+			var err error
+			if async {
+				err = p.EnqueueBatch(msgs)
+			} else {
+				err = p.EnqueueBatchSync(msgs)
+			}
+			if err != nil {
+				util.Error("tm: execute batch partition %d Error: %v", p.id, err)
+				errCh <- fmt.Errorf("partition %d: %w", p.id, err)
+			}
+		}(targetPartition, batch)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	if len(errCh) > 0 {
+		return <-errCh
+	}
+	return nil
 }
 
 // Batch Sync (acks=1)
 func (tm *TopicManager) PublishBatchSync(topicName string, messages []types.Message) error {
-	if len(messages) == 0 {
-		return nil
-	}
-
-	t := tm.GetTopic(topicName)
-	if t == nil {
-		util.Warn("tm: topic '%s' does not exist", topicName)
-		return fmt.Errorf("topic '%s' does not exist", topicName)
-	}
-
-	partitioned := make(map[int][]types.Message)
-
-	partitionsLen := uint64(len(t.Partitions))
-	for _, msg := range messages {
-		var idx int
-		if msg.Key != "" {
-			keyID := util.GenerateID(msg.Key)
-			idx = int(keyID % partitionsLen)
-		} else {
-			oldCounter := atomic.AddUint64(&t.counter, 1) - 1
-			idx = int(oldCounter % partitionsLen)
-		}
-		partitioned[idx] = append(partitioned[idx], msg)
-	}
-
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(partitioned))
-
-	for idx, msgs := range partitioned {
-		wg.Add(1)
-		go func(p *Partition, msgs []types.Message) {
-			defer wg.Done()
-			if err := p.EnqueueBatchSync(msgs); err != nil {
-				errCh <- fmt.Errorf("partition %d: %w", p.id, err)
-			}
-		}(t.Partitions[idx], msgs)
-	}
-
-	wg.Wait()
-	close(errCh)
-
-	if len(errCh) > 0 {
-		return <-errCh
-	}
-	return nil
+	return tm.processBatchMessages(topicName, messages, false)
 }
 
 // Batch Async (acks=0)
 func (tm *TopicManager) PublishBatchAsync(topicName string, messages []types.Message) error {
-	if len(messages) == 0 {
-		return nil
-	}
-
-	t := tm.GetTopic(topicName)
-	if t == nil {
-		util.Warn("tm: topic '%s' does not exist", topicName)
-		return fmt.Errorf("topic '%s' does not exist", topicName)
-	}
-
-	partitioned := make(map[int][]types.Message)
-
-	partitionsLen := uint64(len(t.Partitions))
-	for _, msg := range messages {
-		var idx int
-		if msg.Key != "" {
-			keyID := util.GenerateID(msg.Key)
-			idx = int(keyID % partitionsLen)
-		} else {
-			oldCounter := atomic.AddUint64(&t.counter, 1) - 1
-			idx = int(oldCounter % partitionsLen)
-		}
-		partitioned[idx] = append(partitioned[idx], msg)
-	}
-
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(partitioned))
-
-	for idx, msgs := range partitioned {
-		wg.Add(1)
-		go func(p *Partition, msgs []types.Message) {
-			defer wg.Done()
-			if err := p.EnqueueBatch(msgs); err != nil {
-				errCh <- fmt.Errorf("partition %d: %w", p.id, err)
-			}
-		}(t.Partitions[idx], msgs)
-	}
-
-	wg.Wait()
-	close(errCh)
-
-	if len(errCh) > 0 {
-		return <-errCh
-	}
-	return nil
+	return tm.processBatchMessages(topicName, messages, true)
 }
 
-func (tm *TopicManager) publishInternal(topicName string, msg *types.Message, requireAck bool) error {
-	util.Debug("Starting publish. Topic: %s, RequireAck: %v, ProducerID: %s, SeqNum: %d",
-		topicName, requireAck, msg.ProducerID, msg.SeqNum)
-
+func (tm *TopicManager) publishInternal(topicName string, partition int, msg *types.Message, requireAck bool) error {
+	util.Debug("Starting publish. Topic: %s, RequireAck: %v, ProducerID: %s, SeqNum: %d", topicName, requireAck, msg.ProducerID, msg.SeqNum)
 	start := time.Now()
 
-	var dedupKey string
-	// Idempotence (try to exactly-once)
-	if msg.ProducerID != "" && msg.SeqNum > 0 {
-		dedupKey = fmt.Sprintf("%s-%s-%d", topicName, msg.ProducerID, msg.SeqNum)
-	} else {
-		// at-least once
-		dedupKey = fmt.Sprintf("%s-%s", topicName, msg.Payload)
-	}
-
-	now := time.Now()
-	if _, loaded := tm.DedupMap.LoadOrStore(dedupKey, now); loaded {
-		util.Info("Duplicate message detected: ProducerID=%s, SeqNum=%d", msg.ProducerID, msg.SeqNum)
+	if tm.checkAndMarkDuplicate(topicName, partition, msg) {
+		util.Debug("Duplicate message detected. topic: %s, partition=%d, producerID=%s, seqNum=%d", topicName, partition, msg.ProducerID, msg.SeqNum)
 		return nil
 	}
 
@@ -225,7 +198,8 @@ func (tm *TopicManager) publishInternal(topicName string, msg *types.Message, re
 
 	if requireAck {
 		if err := t.PublishSync(*msg); err != nil {
-			// Allow safe retry with same ProducerID+SeqNum
+			// Allow safe retry with same message
+			dedupKey := tm.getDedupKey(topicName, partition, msg)
 			tm.DedupMap.Delete(dedupKey)
 			return fmt.Errorf("sync publish failed: %w", err)
 		}
@@ -333,4 +307,19 @@ func (tm *TopicManager) EnsureDefaultGroups() {
 		t.RegisterConsumerGroup("default-group", 1)
 		util.Info("Registered default-group for topic '%s'", name)
 	}
+}
+
+func (tm *TopicManager) getDedupKey(topicName string, partition int, msg *types.Message) string {
+	if msg.ProducerID != "" && msg.SeqNum > 0 {
+		return fmt.Sprintf("%s-%d-%s-%d", topicName, partition, msg.ProducerID, msg.SeqNum)
+	}
+	return fmt.Sprintf("%s-%d-%s", topicName, partition, msg.Payload)
+}
+
+func (tm *TopicManager) checkAndMarkDuplicate(topicName string, partition int, msg *types.Message) bool {
+	dedupKey := tm.getDedupKey(topicName, partition, msg)
+	if _, loaded := tm.DedupMap.LoadOrStore(dedupKey, time.Now()); loaded {
+		return true
+	}
+	return false
 }

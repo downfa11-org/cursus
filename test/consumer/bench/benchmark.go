@@ -23,6 +23,7 @@ const (
 
 type PartitionMetrics struct {
 	ID        int
+	mu        sync.RWMutex
 	firstSeen time.Time
 	lastSeen  time.Time
 	totalMsgs int64
@@ -30,20 +31,28 @@ type PartitionMetrics struct {
 
 func (pm *PartitionMetrics) record(count int) {
 	now := time.Now()
+	pm.mu.Lock()
 	if pm.firstSeen.IsZero() {
 		pm.firstSeen = now
 	}
+	pm.lastSeen = now
+	pm.mu.Unlock()
 
 	atomic.AddInt64(&pm.totalMsgs, int64(count))
-	pm.lastSeen = now
 }
 
 func (pm *PartitionMetrics) TPS() float64 {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
 	if pm.firstSeen.IsZero() || pm.lastSeen.Equal(pm.firstSeen) {
 		return 0
 	}
 	elapsed := pm.lastSeen.Sub(pm.firstSeen).Seconds()
-	return float64(pm.totalMsgs) / elapsed
+	if elapsed <= 0 {
+		return 0
+	}
+	return float64(atomic.LoadInt64(&pm.totalMsgs)) / elapsed
 }
 
 type PhaseMetrics struct {
@@ -52,6 +61,23 @@ type PhaseMetrics struct {
 
 	totalMsgs  int64
 	partitions map[int]*PartitionMetrics
+}
+
+func (pm *PhaseMetrics) TPS() float64 {
+	if pm.startTime.IsZero() {
+		return 0
+	}
+
+	end := pm.endTime
+	if end.IsZero() {
+		end = time.Now()
+	}
+
+	d := end.Sub(pm.startTime).Seconds()
+	if d <= 0 {
+		return 0
+	}
+	return float64(atomic.LoadInt64(&pm.totalMsgs)) / d
 }
 
 type RebalanceEvent struct {
@@ -63,7 +89,9 @@ type ConsumerMetrics struct {
 	startTime time.Time
 	started   bool
 
-	totalMsgs    int64
+	totalMsgs  int64
+	uniqueMsgs int64
+
 	currentPhase Phase
 	phases       map[Phase]*PhaseMetrics
 
@@ -98,23 +126,6 @@ func NewConsumerMetrics(expected int64, enableCorrectness bool) *ConsumerMetrics
 	}
 }
 
-func (pm *PhaseMetrics) TPS() float64 {
-	if pm.startTime.IsZero() {
-		return 0
-	}
-
-	end := pm.endTime
-	if end.IsZero() {
-		end = time.Now()
-	}
-
-	d := end.Sub(pm.startTime).Seconds()
-	if d <= 0 {
-		return 0
-	}
-	return float64(pm.totalMsgs) / d
-}
-
 func (m *ConsumerMetrics) RecordBatch(partition int, count int) {
 	if !m.started {
 		m.mu.Lock()
@@ -128,8 +139,6 @@ func (m *ConsumerMetrics) RecordBatch(partition int, count int) {
 		}
 		m.mu.Unlock()
 	}
-
-	atomic.AddInt64(&m.totalMsgs, int64(count))
 
 	m.mu.RLock()
 	ph := m.phases[m.currentPhase]
@@ -146,6 +155,8 @@ func (m *ConsumerMetrics) RecordBatch(partition int, count int) {
 		m.mu.Unlock()
 	}
 
+	atomic.AddInt64(&m.totalMsgs, int64(count))
+	atomic.AddInt64(&ph.totalMsgs, int64(count))
 	pm.record(count)
 }
 
@@ -155,13 +166,19 @@ func (m *ConsumerMetrics) RecordMessage(partition int, offset int64, producerID 
 	}
 
 	offsetKey := encodeOffset(partition, offset)
-	if m.seenOffsetFilter.Add(offsetKey) {
+	isDuplicate := m.seenOffsetFilter.Add(offsetKey)
+
+	if isDuplicate {
 		atomic.AddInt64(&m.dupOffsetCount, 1)
+		util.Debug("duplicated offset. (partition: %d, offset: %d)", partition, offset)
 	}
 
-	messageKey := encodeMessageID(producerID, seqNum)
-	if m.seenIDFilter.Add(messageKey) {
+	messageKey := encodeMessageID(partition, producerID, seqNum)
+	if !m.seenIDFilter.Add(messageKey) {
+		atomic.AddInt64(&m.uniqueMsgs, 1)
+	} else {
 		atomic.AddInt64(&m.dupCount, 1)
+		util.Debug("duplicated message. (partition: %d, offset: %d, seqNum: %d)", partition, offset, seqNum)
 	}
 }
 
@@ -200,23 +217,31 @@ func (m *ConsumerMetrics) OnFirstConsumeAfterRebalance() {
 }
 
 func (m *ConsumerMetrics) IsFullyConsumed(expectedTotal int64) (bool, string) {
-	total := atomic.LoadInt64(&m.totalMsgs)
-	if total != expectedTotal {
-		return false, fmt.Sprintf(
-			"total mismatch (expected=%d, actual=%d)",
-			expectedTotal, total,
-		)
+	currentTotal := atomic.LoadInt64(&m.totalMsgs)
+	currentUnique := atomic.LoadInt64(&m.uniqueMsgs)
+
+	if currentTotal < expectedTotal {
+		return false, fmt.Sprintf("receiving... (%d/%d) unique=%d total=%d missing=%d", currentTotal, expectedTotal, currentUnique, currentTotal, expectedTotal-currentTotal)
 	}
 	return true, ""
 }
 
 func (m *ConsumerMetrics) Finalize() {
 	consumed := atomic.LoadInt64(&m.totalMsgs)
+	unique := atomic.LoadInt64(&m.uniqueMsgs)
+
 	if consumed < m.expectedTotal {
 		m.missingCount = m.expectedTotal - consumed
+	} else {
+		m.missingCount = 0
+	}
+
+	if m.enableCorrectness && unique < m.expectedTotal && consumed >= m.expectedTotal {
+		util.Warn("benchmark reached target total but unique count is lower (%d/%d). this is likely due to BloomFilter false positives.", unique, m.expectedTotal)
 	}
 }
 
+// nearest rank, not interpolation
 func percentile(sorted []float64, p float64) float64 {
 	if len(sorted) == 0 {
 		return 0
@@ -238,7 +263,13 @@ func (m *ConsumerMetrics) PrintSummaryTo(w io.Writer) {
 
 	fmt.Fprintf(w, "Total Messages       : %d\n", total)
 	fmt.Fprintf(w, "Elapsed Time         : %.2fs\n", elapsed)
-	fmt.Fprintf(w, "Overall TPS          : %.2f msg/s\n", float64(total)/elapsed)
+
+	overallTPS := 0.0
+	if elapsed > 0 {
+		overallTPS = float64(total) / elapsed
+	}
+	fmt.Fprintf(w, "Overall TPS          : %.2f msg/s\n", overallTPS)
+
 	if m.enableCorrectness {
 		fmt.Fprintf(w, "Duplicate (MessageID) : %d (fp possible)\n", m.dupCount)
 		fmt.Fprintf(w, "Duplicate (Offset)    : %d (fp possible)\n", m.dupOffsetCount)
@@ -251,12 +282,25 @@ func (m *ConsumerMetrics) PrintSummaryTo(w io.Writer) {
 		fmt.Fprintf(w, "Rebalancing Cost      : %d ms\n", m.rebalance.End.Sub(m.rebalance.Start).Milliseconds())
 	}
 
-	for phase, pm := range m.phases {
-		var partitionTPS []float64
+	var phaseKeys []string
+	for k := range m.phases {
+		phaseKeys = append(phaseKeys, string(k))
+	}
+	sort.Strings(phaseKeys)
 
-		for _, p := range pm.partitions {
-			tps := p.TPS()
-			partitionTPS = append(partitionTPS, tps)
+	for _, k := range phaseKeys {
+		phase := Phase(k)
+		pm := m.phases[phase]
+
+		var partitionTPS []float64
+		var pIDs []int
+		for id := range pm.partitions {
+			pIDs = append(pIDs, id)
+		}
+		sort.Ints(pIDs)
+
+		for _, id := range pIDs {
+			partitionTPS = append(partitionTPS, pm.partitions[id].TPS())
 		}
 
 		sort.Float64s(partitionTPS)
@@ -267,8 +311,9 @@ func (m *ConsumerMetrics) PrintSummaryTo(w io.Writer) {
 		fmt.Fprintf(w, "  p95 Partition Avg TPS : %.2f\n", percentile(partitionTPS, 0.95))
 		fmt.Fprintf(w, "  p99 Partition Avg TPS : %.2f\n", percentile(partitionTPS, 0.99))
 
-		for _, p := range pm.partitions {
-			fmt.Fprintf(w, "    #%-2d total=%-8d avgTPS=%.1f\n", p.ID, p.totalMsgs, p.TPS())
+		for _, id := range pIDs {
+			p := pm.partitions[id]
+			fmt.Fprintf(w, "    #%-2d total=%-8d avgTPS=%.1f\n", p.ID, atomic.LoadInt64(&p.totalMsgs), p.TPS())
 		}
 	}
 

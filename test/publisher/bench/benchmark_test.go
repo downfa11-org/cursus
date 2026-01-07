@@ -48,12 +48,13 @@ func TestPrintBenchmarkSummaryFixedTo(t *testing.T) {
 	}
 
 	totalTarget := 1000
-	sentMessages := 800
+	uniqueSent := 800
+	totalPublished := 950
 	totalDuration := 2 * time.Second
 	errSummary := map[string]uint64{"timeout": 200}
 
 	var buf bytes.Buffer
-	bench.PrintBenchmarkSummaryFixedTo(&buf, stats, sentMessages, totalTarget, totalDuration, errSummary, latencies)
+	bench.PrintBenchmarkSummaryFixedTo(&buf, stats, totalPublished, uniqueSent, totalTarget, totalDuration, errSummary, latencies)
 
 	got := buf.String()
 
@@ -75,15 +76,15 @@ func TestPrintBenchmarkSummaryFixedTo(t *testing.T) {
 func TestPrintBenchmarkSummaryNoErrors(t *testing.T) {
 	stats := []bench.PartitionStat{{PartitionID: 0, BatchCount: 5, AvgDuration: 10 * time.Millisecond}}
 	totalTarget := 100
-	sentMessages := 100
-
+	uniqueSent := 100
+	totalPublished := 100
 	testDuration := time.Second
 	testLatencies := []time.Duration{10 * time.Millisecond}
 
 	errSummary := make(map[string]uint64)
 
 	var buf bytes.Buffer
-	bench.PrintBenchmarkSummaryFixedTo(&buf, stats, sentMessages, totalTarget, testDuration, errSummary, testLatencies)
+	bench.PrintBenchmarkSummaryFixedTo(&buf, stats, totalPublished, uniqueSent, totalTarget, testDuration, errSummary, testLatencies)
 
 	got := buf.String()
 	if strings.Contains(got, "Error Root Cause Analysis") {

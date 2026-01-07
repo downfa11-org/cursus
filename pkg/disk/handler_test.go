@@ -7,6 +7,7 @@ import (
 
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/disk"
+	"github.com/downfa11-org/go-broker/pkg/types"
 )
 
 // TestDiskHandlerBasic verifies basic append and flush behavior
@@ -30,8 +31,11 @@ func TestDiskHandlerBasic(t *testing.T) {
 	defer dh.Close()
 
 	messages := []string{"msg1", "msg2", "msg3", "msg4", "msg5"}
-	for _, msg := range messages {
-		dh.AppendMessage(topic, 0, msg)
+	for i, payload := range messages {
+		dh.AppendMessage(topic, 0, &types.Message{
+			Payload: payload,
+			SeqNum:  uint64(i + 1),
+		})
 	}
 
 	time.Sleep(150 * time.Millisecond)
@@ -55,12 +59,15 @@ func TestDiskHandlerBasic(t *testing.T) {
 	}
 
 	for i, msg := range readMsgs {
-		expectedMsg := messages[i]
-		if msg.Payload != expectedMsg {
-			t.Errorf("message %d: expected payload %q, got %q", i, expectedMsg, msg.Payload)
+		expectedPayload := messages[i]
+		if msg.Payload != expectedPayload {
+			t.Errorf("message %d: expected payload %q, got %q", i, expectedPayload, msg.Payload)
 		}
 		if msg.Offset != uint64(i) {
 			t.Errorf("message %d: expected offset %d, got %d", i, i, msg.Offset)
+		}
+		if msg.SeqNum != uint64(i+1) {
+			t.Errorf("message %d: expected SeqNum %d, got %d", i, i+1, msg.SeqNum)
 		}
 	}
 }
@@ -85,8 +92,8 @@ func TestDiskHandlerChannelOverflow(t *testing.T) {
 	}
 	defer dh.Close()
 
-	dh.AppendMessage(topic, 0, "first")
-	dh.AppendMessage(topic, 0, "second")
+	dh.AppendMessage(topic, 0, &types.Message{Payload: "first", SeqNum: 1})
+	dh.AppendMessage(topic, 0, &types.Message{Payload: "second", SeqNum: 2})
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -140,8 +147,8 @@ func TestDiskHandlerRotation(t *testing.T) {
 	defer dh.Close()
 
 	msgs := []string{"12345", "67890", "abcde"}
-	for _, m := range msgs {
-		dh.AppendMessage(topic, 0, m)
+	for i, m := range msgs {
+		dh.AppendMessage(topic, 0, &types.Message{Payload: m, SeqNum: uint64(i)})
 	}
 
 	time.Sleep(50 * time.Millisecond)

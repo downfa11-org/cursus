@@ -2,7 +2,6 @@ package bench
 
 import (
 	"encoding/binary"
-	"fmt"
 	"hash/fnv"
 	"math"
 	"sync/atomic"
@@ -15,8 +14,13 @@ func encodeOffset(partition int, offset int64) []byte {
 	return buf[:]
 }
 
-func encodeMessageID(producerID string, seqNum uint64) []byte {
-	return []byte(fmt.Sprintf("%s-%d", producerID, seqNum))
+func encodeMessageID(partition int, producerID string, seqNum uint64) []byte {
+	idLen := len(producerID)
+	buf := make([]byte, 4+idLen+8)
+	binary.BigEndian.PutUint32(buf[:4], uint32(partition))
+	copy(buf[4:4+idLen], []byte(producerID))
+	binary.BigEndian.PutUint64(buf[4+idLen:], seqNum)
+	return buf
 }
 
 type BloomFilter struct {
@@ -26,17 +30,24 @@ type BloomFilter struct {
 }
 
 func NewBloomFilter(expected uint64, fpRate float64) *BloomFilter {
-	m := uint64(-1 * float64(expected) * math.Log(fpRate) / (math.Ln2 * math.Ln2))
-	k := uint64(float64(m) / float64(expected) * math.Ln2)
-	size := (m + 63) / 64
+	if expected == 0 {
+		expected = 1
+	}
+	if fpRate <= 0 || fpRate >= 1 {
+		fpRate = 0.001
+	}
 
+	m := uint64(-1 * float64(expected) * math.Log(fpRate) / (math.Ln2 * math.Ln2))
+	if m < 64 {
+		m = 64
+	}
+
+	k := uint64(float64(m) / float64(expected) * math.Ln2)
 	if k < 1 {
 		k = 1
 	}
-	if k > 5 {
-		k = 5
-	}
 
+	size := (m + 63) / 64
 	return &BloomFilter{
 		bits: make([]uint64, size),
 		m:    m,
@@ -49,9 +60,9 @@ func hashf(data []byte) (uint64, uint64) {
 	h1.Write(data)
 	sum1 := h1.Sum64()
 
+	h2 := fnv.New64()
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], sum1)
-	h2 := fnv.New64()
 	h2.Write(buf[:])
 	sum2 := h2.Sum64()
 
@@ -59,18 +70,19 @@ func hashf(data []byte) (uint64, uint64) {
 }
 
 func (bf *BloomFilter) Add(data []byte) bool {
+	if bf.m == 0 {
+		return false
+	}
+
 	h1, h2 := hashf(data)
 
 	var seen = true
 	for i := uint64(0); i < bf.k; i++ {
 		idx := (h1 + i*h2) % bf.m
-		word := idx / 64
-		bit := uint64(1) << (idx % 64)
-
-		old := atomic.LoadUint64(&bf.bits[word])
+		word, bit := idx/64, uint64(1)<<(idx%64)
+		old := atomic.OrUint64(&bf.bits[word], bit)
 		if old&bit == 0 {
 			seen = false
-			atomic.OrUint64(&bf.bits[word], bit)
 		}
 	}
 

@@ -89,7 +89,10 @@ func main() {
 	} else {
 		pub.FlushBenchmark(total)
 		duration := time.Since(start)
-		sentMessages := pub.GetSentMessageCount()
+
+		totalSent := pub.GetPublishedCount()
+		publishedMessages := pub.GetUniqueAckCount()
+		targetCount := total
 
 		errors := make(map[string]uint64)
 		errSummary.Range(func(key, value interface{}) bool {
@@ -105,7 +108,7 @@ func main() {
 		latencies := pub.GetLatencies()
 
 		util.Info("🎉 Benchmark completed successfully!")
-		bench.PrintBenchmarkSummaryFixedTo(os.Stdout, stats, sentMessages, total, duration, errors, latencies)
+		bench.PrintBenchmarkSummaryFixedTo(os.Stdout, stats, totalSent, publishedMessages, targetCount, duration, errors, latencies)
 		os.Exit(0)
 	}
 

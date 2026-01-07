@@ -3,7 +3,7 @@ broker_addrs:
 enable_benchmark: true
 enable_correctness: true
 num_messages: 100000
-
+log_level: "debug"
 topic: "bench-topic"
 group_id: "test-consumer-group-1"
 consumer_id: "consumer-1"

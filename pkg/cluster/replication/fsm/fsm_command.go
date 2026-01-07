@@ -199,10 +199,6 @@ func (f *BrokerFSM) applyBatch(cmd *MessageCommand) interface{} {
 		}
 	}
 
-	if exists && int64(first.SeqNum) > lastSeq+1 {
-		return errorAckResponse("Out of order batch gap", first.ProducerID, first.Epoch)
-	}
-
 	if err := f.persistBatch(cmd.Topic, cmd.Partition, cmd.Messages); err != nil {
 		return errorAckResponse(err.Error(), first.ProducerID, first.Epoch)
 	}

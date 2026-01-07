@@ -527,7 +527,8 @@ func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 	}
 
 	if len(offsetList) == 0 {
-		return "OK batched=0"
+		util.Warn("Batch commit received but no valid offsets parsed from: %s", partitionData)
+		return "ERROR no_valid_offsets"
 	}
 
 	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {

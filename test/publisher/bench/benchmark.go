@@ -14,9 +14,18 @@ import (
 
 const sep = "========================================"
 
+type PartitionStat struct {
+	PartitionID int
+	BatchCount  int
+	AvgDuration time.Duration
+}
+
 type BenchmarkResult struct {
 	Timestamp      time.Time         `json:"timestamp"`
 	TotalTarget    int               `json:"total_target"`
+	UniqueSent     int               `json:"unique_sent"`
+	TotalPublished int               `json:"total_published"`
+	RetryCount     int               `json:"retry_count"`
 	SentMessages   int               `json:"sent_messages"`
 	FailedMessages int               `json:"failed_messages"`
 	SuccessRate    float64           `json:"success_rate"`
@@ -46,12 +55,6 @@ func CalculateLatencyPercentiles(latencies []time.Duration) (p95, p99 time.Durat
 	return latencies[p95Idx], latencies[p99Idx]
 }
 
-type PartitionStat struct {
-	PartitionID int
-	BatchCount  int
-	AvgDuration time.Duration
-}
-
 func GenerateMessage(size int, seqNum int) string {
 	if size <= 0 {
 		return fmt.Sprintf("%s #%d", "Hello World!", seqNum)
@@ -70,8 +73,9 @@ func GenerateMessage(size int, seqNum int) string {
 func PrintBenchmarkSummaryFixedTo(
 	w io.Writer,
 	partitionStats []PartitionStat,
-	sentMessages int,
-	totalTarget int,
+	totalSent int,
+	publishedMessages int,
+	targetCount int,
 	totalDuration time.Duration,
 	errSummary map[string]uint64,
 	allLatencies []time.Duration,
@@ -81,22 +85,28 @@ func PrintBenchmarkSummaryFixedTo(
 		totalBatches += ps.BatchCount
 	}
 
-	seconds := totalDuration.Seconds()
-	if seconds <= 0 {
-		seconds = 0.001
+	retryCount := totalSent - publishedMessages
+	if retryCount < 0 {
+		retryCount = 0
 	}
-	batchesPerSec := float64(totalBatches) / seconds
-	messagesPerSec := float64(sentMessages) / seconds
 
-	failedCount := totalTarget - sentMessages
+	failedCount := targetCount - publishedMessages
 	if failedCount < 0 {
 		failedCount = 0
 	}
 
-	successRate := 0.0
-	if totalTarget > 0 {
-		successRate = (float64(sentMessages) / float64(totalTarget)) * 100
+	seconds := totalDuration.Seconds()
+	if seconds <= 0 {
+		seconds = 0.001
 	}
+
+	successRate := 0.0
+	if targetCount > 0 {
+		successRate = (float64(publishedMessages) / float64(targetCount)) * 100
+	}
+
+	messagesPerSec := float64(publishedMessages) / seconds
+	batchesPerSec := float64(totalBatches) / seconds
 
 	p95, p99 := CalculateLatencyPercentiles(allLatencies)
 
@@ -105,10 +115,12 @@ func PrintBenchmarkSummaryFixedTo(
 	fmt.Fprintln(w, "📊 PRODUCER BENCHMARK SUMMARY")
 	fmt.Fprintf(w, "%-28s : %d\n", "Partitions", len(partitionStats))
 	fmt.Fprintf(w, "%-28s : %d\n", "Total Batches", totalBatches)
-	fmt.Fprintf(w, "%-28s : %d / %d (%.1f%%)\n", "Targeted / Published", totalTarget, sentMessages, successRate)
+
+	fmt.Fprintf(w, "%-28s : %d / %d (rate: %.2f%%)\n", "Total Messages", publishedMessages, targetCount, successRate)
+
 	fmt.Fprintf(w, "%-28s : %d\n", "Failed messages", failedCount)
-	fmt.Fprintf(w, "%-28s : %d\n", "Total messages published", sentMessages)
-	fmt.Fprintf(w, "%-28s : %.3fs\n", "Publish elapsed Time", totalDuration.Seconds())
+	fmt.Fprintf(w, "%-28s : %d\n", "Retry Count", retryCount)
+	fmt.Fprintf(w, "%-28s : %.3fs\n", "Publish elapsed Time", seconds)
 	fmt.Fprintf(w, "%-28s : %.2f batches/s\n", "Publish Batch Throughput", batchesPerSec)
 	fmt.Fprintf(w, "%-28s : %.2f msg/s\n", "Publish Message Throughput", messagesPerSec)
 	fmt.Fprintf(w, "%-28s : %.2f ms\n", "Latency P95", float64(p95.Microseconds())/1000.0)
@@ -117,7 +129,7 @@ func PrintBenchmarkSummaryFixedTo(
 
 	fmt.Fprintln(w, "Partition Breakdown:")
 	for _, ps := range partitionStats {
-		fmt.Fprintf(w, "  #%d  batches=%d  avg_batch=%.3fms\n", ps.PartitionID, ps.BatchCount, float64(ps.AvgDuration.Microseconds())/1000.0)
+		fmt.Fprintf(w, "  #%-2d batches=%-4d avg_batch=%.2fms\n", ps.PartitionID, ps.BatchCount, float64(ps.AvgDuration.Microseconds())/1000.0)
 	}
 
 	if len(errSummary) > 0 {
@@ -126,17 +138,19 @@ func PrintBenchmarkSummaryFixedTo(
 			fmt.Fprintf(w, "  - [%d occurrences]: %s\n", count, msg)
 		}
 	}
-
 	fmt.Fprintln(w, sep)
 
 	result := BenchmarkResult{
 		Timestamp:      time.Now(),
-		TotalTarget:    totalTarget,
-		SentMessages:   sentMessages,
-		FailedMessages: totalTarget - sentMessages,
-		SuccessRate:    (float64(sentMessages) / float64(totalTarget)) * 100,
-		TotalDuration:  totalDuration.Seconds(),
-		MsgPerSec:      float64(sentMessages) / totalDuration.Seconds(),
+		TotalTarget:    targetCount,
+		UniqueSent:     publishedMessages,
+		TotalPublished: totalSent,
+		RetryCount:     retryCount,
+		SentMessages:   publishedMessages,
+		FailedMessages: failedCount,
+		SuccessRate:    successRate,
+		TotalDuration:  seconds,
+		MsgPerSec:      messagesPerSec,
 		LatencyP95:     float64(p95.Microseconds()) / 1000.0,
 		LatencyP99:     float64(p99.Microseconds()) / 1000.0,
 		Errors:         errSummary,
