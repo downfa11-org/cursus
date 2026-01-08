@@ -11,8 +11,8 @@ import (
 )
 
 func TestConsumerMetrics_PhaseSeparation(t *testing.T) {
-	m := bench.NewConsumerMetrics(12, false)
-
+	const total = int64(12)
+	m := bench.NewConsumerMetrics(total, false)
 	m.RecordBatch(0, 5)
 
 	m.RebalanceStart()
@@ -28,7 +28,8 @@ func TestConsumerMetrics_PhaseSeparation(t *testing.T) {
 }
 
 func TestConsumerMetrics_RecordBatch_TotalCount(t *testing.T) {
-	m := bench.NewConsumerMetrics(10, false)
+	const total = int64(10)
+	m := bench.NewConsumerMetrics(total, false)
 
 	m.RecordBatch(0, 3)
 	m.RecordBatch(1, 2)
@@ -41,8 +42,11 @@ func TestConsumerMetrics_RecordBatch_TotalCount(t *testing.T) {
 }
 
 func TestConsumerMetrics_PrintSummary_Output(t *testing.T) {
-	m := bench.NewConsumerMetrics(30, false)
+	const total = int64(30)
 	const shortDelay = 15 * time.Millisecond
+
+	m := bench.NewConsumerMetrics(total, false)
+
 	// initial
 	m.RecordBatch(0, 10)
 	time.Sleep(shortDelay)
@@ -83,9 +87,10 @@ func TestConsumerMetrics_Concurrency_BenchOnly(t *testing.T) {
 	const (
 		partitions = 4
 		perWorker  = 100
+		expected   = int64(partitions * perWorker)
 	)
 
-	m := bench.NewConsumerMetrics(int64(partitions*perWorker), false)
+	m := bench.NewConsumerMetrics(expected, false)
 
 	var wg sync.WaitGroup
 	for pid := 0; pid < partitions; pid++ {

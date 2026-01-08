@@ -19,7 +19,11 @@ type ISRManager struct {
 	mu               sync.RWMutex
 	lastSeen         map[string]time.Time
 	heartbeatTimeout time.Duration
-	stopCh           chan struct{}
+
+	stopCh    chan struct{}
+	running   bool
+	startOnce sync.Once
+	stopOnce  sync.Once
 }
 
 func NewISRManager(fsm *fsm.BrokerFSM, brokerID string, heartbeatTimeout time.Duration) *ISRManager {
@@ -35,25 +39,37 @@ func NewISRManager(fsm *fsm.BrokerFSM, brokerID string, heartbeatTimeout time.Du
 	}
 }
 
-func (i *ISRManager) Stop() {
-	close(i.stopCh)
+func (i *ISRManager) Start() {
+	i.startOnce.Do(func() {
+		i.mu.Lock()
+		i.running = true
+		i.mu.Unlock()
+
+		go func() {
+			ticker := time.NewTicker(i.heartbeatTimeout / 2)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ticker.C:
+					i.refreshAllISRs()
+					i.CleanStaleHeartbeats()
+				case <-i.stopCh:
+					return
+				}
+			}
+		}()
+	})
 }
 
-func (i *ISRManager) Start() {
-	go func() {
-		ticker := time.NewTicker(i.heartbeatTimeout / 2)
-		defer ticker.Stop()
+func (i *ISRManager) Stop() {
+	i.stopOnce.Do(func() {
+		i.mu.Lock()
+		i.running = false
+		i.mu.Unlock()
 
-		for {
-			select {
-			case <-ticker.C:
-				i.refreshAllISRs()
-				i.CleanStaleHeartbeats()
-			case <-i.stopCh:
-				return
-			}
-		}
-	}()
+		close(i.stopCh)
+	})
 }
 
 func (i *ISRManager) refreshAllISRs() {

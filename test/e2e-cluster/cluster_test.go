@@ -19,7 +19,7 @@ func TestISRWithAllAcks(t *testing.T) {
 		StartCluster().
 		CreateTopic().
 		PublishMessages().
-		SimulateFollowerFailure().
+		SimulateFollowerFailure(2).
 		Then().
 		Expect(MessagesPublishedWithQuorum()).
 		And(ISRMaintained())

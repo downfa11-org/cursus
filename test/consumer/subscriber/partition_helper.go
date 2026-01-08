@@ -80,8 +80,13 @@ func (pc *PartitionConsumer) handleBrokerError(data []byte) bool {
 
 	pc.closeConnection()
 
-	wait := time.Duration(100+(pc.partitionID*50)) * time.Millisecond
-	time.Sleep(wait) // jitter
+	wait := time.Duration(100+rand.Intn(100)) * time.Millisecond
+
+	select {
+	case <-pc.consumer.mainCtx.Done():
+		return true
+	case <-time.After(wait): // jitter
+	}
 	return true
 }
 

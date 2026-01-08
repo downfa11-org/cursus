@@ -203,9 +203,6 @@ func (c *Consumer) startCommitWorker() {
 
 				if entry.respCh != nil {
 					respChannels[entry.partition] = append(respChannels[entry.partition], entry.respCh)
-				}
-
-				if len(pendingOffsets) > 0 {
 					c.commitBatch(pendingOffsets, respChannels)
 					pendingOffsets = make(map[int]uint64)
 					respChannels = make(map[int][]chan error)
@@ -307,6 +304,7 @@ func (c *Consumer) flushOffsets() {
 				respCh:    nil,
 			}:
 			default:
+				util.Warn("⚠️ Commit channel full (1024), dropping commit for P%d offset %d", pid, offset)
 			}
 		}
 	}
@@ -440,15 +438,19 @@ func (c *Consumer) handleRebalanceSignal() {
 	}
 
 	util.Info("🔄 Rebalance started - Stop existing workers")
-
 	c.mainCancel()
 
 	drainDone := make(chan struct{})
 	go func() {
+		maxTimeout := time.After(5 * time.Second)
 		for {
 			select {
 			case <-c.commitCh:
 			case <-time.After(200 * time.Millisecond):
+				close(drainDone)
+				return
+			case <-maxTimeout:
+				util.Warn("⚠️ Rebalance drain timeout exceeded, forcing continuation")
 				close(drainDone)
 				return
 			}

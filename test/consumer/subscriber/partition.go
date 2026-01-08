@@ -159,7 +159,7 @@ func (pc *PartitionConsumer) pollAndProcess() {
 
 			expectedOffset := atomic.LoadUint64(&pc.fetchOffset)
 			if expectedOffset > 0 && firstMsg.Offset > expectedOffset {
-				util.Error("🚨 Partition [%d] offset gap deteced. expected: %d, received: %d (missing: %d messages)", pc.partitionID, expectedOffset, firstMsg.Offset, firstMsg.Offset-expectedOffset)
+				util.Error("🚨 Partition [%d] offset gap detected. expected: %d, received: %d (missing: %d messages)", pc.partitionID, expectedOffset, firstMsg.Offset, firstMsg.Offset-expectedOffset)
 			}
 
 			newOffset := lastMsg.Offset + 1
@@ -254,6 +254,8 @@ func (pc *PartitionConsumer) startStreamLoop() {
 
 			batch, err := util.DecodeBatchMessages(batchData)
 			if err != nil {
+				util.Error("Partition [%d] stream decode error: %v", pid, err)
+				time.Sleep(bo.duration())
 				continue
 			}
 

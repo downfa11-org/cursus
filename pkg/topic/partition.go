@@ -16,8 +16,8 @@ type AbsoluteOffsetProvider interface {
 }
 
 type DiskAppender interface {
-	AppendMessage(topic string, partition int, msg *types.Message)
-	AppendMessageSync(topic string, partition int, msg *types.Message) error
+	AppendMessage(topic string, partition int, msg *types.Message) uint64
+	AppendMessageSync(topic string, partition int, msg *types.Message) (uint64, error)
 }
 
 // Partition handles messages for one shard of a topic.
@@ -68,7 +68,7 @@ func (p *Partition) Enqueue(msg types.Message) {
 
 	if appender, ok := p.dh.(DiskAppender); ok {
 		util.Debug("Calling AppendMessage for disk persistence [partition-%d]", p.id)
-		appender.AppendMessage(p.topic, p.id, &msg)
+		msg.Offset = appender.AppendMessage(p.topic, p.id, &msg)
 		p.NotifyNewMessage()
 	} else {
 		util.Warn("⚠️ DiskHandler does not implement AppendMessage [partition-%d]\n", p.id)
@@ -85,9 +85,11 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 	}
 
 	if appender, ok := p.dh.(DiskAppender); ok {
-		if err := appender.AppendMessageSync(p.topic, p.id, &msg); err != nil {
+		offset, err := appender.AppendMessageSync(p.topic, p.id, &msg)
+		if err != nil {
 			return fmt.Errorf("disk write failed: %w", err)
 		}
+		msg.Offset = offset
 		p.NotifyNewMessage()
 	} else {
 		return fmt.Errorf("disk handler does not support sync write")
@@ -111,10 +113,12 @@ func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
 		return fmt.Errorf("disk handler does not implement sync write")
 	}
 
-	for _, msg := range msgs {
-		if err := appender.AppendMessageSync(p.topic, p.id, &msg); err != nil {
+	for i, msg := range msgs {
+		offset, err := appender.AppendMessageSync(p.topic, p.id, &msgs[i])
+		if err != nil {
 			return fmt.Errorf("disk write failed for partition %d: %w", p.id, err)
 		}
+		msg.Offset = offset
 		p.enqueueToBroadcast(msg)
 	}
 	p.NotifyNewMessage()
@@ -131,7 +135,8 @@ func (p *Partition) EnqueueBatch(msgs []types.Message) error {
 
 	if appender, ok := p.dh.(DiskAppender); ok {
 		for _, msg := range msgs {
-			appender.AppendMessage(p.topic, p.id, &msg)
+			offset := appender.AppendMessage(p.topic, p.id, &msg)
+			msg.Offset = offset
 			p.enqueueToBroadcast(msg)
 		}
 		p.NotifyNewMessage()

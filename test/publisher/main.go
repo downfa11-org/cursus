@@ -90,7 +90,7 @@ func main() {
 		pub.FlushBenchmark(total)
 		duration := time.Since(start)
 
-		totalSent := pub.GetPublishedCount()
+		totalSent := pub.GetAttemptsCount()
 		publishedMessages := pub.GetUniqueAckCount()
 		targetCount := total
 

@@ -220,3 +220,13 @@ func DuplicatesDetected() Expectation {
 		return nil
 	}
 }
+
+func DuplicatesAllowed() Expectation {
+	return func(ctx *TestContext) error {
+		if ctx.consumedCount < ctx.publishedCount {
+			return fmt.Errorf("message loss detected: published %d, but only consumed %d", ctx.publishedCount, ctx.consumedCount)
+		}
+		ctx.t.Logf("Consumption verified (duplicates allowed): Published %d, Consumed %d", ctx.publishedCount, ctx.consumedCount)
+		return nil
+	}
+}

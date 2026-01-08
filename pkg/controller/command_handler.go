@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -328,16 +329,26 @@ func (ch *CommandHandler) handleFetchOffset(cmd string) string {
 		}
 	}
 
-	if ch.Coordinator != nil {
-		offset, isFind := ch.Coordinator.GetOffset(groupName, topicName, partition)
-		if !isFind {
-			util.Debug("No offset found for group %s, returning default 0", groupName)
-			return "0"
-		}
-		return fmt.Sprintf("%d", offset)
-	} else {
+	if ch.Coordinator == nil {
 		return "offset manager not available"
 	}
+
+	group := ch.Coordinator.GetGroup(groupName)
+	if group == nil {
+		return fmt.Sprintf("ERROR group_not_found: %s", groupName)
+	}
+
+	if !isTopicMatched(topicName, group.TopicName) {
+		return fmt.Sprintf("ERROR topic_not_assigned_to_group: %s %s", group.TopicName, topicName)
+	}
+
+	offset, isFind := ch.Coordinator.GetOffset(groupName, topicName, partition)
+	if !isFind {
+		util.Debug("No offset found for group %s, returning default 0", groupName)
+		return "0"
+	}
+
+	return fmt.Sprintf("%d", offset)
 }
 
 // handleGroupStatus processes GROUP_STATUS command
@@ -458,6 +469,11 @@ func (ch *CommandHandler) handleCommitOffset(cmd string) string {
 	}
 
 	if ch.Coordinator != nil {
+		group := ch.Coordinator.GetGroup(groupID)
+		if group != nil && !isTopicMatched(group.TopicName, topicName) {
+			return fmt.Sprintf("ERROR topic_not_assigned_to_group: %s %s", group.TopicName, topicName)
+		}
+
 		err := ch.Coordinator.CommitOffset(groupID, topicName, partition, offset)
 		if err != nil {
 			return fmt.Sprintf("ERROR: %v", err)
@@ -477,16 +493,16 @@ func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 	memberID := args["member"]
 	generation, _ := strconv.Atoi(args["generation"])
 
-	// P0:10,P1:20...
-	partsIdx := strings.LastIndex(cmd, " ")
-	if partsIdx == -1 {
-		return "invalid batch commit format"
-	}
-
 	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
 		if resp, forwarded, _ := ch.isLeaderAndForward(cmd); forwarded {
 			return resp
 		}
+	}
+
+	// P0:10,P1:20...
+	partsIdx := strings.LastIndex(cmd, " ")
+	if partsIdx == -1 {
+		return "invalid batch commit format"
 	}
 
 	partitionData := cmd[partsIdx+1:]
@@ -528,7 +544,7 @@ func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 
 	if len(offsetList) == 0 {
 		util.Warn("Batch commit received but no valid offsets parsed from: %s", partitionData)
-		return "ERROR no_valid_offsets"
+		return "ERROR: no_valid_offsets"
 	}
 
 	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
@@ -598,4 +614,25 @@ func (ch *CommandHandler) ValidateOwnership(groupName, memberID string, generati
 	}
 
 	return ch.Coordinator.ValidateOwnershipAtomic(groupName, memberID, generation, partition)
+}
+
+func isTopicMatched(pattern, topicName string) bool {
+	if pattern == topicName {
+		return true
+	}
+	if strings.Contains(pattern, "*") || strings.Contains(pattern, "?") {
+		return match(pattern, topicName)
+	}
+	if strings.Contains(topicName, "*") || strings.Contains(topicName, "?") {
+		return match(topicName, pattern)
+	}
+	return false
+}
+
+func match(p, t string) bool {
+	escaped := regexp.QuoteMeta(p)
+	regexPattern := strings.ReplaceAll(escaped, `\*`, ".*")
+	regexPattern = strings.ReplaceAll(regexPattern, `\?`, ".")
+	matched, _ := regexp.MatchString("^"+regexPattern+"$", t)
+	return matched
 }

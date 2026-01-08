@@ -169,21 +169,6 @@ func (t *Topic) applyAssignments(groupName string, assignments map[string][]int)
 	util.Debug("Applied assignments for group '%s': %v", groupName, assignments)
 }
 
-func (t *Topic) calculatePartition(msg types.Message) int {
-	partitionsLen := uint64(len(t.Partitions))
-	if partitionsLen == 0 {
-		return -1
-	}
-
-	if msg.Key != "" {
-		keyID := util.GenerateID(msg.Key)
-		return int(keyID % partitionsLen)
-	}
-
-	oldCounter := atomic.AddUint64(&t.counter, 1) - 1
-	return int(oldCounter % partitionsLen)
-}
-
 func (t *Topic) GetCommittedOffset(groupName string, partition int) (uint64, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()

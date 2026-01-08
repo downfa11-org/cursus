@@ -39,8 +39,12 @@ func TestWriteDirectAndFlush(t *testing.T) {
 			Payload: "msg" + string(rune('A'+i)),
 			SeqNum:  uint64(i),
 		}
-		if err := dh.AppendMessageSync("testTopic", 0, &msg); err != nil {
+		offset, err := dh.AppendMessageSync("testTopic", 0, &msg)
+		if err != nil {
 			t.Fatalf("WriteDirect failed: %v", err)
+		}
+		if offset != uint64(i) {
+			t.Errorf("expected offset %d, got %d", i, offset)
 		}
 	}
 

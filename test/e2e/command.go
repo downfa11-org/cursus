@@ -317,6 +317,10 @@ func (bc *BrokerClient) ConsumeMessagesWithOffsets(topic string, partition int, 
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
+	if bc.conn == nil {
+		return nil, nil, fmt.Errorf("connection not available after connect")
+	}
+
 	consumeCmd := fmt.Sprintf("CONSUME topic=%s partition=%d offset=%d group=%s autoOffsetReset=earliest member=%s generation=%d", topic, partition, startOffset, consumerGroup, memberID, generation)
 	cmdBytes := util.EncodeMessage(topic, consumeCmd)
 
@@ -332,7 +336,7 @@ func (bc *BrokerClient) ConsumeMessagesWithOffsets(topic string, partition int, 
 	_ = bc.conn.SetReadDeadline(time.Time{})
 
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("read batch message with offsets: %w", err)
 	}
 
 	if len(rawData) >= 2 && rawData[0] == 0xBA && rawData[1] == 0x7C {

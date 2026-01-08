@@ -149,10 +149,17 @@ func SerializeDiskMessage(msg types.DiskMessage) ([]byte, error) {
 	if err := binary.Write(&buf, binary.BigEndian, uint16(len(msg.ProducerID))); err != nil {
 		return nil, err
 	}
-	buf.WriteString(msg.ProducerID)
+	if _, err := buf.WriteString(msg.ProducerID); err != nil {
+		return nil, err
+	}
 
 	// SeqNum
 	if err := binary.Write(&buf, binary.BigEndian, msg.SeqNum); err != nil {
+		return nil, err
+	}
+
+	// Epoch
+	if err := binary.Write(&buf, binary.BigEndian, msg.Epoch); err != nil {
 		return nil, err
 	}
 
@@ -217,6 +224,13 @@ func DeserializeDiskMessage(data []byte) (types.DiskMessage, error) {
 		return msg, errors.New("data too short for sequence number")
 	}
 	msg.SeqNum = binary.BigEndian.Uint64(data[offset : offset+8])
+	offset += 8
+
+	// Epoch
+	if offset+8 > len(data) {
+		return msg, errors.New("data too short for epoch")
+	}
+	msg.Epoch = int64(binary.BigEndian.Uint64(data[offset : offset+8]))
 	offset += 8
 
 	// Payload

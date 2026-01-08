@@ -234,6 +234,11 @@ func (bc *BrokerClient) GetSyncInfo() (string, int) {
 // Configuration methods (fluent interface)
 func (ctx *TestContext) WithTopic(topic string) *TestContext {
 	ctx.topic = topic
+
+	if ctx.client != nil {
+		ctx.client.Close()
+		ctx.client = nil
+	}
 	return ctx
 }
 
@@ -259,12 +264,6 @@ func (ctx *TestContext) WithAcks(acks string) *TestContext {
 
 func (ctx *TestContext) WithConsumerGroup(group string) *TestContext {
 	ctx.consumerGroup = group
-	return ctx
-}
-
-func (ctx *TestContext) WithDefaultConsumerGroup() *TestContext {
-	ctx.t.Log("Warning: Using default-group may cause test isolation issues")
-	ctx.consumerGroup = "default-group"
 	return ctx
 }
 

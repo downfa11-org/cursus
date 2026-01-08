@@ -153,13 +153,16 @@ func (c *Coordinator) ValidateAndCommit(groupName, topic string, partition int, 
 		c.mu.RUnlock()
 		return fmt.Errorf("not partition owner")
 	}
-
 	c.mu.RUnlock()
 
 	offsetMsg := OffsetCommitMessage{
-		Group: groupName, Topic: topic, Partition: partition,
-		Offset: offset, Timestamp: time.Now(),
+		Group:     groupName,
+		Topic:     topic,
+		Partition: partition,
+		Offset:    offset,
+		Timestamp: time.Now(),
 	}
+
 	payload, err := json.Marshal(offsetMsg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal offset: %w", err)
@@ -177,15 +180,17 @@ func (c *Coordinator) ValidateAndCommit(groupName, topic string, partition int, 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if g, ok := c.groups[groupName]; ok && g.Generation == generation {
+	g, ok := c.groups[groupName]
+	if ok && g.Generation == generation {
 		c.storeOffsetInMemory(groupName, topic, partition, offset)
 		return nil
 	}
 
+	util.Warn("offset published but not stored in memory: Generation changed (%d -> %d) for group %s", generation, g.Generation, groupName)
 	return fmt.Errorf("generation changed during commit")
 }
 
-func (c *Coordinator) getGroupLocked(name string) *GroupMetadata {
+func (c *Coordinator) getGroupUnsafe(name string) *GroupMetadata {
 	return c.groups[name]
 }
 
@@ -193,7 +198,7 @@ func (c *Coordinator) ValidateOwnershipAtomic(groupName, memberID string, genera
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	group := c.getGroupLocked(groupName)
+	group := c.getGroupUnsafe(groupName)
 	if group == nil {
 		util.Debug("failed to validate ownership for partition %d: Group '%s' not found.", partition, groupName)
 		return false

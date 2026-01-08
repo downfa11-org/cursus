@@ -60,10 +60,12 @@ func TestPrintBenchmarkSummaryFixedTo(t *testing.T) {
 
 	expectedKeywords := []string{
 		"PRODUCER BENCHMARK SUMMARY",
-		"Total Target",
+		"Total Messages",
 		"Latency P95",
 		"Latency P99",
-		"20.0%",
+		"rate: 80.00%",
+		"Failed messages",
+		"Retry Count",
 	}
 
 	for _, keyword := range expectedKeywords {

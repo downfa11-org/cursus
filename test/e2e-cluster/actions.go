@@ -89,10 +89,11 @@ func (a *ClusterActions) Then() *e2e.Consequences {
 	return a.actions.Then()
 }
 
-func (a *ClusterActions) SimulateFollowerFailure() *ClusterActions {
+func (a *ClusterActions) SimulateFollowerFailure(nodeIndex int) *ClusterActions {
+	containerName := fmt.Sprintf("broker-%d", nodeIndex)
 	a.ctx.GetT().Log("Simulating follower failure")
 
-	cmd := exec.Command("docker", "stop", "broker-2")
+	cmd := exec.Command("docker", "stop", containerName)
 	if err := cmd.Run(); err != nil {
 		a.ctx.GetT().Fatalf("Failed to stop follower: %v", err)
 		return a
@@ -103,16 +104,17 @@ func (a *ClusterActions) SimulateFollowerFailure() *ClusterActions {
 	return a
 }
 
-func (a *ClusterActions) RecoverFollower() *ClusterActions {
+func (a *ClusterActions) RecoverFollower(nodeIndex int) *ClusterActions {
+	containerName := fmt.Sprintf("broker-%d", nodeIndex)
 	a.ctx.GetT().Log("Recovering follower")
 
-	cmd := exec.Command("docker", "start", "broker-2")
+	cmd := exec.Command("docker", "start", containerName)
 	if err := cmd.Run(); err != nil {
 		a.ctx.GetT().Fatalf("Failed to recover follower: %v", err)
 	}
 
 	healthAddrs := clusterHealthCheckAddrs(a.ctx.clusterSize)
-	if err := a.waitForNodeHealth(2, healthAddrs[1]); err != nil {
+	if err := a.waitForNodeHealth(nodeIndex, healthAddrs[nodeIndex-1]); err != nil {
 		a.ctx.GetT().Fatalf("node health check failed: %v", err)
 	}
 

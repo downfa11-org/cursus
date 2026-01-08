@@ -121,10 +121,14 @@ func (tm *TopicManager) processBatchMessages(topicName string, messages []types.
 
 	var partition int
 	partitioned := make(map[int][]types.Message)
+	skippedCount := 0
+
 	for _, m := range messages {
 		msg := m
-		partition = t.calculatePartition(msg)
+		partition = t.GetPartitionForMessage(msg)
 		if partition == -1 {
+			util.Debug("tm: skipping message for topic '%s' (no valid partition found)", topicName)
+			skippedCount++
 			continue
 		}
 
@@ -134,6 +138,11 @@ func (tm *TopicManager) processBatchMessages(topicName string, messages []types.
 		}
 		partitioned[partition] = append(partitioned[partition], msg)
 	}
+
+	if len(partitioned) == 0 && skippedCount > 0 {
+		return fmt.Errorf("failed to route any messages in batch for topic '%s' (all partitions returned -1)", topicName)
+	}
+
 	return tm.executeBatch(t, partitioned, async)
 }
 
@@ -166,6 +175,9 @@ func (tm *TopicManager) executeBatch(t *Topic, partitioned map[int][]types.Messa
 	close(errCh)
 
 	if len(errCh) > 0 {
+		for err := range errCh {
+			util.Error("Batch error: %v", err)
+		}
 		return <-errCh
 	}
 	return nil

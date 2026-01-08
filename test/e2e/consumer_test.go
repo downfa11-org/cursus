@@ -31,10 +31,10 @@ func TestWithDefaultConsumerGroup(t *testing.T) {
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("default-group-test").
-		WithDefaultConsumerGroup().
 		WithPartitions(1).
-		WithNumMessages(10).
-		When().
+		WithNumMessages(10)
+
+	ctx.When().
 		StartBroker().
 		CreateTopic().
 		PublishMessages().

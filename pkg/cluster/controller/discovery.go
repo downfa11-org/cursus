@@ -120,7 +120,7 @@ func (sd *ServiceDiscovery) StartReconciler(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	go func() {
 		defer ticker.Stop()
-		util.Info("started for broker %s", sd.brokerID)
+		util.Debug("reconciler started for broker %s", sd.brokerID)
 
 		for {
 			select {
@@ -130,7 +130,7 @@ func (sd *ServiceDiscovery) StartReconciler(ctx context.Context) {
 				}
 				sd.reconcile()
 			case <-ctx.Done():
-				util.Info("stopping for broker %s due to context cancellation", sd.brokerID)
+				util.Info("reconciler stopping for broker %s due to context cancellation", sd.brokerID)
 				return
 			}
 		}

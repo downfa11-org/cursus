@@ -56,9 +56,9 @@ type Publisher struct {
 	partitionSentMus  []sync.Mutex
 	partitionSentSeqs []map[uint64]struct{}
 
-	ackedCount     atomic.Uint64
-	uniqueCount    atomic.Uint64
-	publishedCount atomic.Uint64
+	ackedCount    atomic.Uint64
+	uniqueCount   atomic.Uint64
+	attemptsCount atomic.Uint64
 
 	partitionBatchStates []map[string]*BatchState
 	partitionBatchMus    []sync.Mutex
@@ -325,8 +325,6 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 	binary.BigEndian.PutUint32(lenBuf, uint32(len(payload)))
 	payload = append(lenBuf, payload...)
 
-	p.publishedCount.Add(uint64(len(batch)))
-
 	ackResp, err := p.sendWithRetry(payload, part)
 	if err != nil {
 		util.Error("send failed: %v", err)
@@ -334,6 +332,8 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 		p.handleSendFailure(part, batch)
 		return
 	}
+
+	p.attemptsCount.Add(uint64(len(batch)))
 
 	switch ackResp.Status {
 	case "OK":
@@ -745,9 +745,9 @@ func (p *Publisher) GetUniqueAckCount() int {
 	return int(p.uniqueCount.Load())
 }
 
-// GetPublishedCount returns the number of published messages
-func (p *Publisher) GetPublishedCount() int {
-	return int(p.publishedCount.Load())
+// GetattemptsCount returns the number of published messages
+func (p *Publisher) GetAttemptsCount() int {
+	return int(p.attemptsCount.Load())
 }
 
 // GetPartitionCount returns the number of partitions

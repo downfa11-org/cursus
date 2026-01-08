@@ -152,7 +152,7 @@ func countMessagesInFile(filePath string) (int, error) {
 	return count, nil
 }
 
-func (d *DiskHandler) AppendMessageSync(topic string, partition int, msg *types.Message) error {
+func (d *DiskHandler) AppendMessageSync(topic string, partition int, msg *types.Message) (uint64, error) {
 	d.mu.Lock()
 	offset := d.AbsoluteOffset
 	d.AbsoluteOffset++
@@ -160,13 +160,13 @@ func (d *DiskHandler) AppendMessageSync(topic string, partition int, msg *types.
 
 	msg.Offset = offset
 	if err := d.WriteDirect(topic, partition, *msg); err != nil {
-		return fmt.Errorf("WriteDirect failed: %w", err)
+		return 0, fmt.Errorf("WriteDirect failed: %w", err)
 	}
-	return nil
+	return offset, nil
 }
 
 // AppendMessage sends a message to the internal write channel for asynchronous disk persistence.
-func (d *DiskHandler) AppendMessage(topic string, partition int, msg *types.Message) {
+func (d *DiskHandler) AppendMessage(topic string, partition int, msg *types.Message) uint64 {
 	util.Debug("Attempting to append message (len=%d) to disk.writeCh (cap=%d, len=%d)", len(msg.Payload), cap(d.writeCh), len(d.writeCh))
 
 	d.mu.Lock()
@@ -174,13 +174,15 @@ func (d *DiskHandler) AppendMessage(topic string, partition int, msg *types.Mess
 	d.AbsoluteOffset++
 	d.mu.Unlock()
 
+	msg.Offset = offset
 	diskMsg := types.DiskMessage{
-		Topic:     topic,
-		Partition: int32(partition),
-		Offset:    offset,
-		SeqNum:    msg.SeqNum,
-		Epoch:     msg.Epoch,
-		Payload:   msg.Payload,
+		Topic:      topic,
+		Partition:  int32(partition),
+		Offset:     offset,
+		ProducerID: msg.ProducerID,
+		SeqNum:     msg.SeqNum,
+		Epoch:      msg.Epoch,
+		Payload:    msg.Payload,
 	}
 
 	if d.writeTimeout > 0 {
@@ -190,20 +192,20 @@ func (d *DiskHandler) AppendMessage(topic string, partition int, msg *types.Mess
 		select {
 		case <-d.done:
 			util.Debug("DiskHandler done channel closed for %s", d.BaseName)
-			return
+			return offset
 		case d.writeCh <- diskMsg:
 			util.Debug("Message successfully sent to writeCh for %s", d.BaseName)
-			return
+			return offset
 		case <-timer.C:
 			util.Error("❌ DiskHandler enqueue timed out after %s for topic %s", d.writeTimeout, topic)
-			return
+			return offset
 		}
 	} else {
 		select {
 		case <-d.done:
-			return
+			return offset
 		case d.writeCh <- diskMsg:
-			return
+			return offset
 		}
 	}
 }

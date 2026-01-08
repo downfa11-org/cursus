@@ -40,7 +40,12 @@ func CalculateLatencyPercentiles(latencies []time.Duration) (p95, p99 time.Durat
 	if len(latencies) == 0 {
 		return 0, 0
 	}
-	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+
+	sorted := make([]time.Duration, len(latencies))
+	copy(sorted, latencies)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i] < sorted[j]
+	})
 
 	p95Idx := int(float64(len(latencies)) * 0.95)
 	p99Idx := int(float64(len(latencies)) * 0.99)
@@ -165,7 +170,13 @@ func saveResultToJSON(res BenchmarkResult) {
 		return
 	}
 
-	filename := fmt.Sprintf("bench_%d.json", time.Now().Unix())
+	dir := "bench_results"
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		util.Error("Failed to create directory '%s': %v", dir, err)
+		return
+	}
+
+	filename := fmt.Sprintf("%s/bench_%d.json", dir, time.Now().Unix())
 	err = os.WriteFile(filename, data, 0644)
 	if err != nil {
 		util.Error("Failed to save benchmark JSON file '%s': %v", filename, err)
