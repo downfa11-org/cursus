@@ -3,6 +3,7 @@ package fsm
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -20,28 +21,27 @@ func errorAckResponse(msg, producerID string, epoch int64) types.AckResponse {
 }
 
 func (f *BrokerFSM) parsePartitionCommand(data string) (string, *PartitionMetadata, error) {
-	parts := strings.SplitN(data, ":", 3)
-
-	if len(parts) != 3 {
-		return "", nil, fmt.Errorf("invalid PARTITION command format: expected PARTITION:key:json")
+	startIdx := strings.Index(data, "{")
+	if startIdx == -1 {
+		return "", nil, fmt.Errorf("invalid PARTITION command: JSON metadata not found")
 	}
 
-	key := parts[1]
+	prefix := data[:startIdx]
+	prefix = strings.TrimPrefix(prefix, "PARTITION:")
+	key := strings.TrimSuffix(prefix, ":")
+
+	if key == "" {
+		return "", nil, fmt.Errorf("invalid PARTITION command: missing key")
+	}
+
 	var metadata PartitionMetadata
-	if err := json.Unmarshal([]byte(parts[2]), &metadata); err != nil {
-		util.Error("Failed to unmarshal partition metadata: %v", err)
+	dec := json.NewDecoder(strings.NewReader(data[startIdx:]))
+	if err := dec.Decode(&metadata); err != nil {
+		util.Error("Failed to unmarshal partition metadata for key %s: %v", key, err)
 		return "", nil, err
 	}
 
 	return key, &metadata, nil
-}
-
-func extractJSON(data string) string {
-	idx := strings.Index(data, "{")
-	if idx == -1 {
-		return ""
-	}
-	return data[idx:]
 }
 
 func getStringField(data map[string]interface{}, key string) (string, error) {
@@ -151,8 +151,8 @@ func getOptionalInt64Field(data map[string]interface{}, key string) (int64, erro
 		return i64, nil
 
 	case float64:
-		if v > float64(^uint64(0)>>1) {
-			return 0, fmt.Errorf("float64 overflow for int64 field '%s': %f", key, v)
+		if v > float64(math.MaxInt64) || v < float64(math.MinInt64) {
+			return 0, fmt.Errorf("float64 overflow/underflow for int64 field '%s': %f", key, v)
 		}
 		return int64(v), nil
 
@@ -160,7 +160,7 @@ func getOptionalInt64Field(data map[string]interface{}, key string) (int64, erro
 		return v, nil
 
 	case uint64:
-		if v > uint64(^uint64(0)>>1) {
+		if v > uint64(math.MaxInt64) {
 			return 0, fmt.Errorf("uint64 overflow for int64 field '%s': %d", key, v)
 		}
 		return int64(v), nil

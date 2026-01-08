@@ -31,10 +31,10 @@ func TestWithDefaultConsumerGroup(t *testing.T) {
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("default-group-test").
-		WithDefaultConsumerGroup().
 		WithPartitions(1).
-		WithNumMessages(10).
-		When().
+		WithNumMessages(10)
+
+	ctx.When().
 		StartBroker().
 		CreateTopic().
 		PublishMessages().
@@ -67,7 +67,6 @@ func TestWithCustomConsumerGroup(t *testing.T) {
 
 // TestDefaultGroupOffsetSharing verifies offset sharing between consumers in same group
 func TestDefaultGroupOffsetSharing(t *testing.T) {
-	// First consumer reads all messages
 	ctx1 := Given(t)
 	defer ctx1.Cleanup()
 
@@ -87,7 +86,6 @@ func TestDefaultGroupOffsetSharing(t *testing.T) {
 		Then().
 		Expect(MessagesConsumed(10))
 
-	// Second consumer in same group should see no new messages
 	ctx2 := Given(t)
 	defer ctx2.Cleanup()
 

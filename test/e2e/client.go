@@ -12,7 +12,7 @@ import (
 
 // BrokerClient wraps low-level broker communication
 type BrokerClient struct {
-	addr          string
+	addrs         []string
 	conn          net.Conn
 	mu            sync.Mutex
 	closed        bool
@@ -39,8 +39,10 @@ type MemberInfo struct {
 	Assignments   []int     `json:"assignments"`
 }
 
-func NewBrokerClient(addr string) *BrokerClient {
-	return &BrokerClient{addr: addr}
+func NewBrokerClient(addrs []string) *BrokerClient {
+	return &BrokerClient{
+		addrs: addrs,
+	}
 }
 
 func (bc *BrokerClient) connect() error {
@@ -51,18 +53,21 @@ func (bc *BrokerClient) connect() error {
 		return nil
 	}
 
-	if bc.conn != nil {
-		bc.conn.Close()
+	var lastErr error
+	for _, addr := range bc.addrs {
+		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		if err == nil {
+			if bc.conn != nil {
+				bc.conn.Close()
+			}
+			bc.conn = conn
+			bc.closed = false
+			return nil
+		}
+		lastErr = err
 	}
 
-	conn, err := net.Dial("tcp", bc.addr)
-	if err != nil {
-		return fmt.Errorf("connect: %w", err)
-	}
-
-	bc.conn = conn
-	bc.closed = false
-	return nil
+	return fmt.Errorf("failed to connect to any broker in %v: %w", bc.addrs, lastErr)
 }
 
 func (bc *BrokerClient) Close() {
@@ -78,44 +83,27 @@ func (bc *BrokerClient) Close() {
 
 // sendCommandAndGetResponse executes a command on an existing connection and returns the response string.
 func (bc *BrokerClient) sendCommandAndGetResponse(cmdTopic, cmdPayload string, readTimeout time.Duration) (string, error) {
-	var conn net.Conn
-	shouldClose := false
-
-	bc.mu.Lock()
-	if bc.conn == nil {
-		bc.mu.Unlock()
-		var err error
-		conn, err = net.Dial("tcp", bc.addr)
-		if err != nil {
-			return "", fmt.Errorf("connect: %w", err)
-		}
-		shouldClose = true
-	} else {
-		conn = bc.conn
-		bc.mu.Unlock()
+	if err := bc.connect(); err != nil {
+		return "", err
 	}
 
-	defer func() {
-		if shouldClose {
-			conn.Close()
-		} else {
-			if err := conn.SetReadDeadline(time.Time{}); err != nil {
-				util.Warn("failed to reset read deadline: %v", err)
-			}
-		}
-	}()
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+
+	if bc.conn == nil || bc.closed {
+		return "", fmt.Errorf("connection is closed")
+	}
 
 	cmdBytes := util.EncodeMessage(cmdTopic, cmdPayload)
-
-	if err := util.WriteWithLength(conn, cmdBytes); err != nil {
+	if err := util.WriteWithLength(bc.conn, cmdBytes); err != nil {
 		return "", fmt.Errorf("send command: %w", err)
 	}
 
-	if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+	if err := bc.conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
 		return "", fmt.Errorf("set read deadline: %w", err)
 	}
 
-	respBuf, err := util.ReadWithLength(conn)
+	respBuf, err := util.ReadWithLength(bc.conn)
 
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)

@@ -25,32 +25,29 @@ func (d *DiskHandler) flushLoop() {
 		select {
 		case msg, ok := <-d.writeCh:
 			if !ok {
-				continue
+				d.drainAndShutdown(batch)
+				return
 			}
+
 			batch = append(batch, msg)
 			util.Debug("Received message, batch size now: %d/%d", len(batch), d.batchSize)
 
 			if len(batch) >= d.batchSize {
-				util.Debug("🔥 Batch size threshold reached, flushing %d messages", len(batch))
-				if err := d.writeBatch(batch); err != nil {
-					util.Error("writeBatch failed: %v", err)
+				util.Debug("Batch size threshold reached, flushing %d messages", len(batch))
+				if err := d.WriteBatch(batch); err != nil {
+					util.Error("WriteBatch failed: %v", err)
 				}
 				batch = batch[:0]
 			}
 		case <-ticker.C:
 			if len(batch) > 0 {
-				util.Debug("🔥 Flushing %d messages on timer", len(batch))
-				if err := d.writeBatch(batch); err != nil {
-					util.Error("writeBatch failed: %v", err)
+				util.Debug("Flushing %d messages on timer", len(batch))
+				if err := d.WriteBatch(batch); err != nil {
+					util.Error("WriteBatch failed: %v", err)
 				}
 				batch = batch[:0]
 			}
-		case <-func() <-chan time.Time {
-			if segmentTicker != nil {
-				return segmentTicker.C
-			}
-			return nil
-		}():
+		case <-d.getSegmentTickerChan(segmentTicker):
 			// Time-based segment rotation
 			d.mu.Lock()
 			d.ioMu.Lock()
@@ -64,48 +61,7 @@ func (d *DiskHandler) flushLoop() {
 
 		case <-d.done:
 			// Gracefully drain all pending writes before shutdown
-			draining := true
-			for draining {
-				if len(batch) >= d.batchSize {
-					if err := d.writeBatch(batch); err != nil {
-						util.Error("writeBatch failed: %v", err)
-					}
-					batch = batch[:0]
-					continue
-				}
-				select {
-				case msg, ok := <-d.writeCh:
-					if !ok {
-						draining = false
-						continue
-					}
-					batch = append(batch, msg)
-				default:
-					draining = false
-				}
-			}
-
-			if len(batch) > 0 {
-				if err := d.writeBatch(batch); err != nil {
-					util.Error("writeBatch failed: %v", err)
-				}
-			}
-
-			d.ioMu.Lock()
-			if d.file != nil {
-				if err := d.writer.Flush(); err != nil {
-					util.Error("flush failed in shutdown: %v", err)
-				}
-				if err := d.file.Sync(); err != nil {
-					util.Error("sync failed during shutdown: %v", err)
-				}
-				if err := d.file.Close(); err != nil {
-					util.Error("close failed during shutdown: %v", err)
-				}
-				d.file = nil
-				d.writer = nil
-			}
-			d.ioMu.Unlock()
+			d.drainAndShutdown(batch)
 			return
 		}
 	}
@@ -131,8 +87,8 @@ func (d *DiskHandler) syncLoop() {
 	}
 }
 
-// writeBatch writes a batch of messages into the current segment file.
-func (d *DiskHandler) writeBatch(batch []types.DiskMessage) error {
+// WriteBatch writes a batch of messages into the current segment file.
+func (d *DiskHandler) WriteBatch(batch []types.DiskMessage) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
@@ -188,13 +144,11 @@ func (d *DiskHandler) writeBatch(batch []types.DiskMessage) error {
 	}
 
 	d.CurrentOffset += uint64(len(buffer))
-	d.AbsoluteOffset += uint64(len(serializedMsgs))
-
 	return nil
 }
 
 // WriteDirect writes a single message immediately without batching.
-func (d *DiskHandler) WriteDirect(topic string, partition int, offset uint64, payload string) error {
+func (d *DiskHandler) WriteDirect(topic string, partition int, msg types.Message) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
@@ -203,8 +157,10 @@ func (d *DiskHandler) WriteDirect(topic string, partition int, offset uint64, pa
 	diskMsg := types.DiskMessage{
 		Topic:     topic,
 		Partition: int32(partition),
-		Offset:    offset,
-		Payload:   payload,
+		Offset:    msg.Offset,
+		SeqNum:    msg.SeqNum,
+		Epoch:     msg.Epoch,
+		Payload:   msg.Payload,
 	}
 
 	serialized, err := util.SerializeDiskMessage(diskMsg)
@@ -238,8 +194,6 @@ func (d *DiskHandler) WriteDirect(topic string, partition int, offset uint64, pa
 	}
 
 	d.CurrentOffset += totalLen
-	d.AbsoluteOffset++
-
 	return nil
 }
 
@@ -290,7 +244,8 @@ func (d *DiskHandler) Flush() {
 
 perform_write:
 	if len(batch) > 0 {
-		if err := d.writeBatch(batch); err != nil {
+		if err := d.WriteBatch(batch); err != nil {
+			util.Error("Flush write failed: %v", err)
 			return
 		}
 		return
@@ -324,4 +279,64 @@ func (d *DiskHandler) GetCurrentSegment() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.CurrentSegment
+}
+
+func (d *DiskHandler) drainAndShutdown(batch []types.DiskMessage) {
+	for {
+		stop := false
+		select {
+		case msg, ok := <-d.writeCh:
+			if !ok {
+				stop = true
+			} else {
+				batch = append(batch, msg)
+			}
+		default:
+			stop = true
+		}
+
+		if len(batch) >= d.batchSize {
+			if err := d.WriteBatch(batch); err != nil {
+				util.Error("WriteBatch failed: %v", err)
+			}
+			batch = batch[:0]
+		}
+
+		if stop {
+			break
+		}
+	}
+
+	if len(batch) > 0 {
+		if err := d.WriteBatch(batch); err != nil {
+			util.Error("finalize WriteBatch failed: %v", err)
+		}
+	}
+
+	d.ioMu.Lock()
+	defer d.ioMu.Unlock()
+
+	if d.writer != nil {
+		if err := d.writer.Flush(); err != nil {
+			util.Error("writer flush failed: %v", err)
+		}
+		d.writer = nil
+	}
+
+	if d.file != nil {
+		if err := d.file.Sync(); err != nil {
+			util.Error("file sync failed: %v", err)
+		}
+		if err := d.file.Close(); err != nil {
+			util.Error("file close failed: %v", err)
+		}
+		d.file = nil
+	}
+}
+
+func (d *DiskHandler) getSegmentTickerChan(ticker *time.Ticker) <-chan time.Time {
+	if ticker != nil {
+		return ticker.C
+	}
+	return nil
 }

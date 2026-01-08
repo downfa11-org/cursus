@@ -19,7 +19,7 @@ log_dir: "broker-logs"
 disk_flush_batch_size: 500
 linger_ms: 200
 channel_buffer_size: 1024  
-disk_write_timeout_ms: 200
+disk_write_timeout_ms: 200 
 segment_size: 1048576
 partition_channel_buffer_size: 10000  
 consumer_channel_buffer_size: 1000  

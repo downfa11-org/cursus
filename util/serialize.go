@@ -145,6 +145,24 @@ func SerializeDiskMessage(msg types.DiskMessage) ([]byte, error) {
 		return nil, err
 	}
 
+	// ProducerID
+	if err := binary.Write(&buf, binary.BigEndian, uint16(len(msg.ProducerID))); err != nil {
+		return nil, err
+	}
+	if _, err := buf.WriteString(msg.ProducerID); err != nil {
+		return nil, err
+	}
+
+	// SeqNum
+	if err := binary.Write(&buf, binary.BigEndian, msg.SeqNum); err != nil {
+		return nil, err
+	}
+
+	// Epoch
+	if err := binary.Write(&buf, binary.BigEndian, msg.Epoch); err != nil {
+		return nil, err
+	}
+
 	// Payload (length + string)
 	payloadBytes := []byte(msg.Payload)
 	if err := binary.Write(&buf, binary.BigEndian, uint32(len(payloadBytes))); err != nil {
@@ -187,6 +205,32 @@ func DeserializeDiskMessage(data []byte) (types.DiskMessage, error) {
 		return msg, errors.New("data too short for offset")
 	}
 	msg.Offset = binary.BigEndian.Uint64(data[offset : offset+8])
+	offset += 8
+
+	// ProducerID
+	if offset+2 > len(data) {
+		return msg, errors.New("data too short for producer ID length")
+	}
+	prodLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+	if offset+prodLen > len(data) {
+		return msg, errors.New("data too short for producer ID")
+	}
+	msg.ProducerID = string(data[offset : offset+prodLen])
+	offset += prodLen
+
+	// SeqNum
+	if offset+8 > len(data) {
+		return msg, errors.New("data too short for sequence number")
+	}
+	msg.SeqNum = binary.BigEndian.Uint64(data[offset : offset+8])
+	offset += 8
+
+	// Epoch
+	if offset+8 > len(data) {
+		return msg, errors.New("data too short for epoch")
+	}
+	msg.Epoch = int64(binary.BigEndian.Uint64(data[offset : offset+8]))
 	offset += 8
 
 	// Payload

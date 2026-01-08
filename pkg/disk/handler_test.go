@@ -7,6 +7,7 @@ import (
 
 	"github.com/downfa11-org/go-broker/pkg/config"
 	"github.com/downfa11-org/go-broker/pkg/disk"
+	"github.com/downfa11-org/go-broker/pkg/types"
 )
 
 // TestDiskHandlerBasic verifies basic append and flush behavior
@@ -30,8 +31,11 @@ func TestDiskHandlerBasic(t *testing.T) {
 	defer dh.Close()
 
 	messages := []string{"msg1", "msg2", "msg3", "msg4", "msg5"}
-	for i, msg := range messages {
-		dh.AppendMessage(topic, 0, uint64(i), msg)
+	for i, payload := range messages {
+		dh.AppendMessage(topic, 0, &types.Message{
+			Payload: payload,
+			SeqNum:  uint64(i + 1),
+		})
 	}
 
 	time.Sleep(150 * time.Millisecond)
@@ -55,12 +59,15 @@ func TestDiskHandlerBasic(t *testing.T) {
 	}
 
 	for i, msg := range readMsgs {
-		expectedMsg := messages[i]
-		if msg.Payload != expectedMsg {
-			t.Errorf("message %d: expected payload %q, got %q", i, expectedMsg, msg.Payload)
+		expectedPayload := messages[i]
+		if msg.Payload != expectedPayload {
+			t.Errorf("message %d: expected payload %q, got %q", i, expectedPayload, msg.Payload)
 		}
 		if msg.Offset != uint64(i) {
 			t.Errorf("message %d: expected offset %d, got %d", i, i, msg.Offset)
+		}
+		if msg.SeqNum != uint64(i+1) {
+			t.Errorf("message %d: expected SeqNum %d, got %d", i, i+1, msg.SeqNum)
 		}
 	}
 }
@@ -85,8 +92,8 @@ func TestDiskHandlerChannelOverflow(t *testing.T) {
 	}
 	defer dh.Close()
 
-	dh.AppendMessage(topic, 0, 0, "first")
-	dh.AppendMessage(topic, 0, 1, "second")
+	dh.AppendMessage(topic, 0, &types.Message{Payload: "first", SeqNum: 10})
+	dh.AppendMessage(topic, 0, &types.Message{Payload: "second", SeqNum: 20})
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -108,13 +115,23 @@ func TestDiskHandlerChannelOverflow(t *testing.T) {
 		t.Fatalf("expected 2 messages, got %d", len(readMsgs))
 	}
 
-	expectedPayloads := []string{"first", "second"}
+	expected := []struct {
+		payload string
+		seqNum  uint64
+	}{
+		{"first", 10},
+		{"second", 20},
+	}
+
 	for i, msg := range readMsgs {
-		if msg.Payload != expectedPayloads[i] {
-			t.Errorf("message %d: expected payload %q, got %q", i, expectedPayloads[i], msg.Payload)
+		if msg.Payload != expected[i].payload {
+			t.Errorf("message %d: expected payload %q, got %q", i, expected[i].payload, msg.Payload)
 		}
 		if msg.Offset != uint64(i) {
 			t.Errorf("message %d: expected offset %d, got %d", i, i, msg.Offset)
+		}
+		if msg.SeqNum != expected[i].seqNum {
+			t.Errorf("message %d: expected SeqNum %d, got %d", i, expected[i].seqNum, msg.SeqNum)
 		}
 	}
 }
@@ -141,7 +158,10 @@ func TestDiskHandlerRotation(t *testing.T) {
 
 	msgs := []string{"12345", "67890", "abcde"}
 	for i, m := range msgs {
-		dh.AppendMessage(topic, 0, uint64(i), m)
+		dh.AppendMessage(topic, 0, &types.Message{
+			Payload: m,
+			SeqNum:  uint64(100 + i),
+		})
 	}
 
 	time.Sleep(50 * time.Millisecond)
@@ -170,6 +190,9 @@ func TestDiskHandlerRotation(t *testing.T) {
 		}
 		if msg.Offset != uint64(i) {
 			t.Errorf("message %d: expected offset %d, got %d", i, i, msg.Offset)
+		}
+		if msg.SeqNum != uint64(100+i) {
+			t.Errorf("message %d: expected SeqNum %d, got %d", i, 100+i, msg.SeqNum)
 		}
 	}
 }

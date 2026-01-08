@@ -10,9 +10,9 @@ services:
     environment:    
       - CONFIG_PATH=/root/config.yaml    
     ports:    
-      - "9000:9000"    
-      - "9100:9100"    
-      - "9080:9080"    
+      - "10000:9000"    
+      - "10100:9100"    
+      - "10080:9080"    
     stdin_open: true    
     tty: true    
     networks:    

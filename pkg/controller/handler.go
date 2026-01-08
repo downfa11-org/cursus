@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	clusterController "github.com/downfa11-org/go-broker/pkg/cluster/controller"
@@ -86,46 +87,32 @@ func (ch *CommandHandler) handleCommandByType(cmd, upper string, ctx *ClientCont
 	switch {
 	case strings.EqualFold(cmd, "HELP"):
 		return ch.handleHelp()
-
 	case strings.HasPrefix(upper, "CREATE "):
 		return ch.handleCreate(cmd)
-
 	case strings.HasPrefix(upper, "DELETE "):
 		return ch.handleDelete(cmd)
-
 	case strings.EqualFold(cmd, "LIST"):
 		return ch.handleList()
-
 	case strings.HasPrefix(upper, "PUBLISH "):
 		return ch.handlePublish(cmd)
-
 	case strings.HasPrefix(upper, "REGISTER_GROUP "):
 		return ch.handleRegisterGroup(cmd)
-
 	case strings.HasPrefix(upper, "JOIN_GROUP "):
 		return ch.handleJoinGroup(cmd, ctx)
-
 	case strings.HasPrefix(upper, "SYNC_GROUP "):
 		return ch.handleSyncGroup(cmd)
-
 	case strings.HasPrefix(upper, "LEAVE_GROUP "):
 		return ch.handleLeaveGroup(cmd)
-
 	case strings.HasPrefix(upper, "FETCH_OFFSET "):
 		return ch.handleFetchOffset(cmd)
-
 	case strings.HasPrefix(upper, "GROUP_STATUS "):
 		return ch.handleGroupStatus(cmd)
-
 	case strings.HasPrefix(upper, "HEARTBEAT "):
 		return ch.handleHeartbeat(cmd)
-
 	case strings.HasPrefix(upper, "COMMIT_OFFSET "):
 		return ch.handleCommitOffset(cmd)
-
 	case strings.HasPrefix(upper, "BATCH_COMMIT "):
 		return ch.handleBatchCommit(cmd)
-
 	default:
 		return "ERROR: unknown command: " + cmd
 	}
@@ -141,7 +128,11 @@ func (ch *CommandHandler) errorResponse(msg string) string {
 		Status:   "ERROR",
 		ErrorMsg: msg,
 	}
-	respBytes, _ := json.Marshal(errorResp)
+	respBytes, err := json.Marshal(errorResp)
+	if err != nil {
+		return fmt.Sprintf("failed to marshal error resp: %v", err)
+	}
+
 	return string(respBytes)
 }
 

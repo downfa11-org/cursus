@@ -20,7 +20,7 @@ func TestBasicPubSub(t *testing.T) {
 		SyncGroup().
 		ConsumeMessages().
 		Then().
-		Expect(BrokerIsHealthy()).
+		Expect(BrokerIsHealthy(StandAloneHealthCheckAddr)).
 		And(MessagesPublished(10)).
 		And(MessagesConsumed(10))
 }

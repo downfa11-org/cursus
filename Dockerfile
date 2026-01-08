@@ -10,7 +10,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags="-s -w" -o 
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags="-s -w" -o /app/cli ./cmd/cli
 
 # Stage 2:
-FROM alpine:3.18
+FROM alpine:3.20
 
 WORKDIR /root/
 COPY --from=builder /app/broker .

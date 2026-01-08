@@ -4,3 +4,4 @@ pkg/topic/topic1/*
 pkg/server/testconn/*
 manifests/logs/*
 test/logs/*
+.vscode/settings.json  

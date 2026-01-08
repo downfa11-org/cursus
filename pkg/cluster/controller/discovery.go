@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -17,8 +18,8 @@ type ServiceDiscovery struct {
 	addr     string
 }
 
-func NewServiceDiscovery(rm *replication.RaftReplicationManager, brokerID, addr string) ServiceDiscovery {
-	return ServiceDiscovery{
+func NewServiceDiscovery(rm *replication.RaftReplicationManager, brokerID, addr string) *ServiceDiscovery {
+	return &ServiceDiscovery{
 		rm:       rm,
 		fsm:      rm.GetFSM(),
 		brokerID: brokerID,
@@ -66,12 +67,12 @@ func (sd *ServiceDiscovery) DiscoverBrokers() ([]fsm.BrokerInfo, error) {
 
 func (sd *ServiceDiscovery) AddNode(nodeID string, addr string) (string, error) {
 	leaderAddr := sd.rm.GetLeaderAddress()
-
 	if !sd.rm.IsLeader() {
 		return leaderAddr, fmt.Errorf("not leader; contact leader at %s", leaderAddr)
 	}
 
 	if err := sd.rm.AddVoter(nodeID, addr); err != nil {
+		util.Error("Failed to add Raft voter: %v", err)
 		return leaderAddr, err
 	}
 
@@ -84,12 +85,12 @@ func (sd *ServiceDiscovery) AddNode(nodeID string, addr string) (string, error) 
 
 	data, err := json.Marshal(broker)
 	if err != nil {
-		util.Error("CRITICAL: Marshal failed after AddVoter. Node added to Raft but not to FSM: id=%s err=%v", nodeID, err)
+		util.Error("Marshal failed after AddVoter. Node added to Raft but not to FSM: id=%s err=%v", nodeID, err)
 		return leaderAddr, fmt.Errorf("marshal failed after AddVoter: %w", err)
 	}
 
 	if err := sd.rm.ApplyCommand("REGISTER", data); err != nil {
-		util.Error("CRITICAL: REGISTER command failed after AddVoter. Raft cluster and FSM are now inconsistent: id=%s err=%v", nodeID, err)
+		util.Error("REGISTER command failed after AddVoter. Raft cluster and FSM are now inconsistent: id=%s err=%v", nodeID, err)
 		return leaderAddr, fmt.Errorf("REGISTER command failed: %w", err)
 	}
 
@@ -108,27 +109,79 @@ func (sd *ServiceDiscovery) RemoveNode(nodeID string) (string, error) {
 	}
 
 	if err := sd.rm.ApplyCommand("DEREGISTER", []byte(nodeID)); err != nil {
-		util.Error("CRITICAL: DEREGISTER failed after RemoveServer. FSM contains stale node info: id=%s err=%v", nodeID, err)
+		util.Error("DEREGISTER failed after RemoveServer. FSM contains stale node info: id=%s err=%v", nodeID, err)
 		return leaderAddr, fmt.Errorf("DEREGISTER failed: %w", err)
 	}
 
 	return leaderAddr, nil
 }
 
-/*
-todo. 왜 Raft configuration 변경과 FSM 상태 변경이
-서로 다른 Apply 경로인가?
+func (sd *ServiceDiscovery) StartReconciler(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	go func() {
+		defer ticker.Stop()
+		util.Debug("reconciler started for broker %s", sd.brokerID)
 
-AddVoter → Raft internal log
+		for {
+			select {
+			case <-ticker.C:
+				if !sd.rm.IsLeader() {
+					continue
+				}
+				sd.reconcile()
+			case <-ctx.Done():
+				util.Info("reconciler stopping for broker %s due to context cancellation", sd.brokerID)
+				return
+			}
+		}
+	}()
+}
 
-REGISTER → FSM command
+func (sd *ServiceDiscovery) reconcile() {
+	future := sd.rm.GetConfiguration()
+	if err := future.Error(); err != nil {
+		util.Error("Failed to get Raft configuration: %v", err)
+		return
+	}
+	raftServers := future.Configuration().Servers
 
-이 둘은 같은 합의 단위가 아니다
-→ 결국 “언젠가는 어긋난다”
+	raftMap := make(map[string]string)
+	for _, s := range raftServers {
+		raftMap[string(s.ID)] = string(s.Address)
+	}
 
-장기적으로는
+	fsmBrokers := sd.fsm.GetBrokers()
+	fsmMap := make(map[string]bool)
 
-AddVoter + REGISTER 를 단일 Raft FSM command로 묶거나
+	for _, b := range fsmBrokers {
+		fsmMap[b.ID] = true
+		if _, exists := raftMap[b.ID]; !exists {
+			util.Warn("Node %s found in FSM but missing in Raft. Cleaning up...", b.ID)
+			if err := sd.rm.ApplyCommand("DEREGISTER", []byte(b.ID)); err != nil {
+				util.Error("Failed to apply DEREGISTER for node %s: %v", b.ID, err)
+			}
+		}
+	}
 
-실패 시 보정하는 reconciliation 루프가 필요하다
-*/
+	for id, addr := range raftMap {
+		if !fsmMap[id] {
+			util.Warn("Node %s found in Raft but missing in FSM. Repairing...", id)
+			broker := &fsm.BrokerInfo{
+				ID:       id,
+				Addr:     addr,
+				Status:   "active",
+				LastSeen: time.Now(),
+			}
+			data, err := json.Marshal(broker)
+			if err != nil {
+				util.Error("Failed to marshal broker info for node %s: %v", id, err)
+				continue
+			}
+			if err := sd.rm.ApplyCommand("REGISTER", data); err != nil {
+				util.Error("Failed to apply REGISTER repair for node %s: %v", id, err)
+			} else {
+				util.Info("Successfully repaired FSM for node %s", id)
+			}
+		}
+	}
+}

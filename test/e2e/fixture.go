@@ -2,19 +2,27 @@ package e2e
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-const defaultBrokerAddr = "localhost:9000"
+var (
+	composeFile               = "docker-compose.yml"
+	envOnce                   sync.Once
+	defaultBrokerAddrs        = []string{"localhost:10000"}
+	StandAloneHealthCheckAddr = []string{"http://localhost:10080/health"}
+)
 
 // TestContext holds all test state and configuration
 type TestContext struct {
 	t              *testing.T
-	brokerAddr     string
+	brokerAddrs    []string
 	topic          string
 	partitions     int
 	numMessages    int
@@ -25,6 +33,7 @@ type TestContext struct {
 	publishedCount int
 	consumedCount  int
 	consumerGroup  string
+	lastError      error
 
 	// Producer state
 	producerID       string
@@ -43,41 +52,193 @@ type TestContext struct {
 
 // Given creates a new test context with default values
 func Given(t *testing.T) *TestContext {
+	initEnvironment(t)
+	uniqueID := uuid.New().String()[:8]
+
 	return &TestContext{
 		t:              t,
-		brokerAddr:     defaultBrokerAddr,
+		brokerAddrs:    defaultBrokerAddrs,
 		topic:          "test-topic",
 		partitions:     1,
 		numMessages:    10,
 		publishDelayMS: 100,
 		startTime:      time.Now(),
-		consumerGroup:  fmt.Sprintf("test-group-%d", time.Now().UnixNano()),
-
-		memberID:   fmt.Sprintf("e2e-consumer-%d", time.Now().UnixNano()),
-		generation: 0,
-
-		producerID: uuid.New().String(),
-		seqNum:     0,
-		acks:       "1",
-		client:     nil, // lazily initialized
+		consumerGroup:  fmt.Sprintf("test-group-%s", uniqueID),
+		memberID:       fmt.Sprintf("e2e-consumer-%s", uniqueID),
+		generation:     0,
+		producerID:     uuid.New().String(),
+		seqNum:         0,
+		acks:           "1",
+		client:         nil, // lazily initialized
 	}
+}
+
+func getComposeCommand() []string {
+	if _, err := exec.LookPath("docker-compose"); err == nil {
+		return []string{"docker-compose"}
+	}
+	return []string{"docker", "compose"}
+}
+
+func RunCompose(args ...string) *exec.Cmd {
+	base := getComposeCommand()
+	fullArgs := append(base[1:], args...)
+	return exec.Command(base[0], fullArgs...)
+}
+
+// GivenRestart starts the broker environment and returns a new context
+func initEnvironment(t *testing.T) {
+	envOnce.Do(func() {
+		t.Log("Starting docker compose environment...")
+
+		cmd := RunCompose("-f", composeFile, "up", "-d")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("Failed to start docker compose: %v\nOutput: %s", err, string(output))
+		}
+		time.Sleep(10 * time.Second)
+	})
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+
+	fmt.Println("All tests finished. Cleaning up docker compose environment...")
+	cmd := RunCompose("-f", composeFile, "down", "-v")
+
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: docker compose down failed: %v\n", err)
+	}
+
+	os.Exit(code)
+}
+
+func (ctx *TestContext) GetT() *testing.T {
+	return ctx.t
 }
 
 func (ctx *TestContext) getClient() *BrokerClient {
 	if ctx.client == nil {
-		ctx.client = NewBrokerClient(ctx.brokerAddr)
-
-		ctx.client.mu.Lock()
-		ctx.client.memberID = ctx.memberID
-		ctx.client.mu.Unlock()
+		ctx.client = NewBrokerClient(ctx.brokerAddrs)
+		ctx.client.SetMemberID(ctx.memberID)
+		ctx.t.Logf("Initialized BrokerClient with nodes: %v", ctx.brokerAddrs)
 	}
 
 	return ctx.client
 }
 
+// GetMemberID returns the consumer member ID
+func (bc *BrokerClient) GetMemberID() string {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	return bc.memberID
+}
+
+func (bc *BrokerClient) SetMemberID(id string) {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	bc.memberID = id
+}
+
+// GetNumMessages returns the current number of messages setting
+func (ctx *TestContext) GetNumMessages() int {
+	return ctx.numMessages
+}
+
+// SetNumMessages sets the number of messages (for temporary modification)
+func (ctx *TestContext) SetNumMessages(num int) *TestContext {
+	ctx.numMessages = num
+	return ctx
+}
+
+func (ctx *TestContext) SetBrokerAddrs(addrs []string) {
+	ctx.brokerAddrs = addrs
+	if ctx.client != nil {
+		ctx.client.Close()
+		ctx.client = nil
+	}
+}
+
+// GetBrokerAddr returns the broker address
+func (ctx *TestContext) GetBrokerAddrs() []string {
+	return ctx.brokerAddrs
+}
+
+// GetTopic returns the topic name
+func (ctx *TestContext) GetTopic() string {
+	return ctx.topic
+}
+
+// GetPartitions returns the number of partitions
+func (ctx *TestContext) GetPartitions() int {
+	return ctx.partitions
+}
+
+// GetConsumerGroup returns the consumer group name
+func (ctx *TestContext) GetConsumerGroup() string {
+	return ctx.consumerGroup
+}
+
+// GetPublishedCount returns the number of published messages
+func (ctx *TestContext) GetPublishedCount() int {
+	return ctx.publishedCount
+}
+
+// GetConsumedCount returns the number of consumed messages
+func (ctx *TestContext) GetConsumedCount() int {
+	return ctx.consumedCount
+}
+
+// GetAcks returns the acks setting
+func (ctx *TestContext) GetAcks() string {
+	return ctx.acks
+}
+
+// GetClient returns the broker client
+func (ctx *TestContext) GetClient() *BrokerClient {
+	return ctx.getClient()
+}
+
+// GetAssignedPartitions returns the assigned partitions
+func (ctx *TestContext) GetAssignedPartitions() []int {
+	return ctx.assignedPartitions
+}
+
+// SetConsumedCount sets the consumed message count
+func (ctx *TestContext) SetConsumedCount(count int) {
+	ctx.consumedCount = count
+}
+
+// GetGeneration returns the consumer generation
+func (bc *BrokerClient) GetGeneration() int {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	return bc.generation
+}
+
+// GetProducerID returns the current producer ID
+func (c *TestContext) GetProducerID() string {
+	return c.producerID
+}
+
+// GetPublishedSeqNums returns the sequence numbers of published messages
+func (c *TestContext) GetPublishedSeqNums() []uint64 {
+	return c.publishedSeqNums
+}
+
+func (bc *BrokerClient) GetSyncInfo() (string, int) {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	return bc.memberID, bc.generation
+}
+
 // Configuration methods (fluent interface)
 func (ctx *TestContext) WithTopic(topic string) *TestContext {
 	ctx.topic = topic
+
+	if ctx.client != nil {
+		ctx.client.Close()
+		ctx.client = nil
+	}
 	return ctx
 }
 
@@ -103,12 +264,6 @@ func (ctx *TestContext) WithAcks(acks string) *TestContext {
 
 func (ctx *TestContext) WithConsumerGroup(group string) *TestContext {
 	ctx.consumerGroup = group
-	return ctx
-}
-
-func (ctx *TestContext) WithDefaultConsumerGroup() *TestContext {
-	ctx.t.Log("Warning: Using default-group may cause test isolation issues")
-	ctx.consumerGroup = "default-group"
 	return ctx
 }
 

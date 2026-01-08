@@ -7,23 +7,38 @@ import (
 )
 
 const (
-	healthCheckURL      = "http://localhost:9080/health"
 	healthCheckRetries  = 30
 	healthCheckInterval = 1 * time.Second
 )
 
 // CheckBrokerHealth verifies broker is ready (assumes already started by Makefile)
-func CheckBrokerHealth() error {
-	for i := 0; i < healthCheckRetries; i++ {
-		resp, err := http.Get(healthCheckURL)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
-			return nil
+func CheckBrokerHealth(healthCheckURLs []string) error {
+	for _, url := range healthCheckURLs {
+		ready := false
+		for i := 0; i < healthCheckRetries; i++ {
+			resp, err := http.Get(url)
+			if err == nil && resp.StatusCode == http.StatusOK {
+				resp.Body.Close()
+				ready = true
+				break
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+			time.Sleep(healthCheckInterval)
 		}
-		if resp != nil {
-			resp.Body.Close()
+		if !ready {
+			return fmt.Errorf("node at %s not ready after %d attempts", url, healthCheckRetries)
 		}
-		time.Sleep(healthCheckInterval)
 	}
-	return fmt.Errorf("broker not ready after %d attempts", healthCheckRetries)
+	return nil
+}
+
+func (bc *BrokerClient) getPrimaryAddr() (string, error) {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	if len(bc.addrs) == 0 {
+		return "", fmt.Errorf("broker address list is empty")
+	}
+	return bc.addrs[0], nil
 }

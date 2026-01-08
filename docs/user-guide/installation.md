@@ -106,7 +106,7 @@ The build process is defined in Dockerfile:
 
 ### Stage 2: Runtime
 
-- Base: alpine:3.18 (minimal Linux distribution)
+- Base: alpine:3.20 (minimal Linux distribution)
 - Copies only compiled binaries from builder stage
 - Installs bash and curl for operational needs
 - Sets executable permissions on binaries

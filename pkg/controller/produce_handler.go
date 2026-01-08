@@ -59,7 +59,7 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 	}
 
 	var ackResp types.AckResponse
-	if ch.Config.EnabledDistribution && ch.Cluster != nil {
+	if ch.Config.EnabledDistribution && ch.Cluster != nil && ch.Cluster.RaftManager != nil {
 		leader := ch.Cluster.IsLeader()
 		if !leader {
 			const maxRetries = 3
@@ -73,14 +73,14 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 					return resp
 				}
 
-				util.Debug("Failed to forward PUBLISH to leader (%s). Retrying (Attempt %d/%d). Error: %v", leader, i+1, maxRetries, forwardErr)
+				util.Debug("Failed to forward PUBLISH (Attempt %d/%d). Error: %v", i+1, maxRetries, forwardErr)
 
 				if i < maxRetries-1 {
 					time.Sleep(retryDelay)
 				}
 				lastErr = forwardErr
 			}
-			return ch.errorResponse(fmt.Sprintf("failed to forward PUBLISH to leader after %d attempts: %v", maxRetries, lastErr))
+			return ch.errorResponse(fmt.Sprintf("failed to forward PUBLISH: %v", lastErr))
 		} else {
 			leaderAddr := ch.Cluster.RaftManager.GetLeaderAddress()
 			util.Debug("Processing PUBLISH locally as leader: %s", leaderAddr)
@@ -149,7 +149,11 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 				"acks":       acks,
 			}
 
-			jsonData, _ := json.Marshal(messageData)
+			jsonData, err := json.Marshal(messageData)
+			if err != nil {
+				util.Error("Failed to marshal: %v", err)
+				return "ERROR: internal marshal error"
+			}
 
 			if acks == "0" {
 				err = ch.Cluster.RaftManager.ApplyCommand("MESSAGE", jsonData)
@@ -169,7 +173,7 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 		if acks == "0" {
 			err = ch.TopicManager.Publish(topicName, msg)
 			if err != nil {
-				return ch.errorResponse(fmt.Sprintf("acks=0 publish failed: %v", err))
+				util.Error("acks=0 publish failed (stand-alone): %v", err)
 			}
 			return "OK"
 		}
@@ -189,13 +193,13 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 	}
 
 Respond:
-	if ch.Config.EnabledDistribution && ch.Cluster != nil {
+	if ch.Config.EnabledDistribution && ch.Cluster != nil && ch.Cluster.RaftManager != nil {
 		if leader := ch.Cluster.RaftManager.GetLeaderAddress(); leader != "" {
 			ackResp.Leader = leader
 		}
 	}
 
-	respBytes, _ := json.Marshal(ackResp)
+	respBytes, err := json.Marshal(ackResp)
 	if err != nil {
 		util.Error("Failed to marshal response: %v", err)
 		return "ERROR: internal marshal error"
@@ -236,7 +240,7 @@ func (ch *CommandHandler) HandleBatchMessage(data []byte, conn net.Conn) (string
 					return resp, nil
 				}
 
-				util.Debug("Failed to forward BATCH to leader (%s). Retrying (Attempt %d/%d). Error: %v", leader, i+1, maxRetries, forwardErr)
+				util.Debug("Failed to forward batch to leader. Retrying (Attempt %d/%d). Error: %v", i+1, maxRetries, forwardErr)
 
 				if i < maxRetries-1 {
 					time.Sleep(retryDelay)
@@ -256,13 +260,18 @@ func (ch *CommandHandler) HandleBatchMessage(data []byte, conn net.Conn) (string
 		}
 
 		if acks == "-1" || acksLower == "all" {
-			respAck, err = ch.Cluster.RaftManager.ReplicateBatchWithQuorum(batch.Topic, batch.Partition, batch.Messages, ch.Config.MinInSyncReplicas)
+			respAck, err = ch.Cluster.RaftManager.ReplicateBatchWithQuorum(batch.Topic, batch.Partition, batch.Messages, ch.Config.MinInSyncReplicas, acks)
 			if err != nil {
 				return ch.errorResponse(err.Error()), nil
 			}
 			goto Respond
 		} else {
-			batchData, _ := json.Marshal(batch)
+			batchData, err := json.Marshal(batch)
+			if err != nil {
+				util.Error("Failed to marshal: %v", err)
+				return ch.errorResponse("batch marshal error"), nil
+			}
+
 			if acks == "0" {
 				err = ch.Cluster.RaftManager.ApplyCommand("BATCH", batchData)
 				if err != nil {
@@ -308,7 +317,7 @@ func (ch *CommandHandler) HandleBatchMessage(data []byte, conn net.Conn) (string
 	}
 
 Respond:
-	if ch.Config.EnabledDistribution && ch.Cluster.RaftManager != nil {
+	if ch.Config.EnabledDistribution && ch.Cluster != nil && ch.Cluster.RaftManager != nil {
 		if leader := ch.Cluster.RaftManager.GetLeaderAddress(); leader != "" {
 			respAck.Leader = leader
 		}

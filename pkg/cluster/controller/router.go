@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"time"
 
@@ -86,44 +88,7 @@ func (r *ClusterRouter) processLocally(req string) string {
 }
 
 func (r *ClusterRouter) sendRequest(addr, command string) (string, error) {
-	conn, err := net.DialTimeout("tcp", addr, r.timeout)
-	if err != nil {
-		return "", err
-	}
-	defer conn.Close()
-
-	if err := conn.SetDeadline(time.Now().Add(r.timeout)); err != nil {
-		return "", err
-	}
-
-	data := []byte(command)
-	lenBuf := make([]byte, 4)
-	lenBuf[0] = byte(len(data) >> 24)
-	lenBuf[1] = byte(len(data) >> 16)
-	lenBuf[2] = byte(len(data) >> 8)
-	lenBuf[3] = byte(len(data))
-
-	if _, err := conn.Write(lenBuf); err != nil {
-		return "", err
-	}
-	if _, err := conn.Write(data); err != nil {
-		return "", err
-	}
-
-	respLenBuf := make([]byte, 4)
-	if _, err := conn.Read(respLenBuf); err != nil {
-		return "", err
-	}
-
-	respLen := uint32(respLenBuf[0])<<24 | uint32(respLenBuf[1])<<16 |
-		uint32(respLenBuf[2])<<8 | uint32(respLenBuf[3])
-
-	respBuf := make([]byte, respLen)
-	if _, err := conn.Read(respBuf); err != nil {
-		return "", err
-	}
-
-	return string(respBuf), nil
+	return r.sendDataRequest(addr, []byte(command))
 }
 
 // sendDataRequest sends raw data (byte slice) to the specified address and expects a response string.
@@ -139,30 +104,29 @@ func (r *ClusterRouter) sendDataRequest(addr string, data []byte) (string, error
 	}
 
 	lenBuf := make([]byte, 4)
-	dataLen := len(data)
-	lenBuf[0] = byte(dataLen >> 24)
-	lenBuf[1] = byte(dataLen >> 16)
-	lenBuf[2] = byte(dataLen >> 8)
-	lenBuf[3] = byte(dataLen)
+	binary.BigEndian.PutUint32(lenBuf, uint32(len(data)))
 
 	if _, err := conn.Write(lenBuf); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to write length: %w", err)
 	}
-
 	if _, err := conn.Write(data); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to write data: %w", err)
 	}
 
 	respLenBuf := make([]byte, 4)
-	if _, err := conn.Read(respLenBuf); err != nil {
-		return "", err
+	if _, err := io.ReadFull(conn, respLenBuf); err != nil {
+		return "", fmt.Errorf("failed to read response length: %w", err)
 	}
 
-	respLen := uint32(respLenBuf[0])<<24 | uint32(respLenBuf[1])<<16 | uint32(respLenBuf[2])<<8 | uint32(respLenBuf[3])
+	respLen := binary.BigEndian.Uint32(respLenBuf)
+
+	if respLen == 0 {
+		return "", nil
+	}
 
 	respBuf := make([]byte, respLen)
-	if _, err := conn.Read(respBuf); err != nil {
-		return "", err
+	if _, err := io.ReadFull(conn, respBuf); err != nil {
+		return "", fmt.Errorf("failed to read full response body: %w", err)
 	}
 
 	return string(respBuf), nil

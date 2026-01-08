@@ -1,10 +1,12 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/downfa11-org/go-broker/pkg/cluster/replication"
 	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/go-broker/util"
 )
 
 type ClusterController struct {
@@ -14,7 +16,7 @@ type ClusterController struct {
 	Router      *ClusterRouter
 }
 
-func NewClusterController(cfg *config.Config, rm *replication.RaftReplicationManager, sd *ServiceDiscovery) *ClusterController {
+func NewClusterController(ctx context.Context, cfg *config.Config, rm *replication.RaftReplicationManager, sd *ServiceDiscovery) *ClusterController {
 	brokerID := fmt.Sprintf("%s-%d", cfg.AdvertisedHost, cfg.BrokerPort)
 	localAddr := fmt.Sprintf("%s:%d", cfg.AdvertisedHost, cfg.BrokerPort)
 
@@ -24,12 +26,13 @@ func NewClusterController(cfg *config.Config, rm *replication.RaftReplicationMan
 		Election:    NewControllerElection(rm),
 		Router:      NewClusterRouter(brokerID, localAddr, nil, rm, cfg.BrokerPort),
 	}
-	cc.Start()
+
 	return cc
 }
 
-func (cc *ClusterController) Start() {
+func (cc *ClusterController) Start(ctx context.Context) {
 	cc.Election.Start()
+	cc.Discovery.StartReconciler(ctx)
 }
 
 func (cc *ClusterController) GetClusterLeader() (string, error) {
@@ -49,10 +52,11 @@ func (cc *ClusterController) IsLeader() bool {
 	if cc.RaftManager != nil {
 		return cc.RaftManager.IsLeader()
 	}
-	return true
+	util.Warn("RaftManager is nil, assuming non-leader state")
+	return false
 }
 
-// todo. Delegate authorization to partition-level leader checks in future releases.
+// todo. (issues #27) Delegate authorization to partition-level leader checks in future releases.
 func (cc *ClusterController) IsAuthorized(topic string, partition int) bool {
 	return cc.IsLeader()
 }

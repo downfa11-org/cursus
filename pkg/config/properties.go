@@ -35,8 +35,9 @@ type Config struct {
 	SegmentSize        int    `yaml:"segment_size" json:"segment.size"`
 	SegmentRollTimeMS  int    `yaml:"segment_roll_time_ms" json:"segment.roll.time.ms"`
 
-	PartitionChannelBufSize int `yaml:"partition_channel_buffer_size" json:"partition.channel.buffer.size"`
-	ConsumerChannelBufSize  int `yaml:"consumer_channel_buffer_size" json:"consumer.channel.buffer.size"`
+	PartitionChannelBufSize    int `yaml:"partition_channel_buffer_size" json:"partition.channel.buffer.size"`
+	ConsumerChannelBufSize     int `yaml:"consumer_channel_buffer_size" json:"consumer.channel.buffer.size"`
+	BroadcastChannelBufferSize int `yaml:"broadcast_channel_buffer_size" json:"broadcast.channel.buffer.size"`
 
 	ConsumerSessionTimeoutMS int `yaml:"consumer_session_timeout_ms" json:"consumer.session.timeout.ms"`
 	ConsumerHeartbeatCheckMS int `yaml:"consumer_heartbeat_check_ms" json:"consumer.heartbeat.check.ms"`
@@ -69,36 +70,37 @@ type Config struct {
 
 func defaultConfig() *Config {
 	return &Config{
-		BrokerPort:               9000,
-		HealthCheckPort:          9080,
-		EnableExporter:           true,
-		ExporterPort:             9100,
-		LogLevel:                 util.LogLevelInfo,
-		LogDir:                   "broker-logs",
-		DiskFlushBatchSize:       50,
-		LingerMS:                 50,
-		ChannelBufferSize:        1024,
-		DiskWriteTimeoutMS:       10,
-		SegmentSize:              1 << 20,
-		SegmentRollTimeMS:        0,
-		PartitionChannelBufSize:  10000,
-		ConsumerChannelBufSize:   1000,
-		ConsumerSessionTimeoutMS: 10000,
-		ConsumerHeartbeatCheckMS: 5000,
-		CleanupInterval:          300,
-		MaxStreamConnections:     1000,
-		StreamTimeout:            30 * time.Minute,
-		StreamHeartbeatInterval:  3 * time.Second,
-		StreamCommitInterval:     5 * time.Second,
-		CompressionType:          "none",
-		EnabledDistribution:      false,
-		RaftPort:                 9001,
-		DiscoveryPort:            8000,
-		RaftPeers:                []string{},
-		StaticClusterMembers:     []string{},
-		BootstrapCluster:         false,
-		AdvertisedHost:           "localhost",
-		MinInSyncReplicas:        2,
+		BrokerPort:                 9000,
+		HealthCheckPort:            9080,
+		EnableExporter:             true,
+		ExporterPort:               9100,
+		LogLevel:                   util.LogLevelInfo,
+		LogDir:                     "broker-logs",
+		DiskFlushBatchSize:         50,
+		LingerMS:                   50,
+		ChannelBufferSize:          1024,
+		DiskWriteTimeoutMS:         10,
+		SegmentSize:                1 << 20,
+		SegmentRollTimeMS:          0,
+		PartitionChannelBufSize:    10000,
+		ConsumerChannelBufSize:     1000,
+		BroadcastChannelBufferSize: 10000,
+		ConsumerSessionTimeoutMS:   10000,
+		ConsumerHeartbeatCheckMS:   5000,
+		CleanupInterval:            300,
+		MaxStreamConnections:       1000,
+		StreamTimeout:              30 * time.Minute,
+		StreamHeartbeatInterval:    3 * time.Second,
+		StreamCommitInterval:       5 * time.Second,
+		CompressionType:            "none",
+		EnabledDistribution:        false,
+		RaftPort:                   9001,
+		DiscoveryPort:              8000,
+		RaftPeers:                  []string{},
+		StaticClusterMembers:       []string{},
+		BootstrapCluster:           false,
+		AdvertisedHost:             "localhost",
+		MinInSyncReplicas:          2,
 	}
 }
 
@@ -125,6 +127,7 @@ func LoadConfig() (*Config, error) {
 
 	flag.IntVar(&cfg.PartitionChannelBufSize, "partition-ch-buffer", cfg.PartitionChannelBufSize, "Partition buffer")
 	flag.IntVar(&cfg.ConsumerChannelBufSize, "consumer-ch-buffer", cfg.ConsumerChannelBufSize, "Consumer buffer")
+	flag.IntVar(&cfg.BroadcastChannelBufferSize, "broadcast-ch-buffer", cfg.BroadcastChannelBufferSize, "Broadcast channel buffer size")
 
 	flag.IntVar(&cfg.ConsumerSessionTimeoutMS, "consumer-session-timeout", cfg.ConsumerSessionTimeoutMS, "Session timeout")
 	flag.IntVar(&cfg.ConsumerHeartbeatCheckMS, "consumer-heartbeat-check", cfg.ConsumerHeartbeatCheckMS, "Heartbeat check")
@@ -204,6 +207,10 @@ func LoadConfig() (*Config, error) {
 
 	overrideEnvInt(&cfg.DiskFlushBatchSize, "DISK_FLUSH_BATCH")
 	overrideEnvInt(&cfg.LingerMS, "LINGER_MS")
+
+	overrideEnvInt(&cfg.PartitionChannelBufSize, "PARTITION_CH_BUFFER")
+	overrideEnvInt(&cfg.ConsumerChannelBufSize, "CONSUMER_CH_BUFFER")
+	overrideEnvInt(&cfg.BroadcastChannelBufferSize, "BROADCAST_CH_BUFFER")
 
 	overrideEnvInt(&cfg.ConsumerSessionTimeoutMS, "CONSUMER_SESSION_TIMEOUT")
 	overrideEnvInt(&cfg.ConsumerHeartbeatCheckMS, "CONSUMER_HEARTBEAT_CHECK")
@@ -315,6 +322,9 @@ func (cfg *Config) Normalize() {
 	}
 	if cfg.ConsumerChannelBufSize <= 0 {
 		cfg.ConsumerChannelBufSize = 1000
+	}
+	if cfg.BroadcastChannelBufferSize <= 0 {
+		cfg.BroadcastChannelBufferSize = 10000
 	}
 
 	for i := range cfg.StaticConsumerGroups {

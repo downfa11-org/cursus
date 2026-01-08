@@ -31,10 +31,13 @@ type Batch struct {
 
 // DiskMessage represents a message stored on disk with full metadata
 type DiskMessage struct {
-	Topic     string
-	Partition int32
-	Offset    uint64
-	Payload   string
+	Topic      string
+	Partition  int32
+	Offset     uint64
+	ProducerID string
+	SeqNum     uint64
+	Epoch      int64
+	Payload    string
 }
 
 // AppendResult represents the result of appending a message to storage

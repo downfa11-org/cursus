@@ -2,6 +2,8 @@ package replication
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +19,11 @@ type ISRManager struct {
 	mu               sync.RWMutex
 	lastSeen         map[string]time.Time
 	heartbeatTimeout time.Duration
+
+	stopCh    chan struct{}
+	running   bool
+	startOnce sync.Once
+	stopOnce  sync.Once
 }
 
 func NewISRManager(fsm *fsm.BrokerFSM, brokerID string, heartbeatTimeout time.Duration) *ISRManager {
@@ -28,6 +35,59 @@ func NewISRManager(fsm *fsm.BrokerFSM, brokerID string, heartbeatTimeout time.Du
 		brokerID:         brokerID,
 		lastSeen:         make(map[string]time.Time),
 		heartbeatTimeout: heartbeatTimeout,
+		stopCh:           make(chan struct{}),
+	}
+}
+
+func (i *ISRManager) Start() {
+	i.startOnce.Do(func() {
+		i.mu.Lock()
+		i.running = true
+		i.mu.Unlock()
+
+		go func() {
+			ticker := time.NewTicker(i.heartbeatTimeout / 2)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ticker.C:
+					i.refreshAllISRs()
+					i.CleanStaleHeartbeats()
+				case <-i.stopCh:
+					return
+				}
+			}
+		}()
+	})
+}
+
+func (i *ISRManager) Stop() {
+	i.stopOnce.Do(func() {
+		i.mu.Lock()
+		i.running = false
+		i.mu.Unlock()
+
+		close(i.stopCh)
+	})
+}
+
+func (i *ISRManager) refreshAllISRs() {
+	partitionKeys := i.fsm.GetAllPartitionKeys()
+
+	for _, key := range partitionKeys {
+		idx := strings.LastIndex(key, "-")
+		if idx == -1 {
+			continue
+		}
+		topic := key[:idx]
+		partition, err := strconv.Atoi(key[idx+1:])
+		if err != nil {
+			util.Debug("Skipping invalid partition key format: %s", key)
+			continue
+		}
+
+		i.ComputeISR(topic, partition)
 	}
 }
 
@@ -39,22 +99,24 @@ func (i *ISRManager) UpdateHeartbeat(brokerID string) {
 }
 
 func (i *ISRManager) ComputeISR(topic string, partition int) []string {
-	i.mu.RLock()
-	defer i.mu.RUnlock()
-
 	key := fmt.Sprintf("%s-%d", topic, partition)
+	var isr []string
+
+	i.mu.RLock()
 	metadata := i.fsm.GetPartitionMetadata(key)
+
 	if metadata == nil {
+		i.mu.RUnlock()
 		util.Warn("Partition metadata not found for %s. Returning empty ISR.", key)
 		return nil
 	}
 
-	var isr []string
 	for _, broker := range metadata.Replicas {
 		if last, ok := i.lastSeen[broker]; ok && time.Since(last) < i.heartbeatTimeout {
 			isr = append(isr, broker)
 		}
 	}
+	i.mu.RUnlock()
 
 	i.fsm.UpdatePartitionISR(key, isr)
 	return isr
@@ -73,7 +135,7 @@ func (i *ISRManager) GetISR(topic string, partition int) []string {
 
 // HasQuorum checks if enough live replicas exist for the partition.
 func (i *ISRManager) HasQuorum(topic string, partition int, minISR int) bool {
-	isr := i.ComputeISR(topic, partition)
+	isr := i.GetISR(topic, partition)
 
 	currentISRCount := len(isr)
 	isLeaderInISR := false
@@ -90,13 +152,11 @@ func (i *ISRManager) HasQuorum(topic string, partition int, minISR int) bool {
 	}
 
 	if currentISRCount >= minISR {
-		util.Debug("Quorum met for %s-%d: current ISR count %d >= min ISR %d",
-			topic, partition, currentISRCount, minISR)
+		util.Debug("Quorum met for %s-%d: current ISR count %d >= min ISR %d", topic, partition, currentISRCount, minISR)
 		return true
 	}
 
-	util.Warn("Quorum NOT met for %s-%d: current ISR count %d < min ISR %d",
-		topic, partition, currentISRCount, minISR)
+	util.Warn("Quorum NOT met for %s-%d: current ISR count %d < min ISR %d", topic, partition, currentISRCount, minISR)
 	return false
 }
 

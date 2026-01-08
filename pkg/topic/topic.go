@@ -25,22 +25,6 @@ type Topic struct {
 	streamManager  *stream.StreamManager
 }
 
-// Partition handles messages for one shard of a topic.
-type Partition struct {
-	id            int
-	topic         string
-	mu            sync.RWMutex
-	dh            interface{}
-	closed        bool
-	streamManager *stream.StreamManager
-	newMessageCh  chan struct{}
-}
-
-type DiskAppender interface {
-	AppendMessage(topic string, partition int, offset uint64, payload string)
-	AppendMessageSync(topic string, partition int, offset uint64, payload string) error
-}
-
 // NewTopic initializes a topic with partitions.
 func NewTopic(name string, partitionCount int, hp HandlerProvider, cfg *config.Config, sm *stream.StreamManager) (*Topic, error) {
 	partitions := make([]*Partition, partitionCount)
@@ -49,7 +33,7 @@ func NewTopic(name string, partitionCount int, hp HandlerProvider, cfg *config.C
 		if err != nil {
 			return nil, fmt.Errorf("open handler for %s[%d]: %w", name, i, err)
 		}
-		partitions[i] = NewPartition(i, name, dh, sm)
+		partitions[i] = NewPartition(i, name, dh, sm, cfg)
 	}
 	return &Topic{
 		Name:           name,
@@ -58,19 +42,6 @@ func NewTopic(name string, partitionCount int, hp HandlerProvider, cfg *config.C
 		cfg:            cfg,
 		streamManager:  sm,
 	}, nil
-}
-
-// NewPartition creates a partition instance.
-func NewPartition(id int, topic string, dh interface{}, sm *stream.StreamManager) *Partition {
-	p := &Partition{
-		id:            id,
-		topic:         topic,
-		dh:            dh,
-		streamManager: sm,
-		newMessageCh:  make(chan struct{}, 1),
-	}
-
-	return p
 }
 
 func (t *Topic) GetPartitionForMessage(msg types.Message) int {
@@ -90,6 +61,9 @@ func (t *Topic) GetPartitionForMessage(msg types.Message) int {
 
 // AddPartitions extends the topic with new partitions.
 func (t *Topic) AddPartitions(extra int, hp HandlerProvider) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	for i := 0; i < extra; i++ {
 		idx := len(t.Partitions)
 		dh, err := hp.GetHandler(t.Name, idx)
@@ -97,7 +71,7 @@ func (t *Topic) AddPartitions(extra int, hp HandlerProvider) {
 			util.Error("❌ failed to attach partition %d for topic '%s': %v\n", idx, t.Name, err)
 			return
 		}
-		newP := NewPartition(idx, t.Name, dh, t.streamManager)
+		newP := NewPartition(idx, t.Name, dh, t.streamManager, t.cfg)
 		t.Partitions = append(t.Partitions, newP)
 	}
 }

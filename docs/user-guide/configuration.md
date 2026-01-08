@@ -54,7 +54,7 @@ broker:
   channel_buffer_size: 10000
   disk_flush_batch_size: 500
   linger_ms: 100
-  disk_write_timeout_ms: 5
+  disk_write_timeout_ms: 200
   
   # Partition/Consumer Tuning
   partition_channel_buffer_size: 10000

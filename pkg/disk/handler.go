@@ -152,58 +152,60 @@ func countMessagesInFile(filePath string) (int, error) {
 	return count, nil
 }
 
-func (d *DiskHandler) AppendMessageSync(topic string, partition int, offset uint64, payload string) error {
-	if err := d.WriteDirect(topic, partition, offset, payload); err != nil {
-		return fmt.Errorf("WriteDirect failed: %w", err)
+func (d *DiskHandler) AppendMessageSync(topic string, partition int, msg *types.Message) (uint64, error) {
+	d.mu.Lock()
+	offset := d.AbsoluteOffset
+	d.AbsoluteOffset++
+	d.mu.Unlock()
+
+	msg.Offset = offset
+	if err := d.WriteDirect(topic, partition, *msg); err != nil {
+		return 0, fmt.Errorf("WriteDirect failed: %w", err)
 	}
-	return nil
+	return offset, nil
 }
 
 // AppendMessage sends a message to the internal write channel for asynchronous disk persistence.
-func (d *DiskHandler) AppendMessage(topic string, partition int, offset uint64, payload string) {
-	util.Debug("Attempting to append message (len=%d) to disk.writeCh (cap=%d, len=%d)",
-		len(payload), cap(d.writeCh), len(d.writeCh))
+func (d *DiskHandler) AppendMessage(topic string, partition int, msg *types.Message) uint64 {
+	util.Debug("Attempting to append message (len=%d) to disk.writeCh (cap=%d, len=%d)", len(msg.Payload), cap(d.writeCh), len(d.writeCh))
 
+	d.mu.Lock()
+	offset := d.AbsoluteOffset
+	d.AbsoluteOffset++
+	d.mu.Unlock()
+
+	msg.Offset = offset
 	diskMsg := types.DiskMessage{
-		Topic:     topic,
-		Partition: int32(partition),
-		Offset:    offset,
-		Payload:   payload,
+		Topic:      topic,
+		Partition:  int32(partition),
+		Offset:     offset,
+		ProducerID: msg.ProducerID,
+		SeqNum:     msg.SeqNum,
+		Epoch:      msg.Epoch,
+		Payload:    msg.Payload,
 	}
 
-	for {
-		select {
-		case <-d.done:
-			util.Debug("done channel closed for %s", d.BaseName)
-			return
-		case d.writeCh <- diskMsg:
-			util.Debug("Message sent to writeCh for %s", d.BaseName)
-			return
-		default:
-			util.Debug("writeCh full for %s, retrying...", d.BaseName)
-		}
-
-		if d.writeTimeout > 0 {
-			timer := time.NewTimer(d.writeTimeout)
-			select {
-			case <-d.done:
-				timer.Stop()
-				return
-			case d.writeCh <- diskMsg:
-				timer.Stop()
-				return
-			case <-timer.C:
-				timer.Stop()
-				util.Error("⚠️ DiskHandler enqueue timed out after %s; retrying", d.writeTimeout)
-			}
-			continue
-		}
+	if d.writeTimeout > 0 {
+		timer := time.NewTimer(d.writeTimeout)
+		defer timer.Stop()
 
 		select {
 		case <-d.done:
-			return
+			util.Debug("DiskHandler done channel closed for %s", d.BaseName)
+			return offset
 		case d.writeCh <- diskMsg:
-			return
+			util.Debug("Message successfully sent to writeCh for %s", d.BaseName)
+			return offset
+		case <-timer.C:
+			util.Error("❌ DiskHandler enqueue timed out after %s for topic %s", d.writeTimeout, topic)
+			return offset
+		}
+	} else {
+		select {
+		case <-d.done:
+			return offset
+		case d.writeCh <- diskMsg:
+			return offset
 		}
 	}
 }
@@ -298,9 +300,13 @@ func (dh *DiskHandler) readMessagesFromSegment(reader *mmap.ReaderAt, startOffse
 				util.Error("deserialize message failed: %v", err)
 				continue
 			}
+			calculatedOffset := segmentStartOffset + currentMsgIndex
 			msg := types.Message{
-				Offset:  segmentStartOffset + currentMsgIndex,
-				Payload: diskMsg.Payload,
+				Offset:     calculatedOffset,
+				ProducerID: diskMsg.ProducerID,
+				SeqNum:     diskMsg.SeqNum,
+				Epoch:      diskMsg.Epoch,
+				Payload:    diskMsg.Payload,
 			}
 			messages = append(messages, msg)
 		}

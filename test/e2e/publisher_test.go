@@ -17,7 +17,7 @@ func TestPublisherConfigOptions(t *testing.T) {
 		CreateTopic().
 		PublishMessages().
 		Then().
-		Expect(BrokerIsHealthy()).
+		Expect(BrokerIsHealthy(StandAloneHealthCheckAddr)).
 		And(MessagesPublished(5))
 }
 
@@ -107,4 +107,82 @@ func TestPublisherAcks(t *testing.T) {
 				Expect(MessagesPublished(5))
 		})
 	}
+}
+
+// TestExactlyOnceWithFailures tests exactly-once semantics with various failure scenarios
+func TestExactlyOnceWithFailures(t *testing.T) {
+	testCases := []struct {
+		name        string
+		acks        string
+		failures    []string
+		expectDupes bool
+	}{
+		{"acks=1_network_failure", "1", []string{"network"}, false},
+		{"acks=all_broker_failure", "all", []string{"broker"}, false},
+		{"acks=0_no_guarantee", "0", []string{"network"}, true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := Given(t).
+				WithTopic("exactly-once-" + tc.name).
+				WithPartitions(3).
+				WithNumMessages(50).
+				WithAcks(tc.acks)
+			defer ctx.Cleanup()
+
+			actions := ctx.When().
+				StartBroker().
+				CreateTopic().
+				PublishMessages()
+
+			for _, failure := range tc.failures {
+				switch failure {
+				case "network":
+					actions.SimulateNetworkFailure()
+				case "broker":
+					actions.StopBroker().StartBroker()
+				}
+			}
+
+			consequences := actions.RetryPublishMessages().
+				JoinGroup().
+				SyncGroup().
+				ConsumeMessages().
+				Then()
+
+			if tc.expectDupes {
+				consequences.Expect(DuplicatesDetected()).
+					And(PublisherRetriedSuccessfully())
+			} else {
+				consequences.Expect(NoDuplicateMessages()).
+					And(MessagesConsumed(50))
+			}
+		})
+	}
+}
+
+// TestIdempotencyUnderStress tests idempotency with high concurrency
+func TestIdempotencyUnderStress(t *testing.T) {
+	ctx := Given(t).
+		WithTopic("idempotency-stress").
+		WithPartitions(5).
+		WithNumMessages(1000).
+		WithAcks("all").
+		WithPublishDelay(0) // no delay
+	defer ctx.Cleanup()
+
+	ctx.When().
+		StartBroker().
+		CreateTopic().
+		PublishMessages().
+		SimulateNetworkFailure().
+		RetryPublishMessages().
+		JoinGroup().
+		SyncGroup().
+		ConsumeMessages().
+		Then().
+		Expect(NoDuplicateMessages()).
+		And(MessagesConsumed(1000)).
+		And(OffsetsCommitted())
 }

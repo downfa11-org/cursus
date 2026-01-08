@@ -211,9 +211,12 @@ func NewRaftReplicationManager(cfg *config.Config, brokerID string, diskManager 
 func (rm *RaftReplicationManager) observeLeadership(notifyCh <-chan bool) {
 	for isLeader := range notifyCh {
 		rm.isLeader.Store(isLeader)
+
 		select {
 		case rm.leaderCh <- isLeader:
+			util.Debug("Leadership notification sent to leaderCh")
 		default:
+			util.Warn("Leadership notification dropped: leaderCh is full. State is still updated to %v", isLeader)
 		}
 	}
 }
@@ -232,6 +235,10 @@ func (rm *RaftReplicationManager) GetLeaderAddress() string {
 
 func (rm *RaftReplicationManager) GetFSM() *fsm.BrokerFSM {
 	return rm.fsm
+}
+
+func (rm *RaftReplicationManager) GetConfiguration() raft.ConfigurationFuture {
+	return rm.raft.GetConfiguration()
 }
 
 func (rm *RaftReplicationManager) ApplyCommand(prefix string, data []byte) error {
@@ -301,7 +308,7 @@ func (rm *RaftReplicationManager) ReplicateWithQuorum(topic string, partition in
 }
 
 // ReplicateBatchWithQuorum processes a batch of messages, ensuring they are replicated
-func (rm *RaftReplicationManager) ReplicateBatchWithQuorum(topic string, partition int, messages []types.Message, minISR int) (types.AckResponse, error) {
+func (rm *RaftReplicationManager) ReplicateBatchWithQuorum(topic string, partition int, messages []types.Message, minISR int, acks string) (types.AckResponse, error) {
 	if len(messages) == 0 {
 		return types.AckResponse{}, nil
 	}
@@ -318,7 +325,10 @@ func (rm *RaftReplicationManager) ReplicateBatchWithQuorum(topic string, partiti
 
 	batchStart := messages[0].SeqNum
 	batchEnd := messages[len(messages)-1].SeqNum
-	acks := "-1"
+
+	if acks == "" {
+		acks = "-1"
+	}
 
 	batchData := types.Batch{
 		Topic:      topic,
@@ -355,16 +365,26 @@ func (rm *RaftReplicationManager) ReplicateBatchWithQuorum(topic string, partiti
 
 func (rm *RaftReplicationManager) ApplyResponse(prefix string, data []byte, timeout time.Duration) (types.AckResponse, error) {
 	fullCmd := []byte(fmt.Sprintf("%s:%s", prefix, string(data)))
+
 	future := rm.raft.Apply(fullCmd, timeout)
 	if err := future.Error(); err != nil {
+		util.Error("Raft apply future error: %v", err)
 		return types.AckResponse{}, err
 	}
 
-	resp, ok := future.Response().(types.AckResponse)
+	response := future.Response()
+	if response == nil {
+		return types.AckResponse{}, fmt.Errorf("raft FSM returned nil response")
+	}
+
+	resp, ok := response.(types.AckResponse)
 	if !ok {
+		metrics.QuorumOperations.WithLabelValues("write", "failure").Inc()
+		util.Error("FSM returned unexpected type: %T (expected types.AckResponse)", response)
 		return types.AckResponse{}, fmt.Errorf("invalid response type from FSM")
 	}
 
+	metrics.QuorumOperations.WithLabelValues("write", "success").Inc()
 	return resp, nil
 }
 

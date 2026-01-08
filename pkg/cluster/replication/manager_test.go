@@ -17,20 +17,58 @@ type MockRaft struct {
 	ShutdownFunc         func() raft.Future
 }
 
-func (m *MockRaft) Apply(d []byte, t time.Duration) raft.ApplyFuture { return m.ApplyFunc(d, t) }
+func (m *MockRaft) Apply(d []byte, t time.Duration) raft.ApplyFuture {
+	if m.ApplyFunc == nil {
+		return &MockFuture{}
+	}
+	return m.ApplyFunc(d, t)
+}
+
 func (m *MockRaft) AddVoter(id raft.ServerID, addr raft.ServerAddress, idx uint64, t time.Duration) raft.IndexFuture {
+	if m.AddVoterFunc == nil {
+		return &MockFuture{}
+	}
 	return m.AddVoterFunc(id, addr, idx, t)
 }
+
 func (m *MockRaft) RemoveServer(id raft.ServerID, idx uint64, t time.Duration) raft.IndexFuture {
+	if m.RemoveServerFunc == nil {
+		return &MockFuture{}
+	}
+
 	return m.RemoveServerFunc(id, idx, t)
 }
-func (m *MockRaft) State() raft.RaftState      { return m.StateFunc() }
-func (m *MockRaft) Leader() raft.ServerAddress { return m.LeaderFunc() }
+
+func (m *MockRaft) State() raft.RaftState {
+	if m.StateFunc == nil {
+		return raft.Follower
+	}
+	return m.StateFunc()
+}
+
+func (m *MockRaft) Leader() raft.ServerAddress {
+	if m.LeaderFunc == nil {
+		return ""
+	}
+	return m.LeaderFunc()
+}
+
+func (m *MockRaft) Shutdown() raft.Future {
+	if m.ShutdownFunc == nil {
+		return &MockFuture{}
+	}
+	return m.ShutdownFunc()
+}
+
 func (m *MockRaft) BootstrapCluster(c raft.Configuration) raft.Future {
+	if m.BootstrapClusterFunc == nil {
+		return &MockFuture{}
+	}
+
 	return m.BootstrapClusterFunc(c)
 }
+
 func (m *MockRaft) GetConfiguration() raft.ConfigurationFuture { return &MockConfigurationFuture{} }
-func (m *MockRaft) Shutdown() raft.Future                      { return m.ShutdownFunc() }
 
 func newTestRaftRM(raftMock *MockRaft) *RaftReplicationManager {
 	return &RaftReplicationManager{
@@ -85,8 +123,6 @@ func TestApplyCommand(t *testing.T) {
 }
 
 type MockFuture struct {
-	raft.IndexFuture
-	raft.ApplyFuture
 	ErrorVal    error
 	ResponseVal interface{}
 }

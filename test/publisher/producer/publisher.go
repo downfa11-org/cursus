@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/downfa11-org/go-broker/pkg/types"
 	"github.com/downfa11-org/go-broker/publisher/bench"
 	"github.com/downfa11-org/go-broker/publisher/config"
-	"github.com/downfa11-org/go-broker/publisher/types"
 	"github.com/downfa11-org/go-broker/util"
 )
 
@@ -55,7 +55,10 @@ type Publisher struct {
 
 	partitionSentMus  []sync.Mutex
 	partitionSentSeqs []map[uint64]struct{}
-	ackedCount        atomic.Uint64
+
+	ackedCount    atomic.Uint64
+	uniqueCount   atomic.Uint64
+	attemptsCount atomic.Uint64
 
 	partitionBatchStates []map[string]*BatchState
 	partitionBatchMus    []sync.Mutex
@@ -68,6 +71,7 @@ type Publisher struct {
 	bmMu         sync.Mutex
 	bmTotalTime  map[int]time.Duration
 	bmTotalCount map[int]int
+	bmLatencies  []time.Duration
 }
 
 func NewPublisher(cfg *config.PublisherConfig) (*Publisher, error) {
@@ -79,6 +83,7 @@ func NewPublisher(cfg *config.PublisherConfig) (*Publisher, error) {
 		done:         make(chan struct{}),
 		bmTotalTime:  make(map[int]time.Duration),
 		bmTotalCount: make(map[int]int),
+		bmLatencies:  make([]time.Duration, 0, cfg.NumMessages/cfg.BatchSize),
 		inFlight:     make([]int32, cfg.Partitions),
 		gcTicker:     time.NewTicker(1 * time.Minute),
 	}
@@ -148,6 +153,7 @@ func (p *Publisher) CreateTopic(topic string, partitions int) error {
 		return fmt.Errorf("broker error: %s", string(resp))
 	}
 
+	util.Info("create topic %s partition %d", topic, partitions)
 	return nil
 }
 
@@ -187,8 +193,13 @@ func (p *Publisher) partitionSender(part int) {
 	linger := time.Duration(p.config.LingerMS) * time.Millisecond
 
 	timer := time.NewTimer(linger)
+	defer timer.Stop()
+
 	if !timer.Stop() {
-		<-timer.C
+		select {
+		case <-timer.C:
+		default:
+		}
 	}
 
 	for {
@@ -294,7 +305,7 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 	}
 	p.partitionBatchMus[part].Unlock()
 
-	data, err := types.EncodeBatchMessages(p.config.Topic, part, p.config.Acks, batch)
+	data, err := util.EncodeBatchMessages(p.config.Topic, part, p.config.Acks, batch)
 	if err != nil {
 		util.Error("encode batch failed: %v", err)
 		p.cleanupBatchState(part, batchID)
@@ -302,7 +313,7 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 		return
 	}
 
-	payload, err := types.CompressMessage(data, p.config.CompressionType)
+	payload, err := util.CompressMessage(data, p.config.CompressionType)
 	if err != nil {
 		util.Error("compress batch failed: %v", err)
 		p.cleanupBatchState(part, batchID)
@@ -322,6 +333,8 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 		return
 	}
 
+	p.attemptsCount.Add(uint64(len(batch)))
+
 	switch ackResp.Status {
 	case "OK":
 		p.partitionSentMus[part].Lock()
@@ -329,7 +342,7 @@ func (p *Publisher) sendBatch(part int, batch []types.Message) {
 			p.partitionSentSeqs[part][m.SeqNum] = struct{}{}
 		}
 		p.partitionSentMus[part].Unlock()
-		p.markBatchAckedByID(part, batchID)
+		p.markBatchAckedByID(part, batchID, len(batch))
 	case "PARTIAL":
 		util.Warn("Partial success for batch %s", batchID)
 		p.cleanupBatchState(part, batchID)
@@ -427,7 +440,15 @@ func (p *Publisher) sendWithRetry(payload []byte, part int) (*types.AckResponse,
 			}
 		}
 
-		_ = conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.WriteTimeoutMS) * time.Millisecond))
+		if err := conn.SetWriteDeadline(time.Now().Add(time.Duration(p.config.WriteTimeoutMS) * time.Millisecond)); err != nil {
+			lastErr = fmt.Errorf("set write deadline failed: %w", err)
+			util.Error("⚠️ SetWriteDeadline error: %v", err)
+
+			time.Sleep(time.Duration(backoff) * time.Millisecond)
+			backoff = min(backoff*2, p.config.MaxBackoffMS)
+			continue
+		}
+
 		if _, err := conn.Write(payload); err != nil {
 			lastErr = fmt.Errorf("write failed: %w", err)
 			brokerAddr := p.producer.selectBroker()
@@ -465,7 +486,7 @@ func (p *Publisher) sendWithRetry(payload []byte, part int) (*types.AckResponse,
 	return nil, lastErr
 }
 
-func (p *Publisher) markBatchAckedByID(part int, batchID string) {
+func (p *Publisher) markBatchAckedByID(part int, batchID string, batchLen int) {
 	p.partitionBatchMus[part].Lock()
 	state, ok := p.partitionBatchStates[part][batchID]
 	if !ok || state.Acked {
@@ -474,19 +495,29 @@ func (p *Publisher) markBatchAckedByID(part int, batchID string) {
 	}
 
 	state.Acked = true
+	p.uniqueCount.Add(uint64(batchLen))
+
 	delete(p.partitionBatchStates[part], batchID)
 	p.partitionBatchMus[part].Unlock()
 
-	p.ackedCount.Add(uint64(state.EndSeqNum - state.StartSeqNum + 1))
-
-	sentTime := state.SentTime
+	p.ackedCount.Store(state.EndSeqNum)
 	p.producer.CommitSeqRange(part, state.EndSeqNum)
 
-	elapsed := time.Since(sentTime)
+	elapsed := time.Since(state.SentTime)
 	p.bmMu.Lock()
 	p.bmTotalCount[part] += 1
 	p.bmTotalTime[part] += elapsed
+	p.bmLatencies = append(p.bmLatencies, elapsed)
 	p.bmMu.Unlock()
+}
+
+func (p *Publisher) GetLatencies() []time.Duration {
+	p.bmMu.Lock()
+	defer p.bmMu.Unlock()
+
+	res := make([]time.Duration, len(p.bmLatencies))
+	copy(res, p.bmLatencies)
+	return res
 }
 
 func (p *Publisher) parseAckResponse(resp []byte) (*types.AckResponse, error) {
@@ -506,8 +537,6 @@ func (p *Publisher) parseAckResponse(resp []byte) (*types.AckResponse, error) {
 		return nil, fmt.Errorf("invalid ack format: %v, %w", string(resp), err)
 	}
 
-	util.Debug("parse: %v", ackResp)
-
 	if ackResp.Leader != "" {
 		if ackResp.Leader != p.producer.GetLeaderAddr() {
 			p.producer.UpdateLeader(ackResp.Leader)
@@ -515,13 +544,23 @@ func (p *Publisher) parseAckResponse(resp []byte) (*types.AckResponse, error) {
 	}
 
 	if ackResp.ProducerID == "" {
-		ackStr, _ := json.Marshal(ackResp)
-		util.Info("producerID mismatch: expected %d, got %d, ack=%s", p.producer.Epoch, ackResp.ProducerEpoch, ackStr)
+		ackStr, err := json.Marshal(ackResp)
+		if err != nil {
+			util.Error("Failed to marshal response: %v", err)
+			return nil, err
+		}
+
+		util.Info("missing producerID: expected %d, got %d, ack=%s", p.producer.Epoch, ackResp.ProducerEpoch, ackStr)
 		return nil, fmt.Errorf("incomplete ack response: missing required fields")
 	}
 
 	if ackResp.ProducerEpoch != p.producer.Epoch {
-		ackStr, _ := json.Marshal(ackResp)
+		ackStr, err := json.Marshal(ackResp)
+		if err != nil {
+			util.Error("Failed to marshal response: %v", err)
+			return nil, err
+		}
+
 		util.Info("epoch mismatch: expected %d, got %d, ack=%s", p.producer.Epoch, ackResp.ProducerEpoch, ackStr)
 		return nil, fmt.Errorf("epoch mismatch: expected %d, got %d", p.producer.Epoch, ackResp.ProducerEpoch)
 	}
@@ -604,7 +643,7 @@ func (p *Publisher) FlushBenchmark(expectedTotal int) {
 		}
 
 		if allInFlightClear {
-			sentCount := p.GetSentMessageCount()
+			ackedSoFar := p.GetUniqueAckCount()
 			totalPending := 0
 			for part := 0; part < p.partitions; part++ {
 				p.partitionBatchMus[part].Lock()
@@ -612,7 +651,7 @@ func (p *Publisher) FlushBenchmark(expectedTotal int) {
 				p.partitionBatchMus[part].Unlock()
 			}
 
-			if sentCount >= expectedTotal && totalPending == 0 {
+			if ackedSoFar >= expectedTotal && totalPending == 0 {
 				util.Info("Flush completed - all expected messages (%d) acknowledged. (Elapsed: %.3fs)", expectedTotal, time.Since(deadline.Add(-timeout)).Seconds())
 				return
 			}
@@ -623,18 +662,31 @@ func (p *Publisher) FlushBenchmark(expectedTotal int) {
 }
 
 func (p *Publisher) batchStateGC() {
-	for range p.gcTicker.C {
-		cutoff := time.Now().Add(-1 * time.Minute)
+	for {
+		select {
+		case <-p.gcTicker.C:
+			now := time.Now()
+			ackedCutoff := now.Add(-1 * time.Minute)
+			staleCutoff := now.Add(-5 * time.Minute)
 
-		for part := 0; part < p.partitions; part++ {
-			p.partitionBatchMus[part].Lock()
+			for part := 0; part < p.partitions; part++ {
+				p.partitionBatchMus[part].Lock()
 
-			for id, st := range p.partitionBatchStates[part] {
-				if st.Acked && st.SentTime.Before(cutoff) {
-					delete(p.partitionBatchStates[part], id)
+				for id, st := range p.partitionBatchStates[part] {
+					if st.Acked && st.SentTime.Before(ackedCutoff) {
+						delete(p.partitionBatchStates[part], id)
+						continue
+					}
+
+					if !st.Acked && st.SentTime.Before(staleCutoff) {
+						util.Warn("GC: Dropping unacked stale batch state: %s", id)
+						delete(p.partitionBatchStates[part], id)
+					}
 				}
+				p.partitionBatchMus[part].Unlock()
 			}
-			p.partitionBatchMus[part].Unlock()
+		case <-p.done:
+			return
 		}
 	}
 }
@@ -686,6 +738,16 @@ func (p *Publisher) GetPartitionStats() []bench.PartitionStat {
 // GetSentMessageCount returns the number of successfully sent messages
 func (p *Publisher) GetSentMessageCount() int {
 	return int(p.ackedCount.Load())
+}
+
+// GetUniqueAckCount returns the number of unique messages
+func (p *Publisher) GetUniqueAckCount() int {
+	return int(p.uniqueCount.Load())
+}
+
+// GetattemptsCount returns the number of published messages
+func (p *Publisher) GetAttemptsCount() int {
+	return int(p.attemptsCount.Load())
 }
 
 // GetPartitionCount returns the number of partitions

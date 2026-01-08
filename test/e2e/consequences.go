@@ -27,9 +27,9 @@ func (c *Consequences) And(expectations ...Expectation) *Consequences {
 }
 
 // Common expectations
-func BrokerIsHealthy() Expectation {
+func BrokerIsHealthy(healthCheckURLs []string) Expectation {
 	return func(ctx *TestContext) error {
-		if err := CheckBrokerHealth(); err != nil {
+		if err := CheckBrokerHealth(healthCheckURLs); err != nil {
 			return fmt.Errorf("broker health check failed: %w", err)
 		}
 		return nil
@@ -86,7 +86,7 @@ func OffsetsCommitted() Expectation {
 			return fmt.Errorf("no messages consumed, cannot verify offset commit")
 		}
 
-		client := NewBrokerClient(ctx.brokerAddr)
+		client := NewBrokerClient(ctx.brokerAddrs)
 		defer client.Close()
 
 		for partition := 0; partition < ctx.partitions; partition++ {
@@ -105,7 +105,7 @@ func OffsetsCommitted() Expectation {
 // ConsumerGroupIsActive verifies the group status via broker API.
 func ConsumerGroupIsActive() Expectation {
 	return func(ctx *TestContext) error {
-		client := NewBrokerClient(ctx.brokerAddr)
+		client := NewBrokerClient(ctx.brokerAddrs)
 		defer client.Close()
 
 		status, err := client.GetConsumerGroupStatus(ctx.consumerGroup)
@@ -127,7 +127,7 @@ func ConsumerGroupIsActive() Expectation {
 
 func HeartbeatsSent() Expectation {
 	return func(ctx *TestContext) error {
-		client := NewBrokerClient(ctx.brokerAddr)
+		client := NewBrokerClient(ctx.brokerAddrs)
 		defer client.Close()
 
 		status, err := client.GetConsumerGroupStatus(ctx.consumerGroup)
@@ -154,5 +154,79 @@ func HeartbeatsSent() Expectation {
 			}
 		}
 		return fmt.Errorf("could not find E2E client member ID (%s) in group status", ctx.memberID)
+	}
+}
+
+// PublishFailed verifies that publish operations failed as expected
+func PublishFailed() Expectation {
+	return func(ctx *TestContext) error {
+		if ctx.lastError == nil && ctx.publishedCount > 0 {
+			return fmt.Errorf("expected publish to fail but it succeeded")
+		}
+
+		if ctx.publishedCount > 0 {
+			return fmt.Errorf("publish failed with error (%v), but %d messages were still recorded",
+				ctx.lastError, ctx.publishedCount)
+		}
+
+		ctx.GetT().Logf("Publish failed as expected with error: %v", ctx.lastError)
+		return nil
+	}
+}
+
+// NoDuplicateMessages verifies no duplicates in consumed messages
+func NoDuplicateMessages() Expectation {
+	return func(ctx *TestContext) error {
+		if ctx.consumedCount == 0 {
+			return fmt.Errorf("no messages consumed to check for duplicates")
+		}
+
+		if ctx.consumedCount > ctx.publishedCount {
+			return fmt.Errorf("consumed %d messages but only %d published (duplicates detected)",
+				ctx.consumedCount, ctx.publishedCount)
+		}
+
+		ctx.GetT().Logf("Verified no duplicates: %d published, %d consumed",
+			ctx.publishedCount, ctx.consumedCount)
+		return nil
+	}
+}
+
+func PublishedSequencesAreUnique() Expectation {
+	return func(ctx *TestContext) error {
+		if len(ctx.publishedSeqNums) == 0 {
+			return fmt.Errorf("no sequence numbers tracked for duplicate detection")
+		}
+
+		seen := make(map[uint64]bool)
+		for _, seq := range ctx.publishedSeqNums {
+			if seen[seq] {
+				return fmt.Errorf("publisher duplicate sequence number detected: %d", seq)
+			}
+			seen[seq] = true
+		}
+		ctx.GetT().Logf("Verified: All %d published sequences are unique", len(ctx.publishedSeqNums))
+		return nil
+	}
+}
+
+// DuplicatesDetected verifies that the consumed count is higher than published due to lack of idempotency
+func DuplicatesDetected() Expectation {
+	return func(ctx *TestContext) error {
+		if ctx.consumedCount < ctx.publishedCount {
+			return fmt.Errorf("expected duplicate messages (consumed > %d), but got %d", ctx.publishedCount, ctx.consumedCount)
+		}
+		ctx.t.Logf("Duplicates detected as expected: Published %d, Consumed %d", ctx.publishedCount, ctx.consumedCount)
+		return nil
+	}
+}
+
+func DuplicatesAllowed() Expectation {
+	return func(ctx *TestContext) error {
+		if ctx.consumedCount < ctx.publishedCount {
+			return fmt.Errorf("message loss detected: published %d, but only consumed %d", ctx.publishedCount, ctx.consumedCount)
+		}
+		ctx.t.Logf("Consumption verified (duplicates allowed): Published %d, Consumed %d", ctx.publishedCount, ctx.consumedCount)
+		return nil
 	}
 }

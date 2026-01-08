@@ -22,35 +22,74 @@ func TestGenerateMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		got := bench.GenerateMessage(tt.size, tt.seqNum)
-		if !strings.HasPrefix(got, "msg-") && tt.size > 0 {
-			t.Errorf("GenerateMessage(%d, %d) = %q; want prefix 'msg-'", tt.size, tt.seqNum, got)
-		}
-		if tt.size <= 0 && got != tt.want {
-			t.Errorf("GenerateMessage(%d, %d) = %q; want %q", tt.size, tt.seqNum, got, tt.want)
-		}
-		if tt.size > 0 && len(got) < tt.size {
-			t.Errorf("GenerateMessage(%d, %d) length = %d; want >= %d", tt.size, tt.seqNum, len(got), tt.size)
+		if tt.size <= 0 {
+			if got != tt.want {
+				t.Errorf("GenerateMessage(%d, %d) = %q; want %q", tt.size, tt.seqNum, got, tt.want)
+			}
+		} else {
+			if !strings.HasPrefix(got, "msg-") {
+				t.Errorf("GenerateMessage(%d, %d) = %q; want prefix 'msg-'", tt.size, tt.seqNum, got)
+			}
+			if len(got) < tt.size {
+				t.Errorf("GenerateMessage(%d, %d) length = %d; want >= %d", tt.size, tt.seqNum, len(got), tt.size)
+			}
 		}
 	}
 }
 
-func TestPrintBenchmarkSummaryFixed(t *testing.T) {
+func TestPrintBenchmarkSummaryFixedTo(t *testing.T) {
 	stats := []bench.PartitionStat{
 		{PartitionID: 0, BatchCount: 10, AvgDuration: 20 * time.Millisecond},
-		{PartitionID: 1, BatchCount: 15, AvgDuration: 25 * time.Millisecond},
 	}
 
-	sentMessages := 500
+	latencies := make([]time.Duration, 100)
+	for i := 0; i < 100; i++ {
+		latencies[i] = time.Duration(i) * time.Millisecond
+	}
+
+	totalTarget := 1000
+	uniqueSent := 800
+	totalPublished := 950
 	totalDuration := 2 * time.Second
+	errSummary := map[string]uint64{"timeout": 200}
 
 	var buf bytes.Buffer
-	bench.PrintBenchmarkSummaryFixedTo(&buf, stats, sentMessages, totalDuration)
+	bench.PrintBenchmarkSummaryFixedTo(&buf, stats, totalPublished, uniqueSent, totalTarget, totalDuration, errSummary, latencies)
 
 	got := buf.String()
-	if !strings.Contains(got, "Total Batches") {
-		t.Errorf("Output missing 'Total Batches': %s", got)
+
+	expectedKeywords := []string{
+		"PRODUCER BENCHMARK SUMMARY",
+		"Total Messages",
+		"Latency P95",
+		"Latency P99",
+		"rate: 80.00%",
+		"Failed messages",
+		"Retry Count",
 	}
-	if !strings.Contains(got, "Publish Message Throughput") {
-		t.Errorf("Output missing 'Publish Message Throughput': %s", got)
+
+	for _, keyword := range expectedKeywords {
+		if !strings.Contains(got, keyword) {
+			t.Errorf("Output missing keyword '%s'", keyword)
+		}
+	}
+}
+
+func TestPrintBenchmarkSummaryNoErrors(t *testing.T) {
+	stats := []bench.PartitionStat{{PartitionID: 0, BatchCount: 5, AvgDuration: 10 * time.Millisecond}}
+	totalTarget := 100
+	uniqueSent := 100
+	totalPublished := 100
+	testDuration := time.Second
+	testLatencies := []time.Duration{10 * time.Millisecond}
+
+	errSummary := make(map[string]uint64)
+
+	var buf bytes.Buffer
+	bench.PrintBenchmarkSummaryFixedTo(&buf, stats, totalPublished, uniqueSent, totalTarget, testDuration, errSummary, testLatencies)
+
+	got := buf.String()
+	if strings.Contains(got, "Error Root Cause Analysis") {
+		t.Error("Output should NOT contain Error Analysis section when there are no errors")
 	}
 }
