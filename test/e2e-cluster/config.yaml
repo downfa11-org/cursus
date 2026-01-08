@@ -12,7 +12,7 @@ broker_port: 9000
 health_check_port: 9080
 enable_exporter: true
 exporter_port: 9100
-log_level: "debug"
+log_level: "info"
 log_dir: "broker-logs"
 
 # Performance settings

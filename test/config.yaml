@@ -4,7 +4,7 @@ enable_exporter: true
 exporter_port: 9100  
 use_tls: false  
 enable_gzip: false  
-log_level: "debug"
+log_level: "info"
 
 # Disk persistence
 disk_flush_batch_size: 500          

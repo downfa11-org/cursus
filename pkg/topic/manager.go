@@ -309,11 +309,11 @@ func (tm *TopicManager) EnsureDefaultGroups() {
 	}
 }
 
-func (tm *TopicManager) getDedupKey(topicName string, partition int, msg *types.Message) string {
+func (tm *TopicManager) getDedupKey(topicName string, _ int, msg *types.Message) string {
 	if msg.ProducerID != "" && msg.SeqNum > 0 {
-		return fmt.Sprintf("%s-%d-%s-%d", topicName, partition, msg.ProducerID, msg.SeqNum)
+		return fmt.Sprintf("%s-%s-%d", topicName, msg.ProducerID, msg.SeqNum)
 	}
-	return fmt.Sprintf("%s-%d-%s", topicName, partition, msg.Payload)
+	return fmt.Sprintf("%s-%s", topicName, msg.Payload)
 }
 
 func (tm *TopicManager) checkAndMarkDuplicate(topicName string, partition int, msg *types.Message) bool {
