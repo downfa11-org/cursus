@@ -11,10 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/downfa11-org/go-broker/consumer/bench"
-	"github.com/downfa11-org/go-broker/consumer/client"
-	"github.com/downfa11-org/go-broker/consumer/config"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/test/consumer/bench"
+	"github.com/downfa11-org/cursus/util"
+
+	"github.com/downfa11-org/cursus/test/consumer/client"
+	"github.com/downfa11-org/cursus/test/consumer/config"
 )
 
 type Consumer struct {

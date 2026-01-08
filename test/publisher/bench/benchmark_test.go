@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/downfa11-org/go-broker/publisher/bench"
+	"github.com/downfa11-org/cursus/test/publisher/bench"
 )
 
 func TestGenerateMessage(t *testing.T) {

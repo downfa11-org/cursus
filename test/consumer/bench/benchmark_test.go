@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/downfa11-org/go-broker/consumer/bench"
+	"github.com/downfa11-org/cursus/test/consumer/bench"
 )
 
 func TestConsumerMetrics_PhaseSeparation(t *testing.T) {

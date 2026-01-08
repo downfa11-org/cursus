@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/downfa11-org/go-broker/consumer/client"
-	"github.com/downfa11-org/go-broker/consumer/config"
+	"github.com/downfa11-org/cursus/test/consumer/client"
+	"github.com/downfa11-org/cursus/test/consumer/config"
 )
 
 func TestNewConsumerClient(t *testing.T) {

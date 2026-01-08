@@ -7,9 +7,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/downfa11-org/go-broker/consumer/config"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/util"
 	"github.com/google/uuid"
+
+	"github.com/downfa11-org/cursus/test/consumer/config"
 )
 
 type leaderInfo struct {
