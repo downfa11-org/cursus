@@ -3,7 +3,7 @@ package e2e_cluster
 import (
 	"fmt"
 
-	"github.com/downfa11-org/go-broker/test/e2e"
+	"github.com/downfa11-org/cursus/test/e2e"
 )
 
 // ISRMaintained verifies ISR is maintained during operations

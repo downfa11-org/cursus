@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/downfa11-org/go-broker/publisher/bench"
+	"github.com/downfa11-org/cursus/test/publisher/bench"
 )
 
 func TestGenerateMessage(t *testing.T) {
@@ -91,5 +91,58 @@ func TestPrintBenchmarkSummaryNoErrors(t *testing.T) {
 	got := buf.String()
 	if strings.Contains(got, "Error Root Cause Analysis") {
 		t.Error("Output should NOT contain Error Analysis section when there are no errors")
+	}
+}
+
+func TestCalculateLatencyPercentiles(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   []time.Duration
+		wantP95 time.Duration
+		wantP99 time.Duration
+	}{
+		{
+			name:    "Empty slice should return zeros",
+			input:   []time.Duration{},
+			wantP95: 0,
+			wantP99: 0,
+		},
+		{
+			name:    "Single element should return that element for both",
+			input:   []time.Duration{100 * time.Millisecond},
+			wantP95: 100 * time.Millisecond,
+			wantP99: 100 * time.Millisecond,
+		},
+		{
+			name: "Perfectly sorted 100 elements",
+			input: func() []time.Duration {
+				d := make([]time.Duration, 100)
+				for i := 0; i < 100; i++ {
+					d[i] = time.Duration(i+1) * time.Millisecond
+				}
+				return d
+			}(),
+			// n=100 -> p95Idx = 95, p99Idx = 99
+			wantP95: 96 * time.Millisecond,
+			wantP99: 100 * time.Millisecond,
+		},
+		{
+			name:    "Unsorted input should be handled correctly",
+			input:   []time.Duration{500 * time.Millisecond, 100 * time.Millisecond, 300 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond},
+			wantP95: 500 * time.Millisecond, // n=5, 5*0.95 = 4.75 -> idx 4
+			wantP99: 500 * time.Millisecond, // n=5, 5*0.99 = 4.95 -> idx 4
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotP95, gotP99 := bench.CalculateLatencyPercentiles(tt.input)
+			if gotP95 != tt.wantP95 {
+				t.Errorf("calculate latencyPercentiles gotP95 = %v, want %v", gotP95, tt.wantP95)
+			}
+			if gotP99 != tt.wantP99 {
+				t.Errorf("calculate latencyPercentiles gotP99 = %v, want %v", gotP99, tt.wantP99)
+			}
+		})
 	}
 }

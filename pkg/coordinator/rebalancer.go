@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/util"
 )
 
 // RegisterGroup creates a new consumer group for a topic.

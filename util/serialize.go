@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/downfa11-org/go-broker/pkg/types"
+	"github.com/downfa11-org/cursus/pkg/types"
 )
 
 // serializeMessage converts types.Message to serialized bytes

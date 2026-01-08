@@ -5,13 +5,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/downfa11-org/go-broker/pkg/config"
-	"github.com/downfa11-org/go-broker/pkg/coordinator"
-	"github.com/downfa11-org/go-broker/pkg/disk"
-	"github.com/downfa11-org/go-broker/pkg/metrics"
-	"github.com/downfa11-org/go-broker/pkg/stream"
-	"github.com/downfa11-org/go-broker/pkg/types"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/pkg/config"
+	"github.com/downfa11-org/cursus/pkg/coordinator"
+	"github.com/downfa11-org/cursus/pkg/disk"
+	"github.com/downfa11-org/cursus/pkg/metrics"
+	"github.com/downfa11-org/cursus/pkg/stream"
+	"github.com/downfa11-org/cursus/pkg/types"
+	"github.com/downfa11-org/cursus/util"
 )
 
 type TopicManager struct {
@@ -174,13 +174,12 @@ func (tm *TopicManager) executeBatch(t *Topic, partitioned map[int][]types.Messa
 	wg.Wait()
 	close(errCh)
 
-	if len(errCh) > 0 {
-		for err := range errCh {
-			util.Error("Batch error: %v", err)
-		}
-		return <-errCh
+	var lastErr error
+	for err := range errCh {
+		lastErr = err
+		util.Error("Batch error: %v", err)
 	}
-	return nil
+	return lastErr
 }
 
 // Batch Sync (acks=1)

@@ -5,10 +5,10 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/downfa11-org/go-broker/pkg/config"
-	"github.com/downfa11-org/go-broker/pkg/stream"
-	"github.com/downfa11-org/go-broker/pkg/types"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/pkg/config"
+	"github.com/downfa11-org/cursus/pkg/stream"
+	"github.com/downfa11-org/cursus/pkg/types"
+	"github.com/downfa11-org/cursus/util"
 )
 
 const DefaultBufSize = 10000

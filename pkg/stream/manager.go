@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/downfa11-org/go-broker/pkg/types"
+	"github.com/downfa11-org/cursus/pkg/types"
 )
 
 type StreamManager struct {

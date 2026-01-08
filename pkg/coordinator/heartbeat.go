@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/util"
 )
 
 // monitorHeartbeats checks consumer heartbeat intervals and triggers rebalancing when timeouts occur.

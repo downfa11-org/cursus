@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/downfa11-org/go-broker/pkg/cluster/replication/fsm"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/pkg/cluster/replication/fsm"
+	"github.com/downfa11-org/cursus/util"
 )
 
 const defaultHeartbeatTimeout = 10 * time.Second
@@ -21,7 +21,6 @@ type ISRManager struct {
 	heartbeatTimeout time.Duration
 
 	stopCh    chan struct{}
-	running   bool
 	startOnce sync.Once
 	stopOnce  sync.Once
 }
@@ -41,10 +40,6 @@ func NewISRManager(fsm *fsm.BrokerFSM, brokerID string, heartbeatTimeout time.Du
 
 func (i *ISRManager) Start() {
 	i.startOnce.Do(func() {
-		i.mu.Lock()
-		i.running = true
-		i.mu.Unlock()
-
 		go func() {
 			ticker := time.NewTicker(i.heartbeatTimeout / 2)
 			defer ticker.Stop()
@@ -64,10 +59,6 @@ func (i *ISRManager) Start() {
 
 func (i *ISRManager) Stop() {
 	i.stopOnce.Do(func() {
-		i.mu.Lock()
-		i.running = false
-		i.mu.Unlock()
-
 		close(i.stopCh)
 	})
 }
@@ -83,10 +74,10 @@ func (i *ISRManager) refreshAllISRs() {
 		topic := key[:idx]
 		partition, err := strconv.Atoi(key[idx+1:])
 		if err != nil {
-			util.Debug("Skipping invalid partition key format: %s", key)
+			util.Debug("skipping invalid partition key format: %s", key)
 			continue
 		}
-
+		util.Debug("refreshing ISR for topic: %s, partition: %d", topic, partition)
 		i.ComputeISR(topic, partition)
 	}
 }

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/downfa11-org/go-broker/pkg/types"
+	"github.com/downfa11-org/cursus/pkg/types"
 )
 
 var readFn = func(offset uint64, max int) ([]types.Message, error) {

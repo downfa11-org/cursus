@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/downfa11-org/go-broker/pkg/config"
-	"github.com/downfa11-org/go-broker/pkg/disk"
+	"github.com/downfa11-org/cursus/pkg/config"
+	"github.com/downfa11-org/cursus/pkg/disk"
 )
 
 func TestDiskManager_GetHandler_CreatesHandler(t *testing.T) {

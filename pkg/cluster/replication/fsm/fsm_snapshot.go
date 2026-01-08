@@ -3,7 +3,7 @@ package fsm
 import (
 	"encoding/json"
 
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/util"
 	"github.com/hashicorp/raft"
 )
 

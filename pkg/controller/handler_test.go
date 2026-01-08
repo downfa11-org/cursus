@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/downfa11-org/go-broker/pkg/config"
-	"github.com/downfa11-org/go-broker/pkg/controller"
-	"github.com/downfa11-org/go-broker/pkg/topic"
+	"github.com/downfa11-org/cursus/pkg/config"
+	"github.com/downfa11-org/cursus/pkg/controller"
+	"github.com/downfa11-org/cursus/pkg/topic"
 )
 
 type fakeTopicManager struct {

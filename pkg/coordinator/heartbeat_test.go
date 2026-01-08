@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/downfa11-org/go-broker/pkg/config"
+	"github.com/downfa11-org/cursus/pkg/config"
 )
 
 type testCoordinator struct {

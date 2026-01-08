@@ -11,10 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/downfa11-org/go-broker/publisher/bench"
-	"github.com/downfa11-org/go-broker/publisher/config"
-	"github.com/downfa11-org/go-broker/publisher/producer"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/test/publisher/bench"
+	"github.com/downfa11-org/cursus/test/publisher/config"
+	"github.com/downfa11-org/cursus/test/publisher/producer"
+	"github.com/downfa11-org/cursus/util"
 )
 
 func main() {

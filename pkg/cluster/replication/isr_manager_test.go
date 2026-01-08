@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/downfa11-org/go-broker/pkg/types"
+	"github.com/downfa11-org/cursus/pkg/types"
 )
 
 type MockISRManager struct {

@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/downfa11-org/go-broker/pkg/config"
-	"github.com/downfa11-org/go-broker/pkg/types"
+	"github.com/downfa11-org/cursus/pkg/config"
+	"github.com/downfa11-org/cursus/pkg/types"
 )
 
 type DummyPublisher struct{}

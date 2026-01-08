@@ -11,10 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/downfa11-org/go-broker/pkg/types"
-	"github.com/downfa11-org/go-broker/publisher/bench"
-	"github.com/downfa11-org/go-broker/publisher/config"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/pkg/types"
+	"github.com/downfa11-org/cursus/test/publisher/bench"
+	"github.com/downfa11-org/cursus/test/publisher/config"
+	"github.com/downfa11-org/cursus/util"
 )
 
 type BatchState struct {

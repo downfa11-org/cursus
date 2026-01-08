@@ -1,4 +1,4 @@
-module github.com/downfa11-org/go-broker
+module github.com/downfa11-org/cursus
 
 go 1.25.0
 

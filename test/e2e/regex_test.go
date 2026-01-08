@@ -10,12 +10,12 @@ import (
 func TestMultipleTopicConsumption(t *testing.T) {
 	topics := []string{"test-alpha", "test-beta", "test-gamma", "other-topic"}
 
-	brokerCtx := Given(t)
+	brokerCtx := GivenStandalone(t)
 	defer brokerCtx.Cleanup()
 	brokerCtx.When().StartBroker()
 
 	for _, topic := range topics {
-		ctx := Given(t).WithTopic(topic).WithPartitions(1).WithNumMessages(5)
+		ctx := GivenStandalone(t).WithTopic(topic).WithPartitions(1).WithNumMessages(5)
 		defer ctx.Cleanup()
 
 		ctx.When().
@@ -31,7 +31,7 @@ func TestMultipleTopicConsumption(t *testing.T) {
 	for i, topic := range matchingTopics {
 		groupName := fmt.Sprintf("multiple-test-group-%d", i)
 
-		consumerCtx := Given(t).
+		consumerCtx := GivenStandalone(t).
 			WithTopic(topic).
 			WithPartitions(1).
 			WithNumMessages(0).
@@ -56,12 +56,12 @@ func TestMultipleTopicConsumption(t *testing.T) {
 func TestRegexPatternConsumption(t *testing.T) {
 	topics := []string{"regex-alpha", "regex-beta", "regex-gamma", "regex-topic"}
 
-	brokerCtx := Given(t)
+	brokerCtx := GivenStandalone(t)
 	defer brokerCtx.Cleanup()
 	brokerCtx.When().StartBroker()
 
 	for _, topic := range topics {
-		ctx := Given(t).WithTopic(topic).WithPartitions(1).WithNumMessages(5)
+		ctx := GivenStandalone(t).WithTopic(topic).WithPartitions(1).WithNumMessages(5)
 		defer ctx.Cleanup()
 
 		ctx.When().
@@ -72,7 +72,7 @@ func TestRegexPatternConsumption(t *testing.T) {
 	}
 
 	groupName := "regex-test-group"
-	consumerCtx := Given(t).
+	consumerCtx := GivenStandalone(t).
 		WithTopic("regex-alpha"). // actual topic name
 		WithPartitions(1).
 		WithNumMessages(0).
@@ -91,12 +91,12 @@ func TestRegexPatternConsumption(t *testing.T) {
 func TestRegexPatternWithQuestionMark(t *testing.T) {
 	topics := []string{"log-1", "log-2", "log-3"}
 
-	brokerCtx := Given(t)
+	brokerCtx := GivenStandalone(t)
 	defer brokerCtx.Cleanup()
 	brokerCtx.When().StartBroker()
 
 	for _, topic := range topics {
-		ctx := Given(t).WithTopic(topic).WithPartitions(1).WithNumMessages(3)
+		ctx := GivenStandalone(t).WithTopic(topic).WithPartitions(1).WithNumMessages(3)
 		defer ctx.Cleanup()
 
 		ctx.When().
@@ -107,7 +107,7 @@ func TestRegexPatternWithQuestionMark(t *testing.T) {
 	}
 
 	groupName := "question-mark-test-group"
-	consumerCtx := Given(t).
+	consumerCtx := GivenStandalone(t).
 		WithTopic("log-1"). // actual topic name
 		WithPartitions(1).
 		WithNumMessages(0).

@@ -52,9 +52,7 @@ type TestContext struct {
 
 // Given creates a new test context with default values
 func Given(t *testing.T) *TestContext {
-	initEnvironment(t)
 	uniqueID := uuid.New().String()[:8]
-
 	return &TestContext{
 		t:              t,
 		brokerAddrs:    defaultBrokerAddrs,
@@ -95,8 +93,16 @@ func initEnvironment(t *testing.T) {
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("Failed to start docker compose: %v\nOutput: %s", err, string(output))
 		}
-		time.Sleep(10 * time.Second)
+
+		if err := CheckBrokerHealth(StandAloneHealthCheckAddr); err != nil {
+			t.Fatalf("Broker failed to become healthy: %v", err)
+		}
 	})
+}
+
+func GivenStandalone(t *testing.T) *TestContext {
+	initEnvironment(t)
+	return Given(t)
 }
 
 func TestMain(m *testing.M) {
@@ -124,19 +130,6 @@ func (ctx *TestContext) getClient() *BrokerClient {
 	}
 
 	return ctx.client
-}
-
-// GetMemberID returns the consumer member ID
-func (bc *BrokerClient) GetMemberID() string {
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
-	return bc.memberID
-}
-
-func (bc *BrokerClient) SetMemberID(id string) {
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
-	bc.memberID = id
 }
 
 // GetNumMessages returns the current number of messages setting
@@ -208,13 +201,6 @@ func (ctx *TestContext) SetConsumedCount(count int) {
 	ctx.consumedCount = count
 }
 
-// GetGeneration returns the consumer generation
-func (bc *BrokerClient) GetGeneration() int {
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
-	return bc.generation
-}
-
 // GetProducerID returns the current producer ID
 func (c *TestContext) GetProducerID() string {
 	return c.producerID
@@ -223,12 +209,6 @@ func (c *TestContext) GetProducerID() string {
 // GetPublishedSeqNums returns the sequence numbers of published messages
 func (c *TestContext) GetPublishedSeqNums() []uint64 {
 	return c.publishedSeqNums
-}
-
-func (bc *BrokerClient) GetSyncInfo() (string, int) {
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
-	return bc.memberID, bc.generation
 }
 
 // Configuration methods (fluent interface)

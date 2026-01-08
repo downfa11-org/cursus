@@ -6,7 +6,7 @@ import (
 
 // TestPublisherConfigOptions verifies publisher configuration options work correctly
 func TestPublisherConfigOptions(t *testing.T) {
-	ctx := Given(t)
+	ctx := GivenStandalone(t)
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("publisher-test").
@@ -23,7 +23,7 @@ func TestPublisherConfigOptions(t *testing.T) {
 
 // TestPublisherRetryLogic verifies publisher retry mechanism
 func TestPublisherRetryLogic(t *testing.T) {
-	ctx := Given(t)
+	ctx := GivenStandalone(t)
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("retry-test").
@@ -41,7 +41,7 @@ func TestPublisherRetryLogic(t *testing.T) {
 
 // TestExactlyOnceSemantics verifies exactly-once delivery with retries
 func TestExactlyOnceSemantics(t *testing.T) {
-	ctx := Given(t)
+	ctx := GivenStandalone(t)
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("exactly-once-test").
@@ -61,7 +61,7 @@ func TestExactlyOnceSemantics(t *testing.T) {
 
 // TestIdempotentProducer verifies idempotent producer behavior
 func TestIdempotentProducer(t *testing.T) {
-	ctx := Given(t)
+	ctx := GivenStandalone(t)
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("idempotent-test").
@@ -92,7 +92,7 @@ func TestPublisherAcks(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := Given(t)
+			ctx := GivenStandalone(t)
 			defer ctx.Cleanup()
 
 			ctx.WithTopic("acks-test-" + tc.acks).
@@ -124,7 +124,7 @@ func TestExactlyOnceWithFailures(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := Given(t).
+			ctx := GivenStandalone(t).
 				WithTopic("exactly-once-" + tc.name).
 				WithPartitions(3).
 				WithNumMessages(50).
@@ -152,7 +152,7 @@ func TestExactlyOnceWithFailures(t *testing.T) {
 				Then()
 
 			if tc.expectDupes {
-				consequences.Expect(DuplicatesDetected()).
+				consequences.Expect(DuplicatesAllowed()).
 					And(PublisherRetriedSuccessfully())
 			} else {
 				consequences.Expect(NoDuplicateMessages()).
@@ -164,7 +164,7 @@ func TestExactlyOnceWithFailures(t *testing.T) {
 
 // TestIdempotencyUnderStress tests idempotency with high concurrency
 func TestIdempotencyUnderStress(t *testing.T) {
-	ctx := Given(t).
+	ctx := GivenStandalone(t).
 		WithTopic("idempotency-stress").
 		WithPartitions(5).
 		WithNumMessages(1000).

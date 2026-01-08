@@ -8,7 +8,7 @@ import (
 
 // TestConsumerGroupJoin verifies consumer group join functionality
 func TestConsumerGroupJoin(t *testing.T) {
-	ctx := Given(t)
+	ctx := GivenStandalone(t)
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("consumer-group-test").
@@ -27,7 +27,7 @@ func TestConsumerGroupJoin(t *testing.T) {
 
 // TestWithDefaultConsumerGroup verifies default consumer group behavior
 func TestWithDefaultConsumerGroup(t *testing.T) {
-	ctx := Given(t)
+	ctx := GivenStandalone(t)
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("default-group-test").
@@ -47,7 +47,7 @@ func TestWithDefaultConsumerGroup(t *testing.T) {
 
 // TestWithCustomConsumerGroup verifies custom consumer group behavior
 func TestWithCustomConsumerGroup(t *testing.T) {
-	ctx := Given(t)
+	ctx := GivenStandalone(t)
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("custom-group-test").
@@ -67,7 +67,7 @@ func TestWithCustomConsumerGroup(t *testing.T) {
 
 // TestDefaultGroupOffsetSharing verifies offset sharing between consumers in same group
 func TestDefaultGroupOffsetSharing(t *testing.T) {
-	ctx1 := Given(t)
+	ctx1 := GivenStandalone(t)
 	defer ctx1.Cleanup()
 
 	sharedGroup := fmt.Sprintf("shared-group-%d", time.Now().UnixNano())
@@ -86,7 +86,7 @@ func TestDefaultGroupOffsetSharing(t *testing.T) {
 		Then().
 		Expect(MessagesConsumed(10))
 
-	ctx2 := Given(t)
+	ctx2 := GivenStandalone(t)
 	defer ctx2.Cleanup()
 
 	ctx2.WithTopic("shared-topic").
@@ -102,7 +102,7 @@ func TestDefaultGroupOffsetSharing(t *testing.T) {
 
 // TestConsumerOffsetCommit verifies offset commit functionality
 func TestConsumerOffsetCommit(t *testing.T) {
-	ctx := Given(t)
+	ctx := GivenStandalone(t)
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("offset-test").
@@ -122,7 +122,7 @@ func TestConsumerOffsetCommit(t *testing.T) {
 
 // TestConsumerHeartbeat verifies heartbeat mechanism
 func TestConsumerHeartbeat(t *testing.T) {
-	ctx := Given(t)
+	ctx := GivenStandalone(t)
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("heartbeat-test").

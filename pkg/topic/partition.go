@@ -5,10 +5,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/downfa11-org/go-broker/pkg/config"
-	"github.com/downfa11-org/go-broker/pkg/stream"
-	"github.com/downfa11-org/go-broker/pkg/types"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/pkg/config"
+	"github.com/downfa11-org/cursus/pkg/stream"
+	"github.com/downfa11-org/cursus/pkg/types"
+	"github.com/downfa11-org/cursus/util"
 )
 
 type AbsoluteOffsetProvider interface {
@@ -16,7 +16,7 @@ type AbsoluteOffsetProvider interface {
 }
 
 type DiskAppender interface {
-	AppendMessage(topic string, partition int, msg *types.Message) uint64
+	AppendMessage(topic string, partition int, msg *types.Message) (uint64, error)
 	AppendMessageSync(topic string, partition int, msg *types.Message) (uint64, error)
 }
 
@@ -68,7 +68,12 @@ func (p *Partition) Enqueue(msg types.Message) {
 
 	if appender, ok := p.dh.(DiskAppender); ok {
 		util.Debug("Calling AppendMessage for disk persistence [partition-%d]", p.id)
-		msg.Offset = appender.AppendMessage(p.topic, p.id, &msg)
+		offset, err := appender.AppendMessage(p.topic, p.id, &msg)
+		if err != nil {
+			util.Error("❌ Failed to enqueue message to disk [partition-%d]: %v", p.id, err)
+			return
+		}
+		msg.Offset = offset
 		p.NotifyNewMessage()
 	} else {
 		util.Warn("⚠️ DiskHandler does not implement AppendMessage [partition-%d]\n", p.id)
@@ -113,13 +118,13 @@ func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
 		return fmt.Errorf("disk handler does not implement sync write")
 	}
 
-	for i, msg := range msgs {
+	for i := range msgs {
 		offset, err := appender.AppendMessageSync(p.topic, p.id, &msgs[i])
 		if err != nil {
 			return fmt.Errorf("disk write failed for partition %d: %w", p.id, err)
 		}
-		msg.Offset = offset
-		p.enqueueToBroadcast(msg)
+		msgs[i].Offset = offset
+		p.enqueueToBroadcast(msgs[i])
 	}
 	p.NotifyNewMessage()
 	return nil
@@ -134,10 +139,13 @@ func (p *Partition) EnqueueBatch(msgs []types.Message) error {
 	}
 
 	if appender, ok := p.dh.(DiskAppender); ok {
-		for _, msg := range msgs {
-			offset := appender.AppendMessage(p.topic, p.id, &msg)
-			msg.Offset = offset
-			p.enqueueToBroadcast(msg)
+		for i := range msgs {
+			offset, err := appender.AppendMessage(p.topic, p.id, &msgs[i])
+			if err != nil {
+				return fmt.Errorf("batch enqueue failed at index %d: %w", i, err)
+			}
+			msgs[i].Offset = offset
+			p.enqueueToBroadcast(msgs[i])
 		}
 		p.NotifyNewMessage()
 	} else {

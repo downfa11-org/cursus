@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"strings"
 
-	clusterController "github.com/downfa11-org/go-broker/pkg/cluster/controller"
-	"github.com/downfa11-org/go-broker/pkg/config"
-	"github.com/downfa11-org/go-broker/pkg/coordinator"
-	"github.com/downfa11-org/go-broker/pkg/disk"
-	"github.com/downfa11-org/go-broker/pkg/stream"
-	"github.com/downfa11-org/go-broker/pkg/topic"
-	"github.com/downfa11-org/go-broker/pkg/types"
-	"github.com/downfa11-org/go-broker/util"
+	clusterController "github.com/downfa11-org/cursus/pkg/cluster/controller"
+	"github.com/downfa11-org/cursus/pkg/config"
+	"github.com/downfa11-org/cursus/pkg/coordinator"
+	"github.com/downfa11-org/cursus/pkg/disk"
+	"github.com/downfa11-org/cursus/pkg/stream"
+	"github.com/downfa11-org/cursus/pkg/topic"
+	"github.com/downfa11-org/cursus/pkg/types"
+	"github.com/downfa11-org/cursus/util"
 )
 
 const DefaultMaxPollRecords = 8192

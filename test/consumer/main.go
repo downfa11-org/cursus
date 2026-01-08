@@ -7,9 +7,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/downfa11-org/go-broker/consumer/config"
-	"github.com/downfa11-org/go-broker/consumer/subscriber"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/test/consumer/config"
+	"github.com/downfa11-org/cursus/test/consumer/subscriber"
+	"github.com/downfa11-org/cursus/util"
 )
 
 func main() {

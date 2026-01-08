@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/util"
 )
 
 const sep = "========================================"
@@ -56,9 +56,9 @@ func (pm *PartitionMetrics) TPS() float64 {
 }
 
 type PhaseMetrics struct {
-	startTime time.Time
-	endTime   time.Time
-
+	startTime  time.Time
+	endTime    time.Time
+	mu         sync.RWMutex
 	totalMsgs  int64
 	partitions map[int]*PartitionMetrics
 }
@@ -127,33 +127,26 @@ func NewConsumerMetrics(expected int64, enableCorrectness bool) *ConsumerMetrics
 }
 
 func (m *ConsumerMetrics) RecordBatch(partition int, count int) {
+	m.mu.Lock()
 	if !m.started {
-		m.mu.Lock()
-		if !m.started {
-			now := time.Now()
-			m.startTime = now
-			m.started = true
-			if ph, ok := m.phases[m.currentPhase]; ok && ph.startTime.IsZero() {
-				ph.startTime = now
-			}
+		now := time.Now()
+		m.startTime = now
+		m.started = true
+		if ph, ok := m.phases[m.currentPhase]; ok && ph.startTime.IsZero() {
+			ph.startTime = now
 		}
-		m.mu.Unlock()
 	}
+	currentPhase := m.currentPhase
+	ph := m.phases[currentPhase]
+	m.mu.Unlock()
 
-	m.mu.RLock()
-	ph := m.phases[m.currentPhase]
+	ph.mu.Lock()
 	pm, ok := ph.partitions[partition]
-	m.mu.RUnlock()
-
 	if !ok {
-		m.mu.Lock()
-		ph = m.phases[m.currentPhase]
-		if pm, ok = ph.partitions[partition]; !ok {
-			pm = &PartitionMetrics{ID: partition}
-			ph.partitions[partition] = pm
-		}
-		m.mu.Unlock()
+		pm = &PartitionMetrics{ID: partition}
+		ph.partitions[partition] = pm
 	}
+	ph.mu.Unlock()
 
 	atomic.AddInt64(&m.totalMsgs, int64(count))
 	atomic.AddInt64(&ph.totalMsgs, int64(count))

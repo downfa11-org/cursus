@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/downfa11-org/go-broker/pkg/coordinator"
-	"github.com/downfa11-org/go-broker/pkg/disk"
-	"github.com/downfa11-org/go-broker/pkg/topic"
-	"github.com/downfa11-org/go-broker/pkg/types"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/pkg/coordinator"
+	"github.com/downfa11-org/cursus/pkg/disk"
+	"github.com/downfa11-org/cursus/pkg/topic"
+	"github.com/downfa11-org/cursus/pkg/types"
+	"github.com/downfa11-org/cursus/util"
 	"github.com/hashicorp/raft"
 )
 

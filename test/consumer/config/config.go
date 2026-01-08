@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/util"
 	"gopkg.in/yaml.v3"
 )
 

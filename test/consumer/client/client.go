@@ -3,13 +3,13 @@ package client
 import (
 	"fmt"
 	"net"
-	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/downfa11-org/go-broker/consumer/config"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/util"
 	"github.com/google/uuid"
+
+	"github.com/downfa11-org/cursus/test/consumer/config"
 )
 
 type leaderInfo struct {
@@ -20,8 +20,6 @@ type leaderInfo struct {
 type ConsumerClient struct {
 	ID     string
 	config *config.ConsumerConfig
-	mu     sync.Mutex
-
 	leader atomic.Value
 }
 
@@ -53,11 +51,21 @@ func (c *ConsumerClient) Connect(addr string) (net.Conn, error) {
 	}
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		tcpConn.SetNoDelay(true)
-		tcpConn.SetKeepAlive(true)
-		tcpConn.SetKeepAlivePeriod(30 * time.Second)
-		tcpConn.SetReadBuffer(2 * 1024 * 1024)  // 2MB
-		tcpConn.SetWriteBuffer(2 * 1024 * 1024) // 2MB
+		if err := tcpConn.SetNoDelay(true); err != nil {
+			util.Error("failed to set no delay: %v", err)
+		}
+		if err := tcpConn.SetKeepAlive(true); err != nil {
+			util.Error("failed to set keep alive: %v", err)
+		}
+		if err := tcpConn.SetKeepAlivePeriod(30 * time.Second); err != nil {
+			util.Error("failed to set keep alive period: %v", err)
+		}
+		if err := tcpConn.SetReadBuffer(2 * 1024 * 1024); err != nil { // 2MB
+			util.Error("failed to set read buffer: %v", err)
+		}
+		if err := tcpConn.SetWriteBuffer(2 * 1024 * 1024); err != nil { // 2MB
+			util.Error("failed to set write buffer: %v", err)
+		}
 	}
 
 	return conn, nil

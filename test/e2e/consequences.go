@@ -213,9 +213,10 @@ func PublishedSequencesAreUnique() Expectation {
 // DuplicatesDetected verifies that the consumed count is higher than published due to lack of idempotency
 func DuplicatesDetected() Expectation {
 	return func(ctx *TestContext) error {
-		if ctx.consumedCount < ctx.publishedCount {
-			return fmt.Errorf("expected duplicate messages (consumed > %d), but got %d", ctx.publishedCount, ctx.consumedCount)
+		if ctx.consumedCount <= ctx.publishedCount {
+			return fmt.Errorf("expected duplicate messages (consumed > %d), but got %d (no duplicates occurred)", ctx.publishedCount, ctx.consumedCount)
 		}
+
 		ctx.t.Logf("Duplicates detected as expected: Published %d, Consumed %d", ctx.publishedCount, ctx.consumedCount)
 		return nil
 	}

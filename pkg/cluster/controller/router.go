@@ -7,7 +7,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/downfa11-org/go-broker/pkg/cluster/replication"
+	"github.com/downfa11-org/cursus/pkg/cluster/replication"
 )
 
 type LocalProcessor interface {

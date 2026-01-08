@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/util"
 )
 
 // BrokerClient wraps low-level broker communication
@@ -43,6 +43,32 @@ func NewBrokerClient(addrs []string) *BrokerClient {
 	return &BrokerClient{
 		addrs: addrs,
 	}
+}
+
+// GetMemberID returns the consumer member ID
+func (bc *BrokerClient) GetMemberID() string {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	return bc.memberID
+}
+
+func (bc *BrokerClient) SetMemberID(id string) {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	bc.memberID = id
+}
+
+// GetGeneration returns the consumer generation
+func (bc *BrokerClient) GetGeneration() int {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	return bc.generation
+}
+
+func (bc *BrokerClient) GetSyncInfo() (string, int) {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	return bc.memberID, bc.generation
 }
 
 func (bc *BrokerClient) connect() error {

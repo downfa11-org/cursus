@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/downfa11-org/go-broker/pkg/types"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/pkg/types"
+	"github.com/downfa11-org/cursus/util"
 )
 
 // flushLoop continuously processes write batches and handles segment rotation.

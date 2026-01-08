@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/util"
 )
 
 // CreateTopic sends CREATE command to broker
@@ -51,7 +51,7 @@ func (bc *BrokerClient) PublishSimple(topic, payload, acks string) error {
 	if acks == "0" {
 		addr, err := bc.getPrimaryAddr()
 		if err != nil {
-			return fmt.Errorf("publish idempotent failed: %w", err)
+			return fmt.Errorf("publish simple failed: %w", err)
 		}
 
 		conn, err := net.Dial("tcp", addr)

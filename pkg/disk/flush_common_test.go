@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/downfa11-org/go-broker/pkg/config"
-	"github.com/downfa11-org/go-broker/pkg/disk"
-	"github.com/downfa11-org/go-broker/pkg/types"
+	"github.com/downfa11-org/cursus/pkg/config"
+	"github.com/downfa11-org/cursus/pkg/disk"
+	"github.com/downfa11-org/cursus/pkg/types"
 )
 
 func setupDiskHandler(t *testing.T) *disk.DiskHandler {
@@ -86,15 +86,40 @@ func TestFlushLoopAsync(t *testing.T) {
 	dh := setupDiskHandler(t)
 	defer dh.Close()
 
-	dh.AppendMessage("testTopic", 0, &types.Message{Payload: "async1", SeqNum: 1})
-	dh.AppendMessage("testTopic", 0, &types.Message{Payload: "async2", SeqNum: 2})
-	dh.AppendMessage("testTopic", 0, &types.Message{Payload: "async3", SeqNum: 3})
+	msgs := []struct {
+		payload string
+		seq     uint64
+	}{
+		{"async1", 1},
+		{"async2", 2},
+		{"async3", 3},
+	}
+
+	for _, m := range msgs {
+		_, err := dh.AppendMessage("testTopic", 0, &types.Message{
+			Payload: m.payload,
+			SeqNum:  m.seq,
+		})
+		if err != nil {
+			t.Fatalf("❌ failed to append message %s: %v", m.payload, err)
+		}
+	}
 
 	t.Logf("waiting for flushLoop to process messages...")
-	<-time.After(200 * time.Millisecond)
+	expectedOffset := uint64(len(msgs))
+	success := false
 
-	if dh.GetAbsoluteOffset() != 3 {
-		t.Fatalf("expected AbsoluteOffset 3 after async flush, got %d", dh.GetAbsoluteOffset())
+	for i := 0; i < 10; i++ {
+		if dh.GetAbsoluteOffset() == expectedOffset {
+			success = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if !success {
+		t.Fatalf("❌ timeout: expected AbsoluteOffset %d, got %d",
+			expectedOffset, dh.GetAbsoluteOffset())
 	}
 }
 
@@ -168,7 +193,16 @@ func TestDrainAndShutdown(t *testing.T) {
 
 	testMsgs := []string{"shutdown_1", "shutdown_2"}
 	for i, m := range testMsgs {
-		dh.AppendMessage("testTopic", 0, &types.Message{Payload: m, SeqNum: uint64(i)})
+		offset, err := dh.AppendMessageSync("testTopic", 0, &types.Message{
+			Payload: m,
+			SeqNum:  uint64(i),
+		})
+		if err != nil {
+			t.Fatalf("WriteDirect failed: %v", err)
+		}
+		if offset != uint64(i) {
+			t.Errorf("expected offset %d, got %d", i, offset)
+		}
 	}
 
 	dh.Close()

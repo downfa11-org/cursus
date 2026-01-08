@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/downfa11-org/go-broker/pkg/config"
-	"github.com/downfa11-org/go-broker/pkg/coordinator"
-	"github.com/downfa11-org/go-broker/pkg/disk"
-	"github.com/downfa11-org/go-broker/pkg/server"
-	"github.com/downfa11-org/go-broker/pkg/stream"
-	"github.com/downfa11-org/go-broker/pkg/topic"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/pkg/config"
+	"github.com/downfa11-org/cursus/pkg/coordinator"
+	"github.com/downfa11-org/cursus/pkg/disk"
+	"github.com/downfa11-org/cursus/pkg/server"
+	"github.com/downfa11-org/cursus/pkg/stream"
+	"github.com/downfa11-org/cursus/pkg/topic"
+	"github.com/downfa11-org/cursus/util"
 )
 
 func main() {

@@ -6,8 +6,8 @@ import (
 	"net"
 	"strings"
 
-	"github.com/downfa11-org/go-broker/pkg/cluster/controller"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/pkg/cluster/controller"
+	"github.com/downfa11-org/cursus/util"
 )
 
 type joinRequest struct {

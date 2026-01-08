@@ -6,7 +6,8 @@ import (
 
 // TestBasicPubSub verifies basic publish-subscribe functionality
 func TestBasicPubSub(t *testing.T) {
-	ctx := Given(t)
+
+	ctx := GivenStandalone(t)
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("test-topic").
@@ -27,7 +28,7 @@ func TestBasicPubSub(t *testing.T) {
 
 // TestConfigValidation verifies configuration validation
 func TestConfigValidation(t *testing.T) {
-	ctx := Given(t)
+	ctx := GivenStandalone(t)
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("config-test").
@@ -43,7 +44,7 @@ func TestConfigValidation(t *testing.T) {
 
 // TestMultiPartition verifies multi-partition behavior
 func TestMultiPartition(t *testing.T) {
-	ctx := Given(t)
+	ctx := GivenStandalone(t)
 	defer ctx.Cleanup()
 
 	ctx.WithTopic("multi-partition-test").

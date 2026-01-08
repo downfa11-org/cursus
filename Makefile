@@ -1,5 +1,5 @@
-APP_NAME := go-broker
-CLI_NAME := go-broker-cli
+APP_NAME := cursus
+CLI_NAME := cursus-cli
 
 GO := go
 GOLINT := golangci-lint

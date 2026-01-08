@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/downfa11-org/go-broker/test/e2e"
+	"github.com/downfa11-org/cursus/test/e2e"
 )
 
 const (
@@ -71,7 +71,6 @@ func GivenClusterRestart(t *testing.T) *ClusterTestContext {
 
 	t.Cleanup(func() {
 		cmd := e2e.RunCompose("-f", composeFile, "down", "-v")
-
 		if err := cmd.Run(); err != nil {
 			t.Logf("Cleanup warning: failed to bring down docker compose: %v", err)
 		}

@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/downfa11-org/go-broker/pkg/cluster/replication"
-	"github.com/downfa11-org/go-broker/pkg/config"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/pkg/cluster/replication"
+	"github.com/downfa11-org/cursus/pkg/config"
+	"github.com/downfa11-org/cursus/util"
 )
 
 type ClusterController struct {

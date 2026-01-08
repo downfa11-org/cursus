@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/downfa11-org/go-broker/pkg/config"
-	"github.com/downfa11-org/go-broker/pkg/types"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/pkg/config"
+	"github.com/downfa11-org/cursus/pkg/types"
+	"github.com/downfa11-org/cursus/util"
 	"golang.org/x/exp/mmap"
 )
 
@@ -166,7 +166,7 @@ func (d *DiskHandler) AppendMessageSync(topic string, partition int, msg *types.
 }
 
 // AppendMessage sends a message to the internal write channel for asynchronous disk persistence.
-func (d *DiskHandler) AppendMessage(topic string, partition int, msg *types.Message) uint64 {
+func (d *DiskHandler) AppendMessage(topic string, partition int, msg *types.Message) (uint64, error) {
 	util.Debug("Attempting to append message (len=%d) to disk.writeCh (cap=%d, len=%d)", len(msg.Payload), cap(d.writeCh), len(d.writeCh))
 
 	d.mu.Lock()
@@ -191,21 +191,20 @@ func (d *DiskHandler) AppendMessage(topic string, partition int, msg *types.Mess
 
 		select {
 		case <-d.done:
-			util.Debug("DiskHandler done channel closed for %s", d.BaseName)
-			return offset
+			util.Debug("done channel closed for %s", d.BaseName)
+			return 0, fmt.Errorf("disk handler is shutting down")
 		case d.writeCh <- diskMsg:
-			util.Debug("Message successfully sent to writeCh for %s", d.BaseName)
-			return offset
+			return diskMsg.Offset, nil
 		case <-timer.C:
-			util.Error("❌ DiskHandler enqueue timed out after %s for topic %s", d.writeTimeout, topic)
-			return offset
+			util.Error("enqueue timed out after %s for topic %s", d.writeTimeout, topic)
+			return 0, fmt.Errorf("enqueue timeout after %s", d.writeTimeout)
 		}
 	} else {
 		select {
 		case <-d.done:
-			return offset
+			return 0, fmt.Errorf("disk handler is shutting down")
 		case d.writeCh <- diskMsg:
-			return offset
+			return diskMsg.Offset, nil
 		}
 	}
 }

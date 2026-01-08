@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/downfa11-org/go-broker/pkg/cluster/replication"
-	"github.com/downfa11-org/go-broker/pkg/cluster/replication/fsm"
-	"github.com/downfa11-org/go-broker/util"
+	"github.com/downfa11-org/cursus/pkg/cluster/replication"
+	"github.com/downfa11-org/cursus/pkg/cluster/replication/fsm"
+	"github.com/downfa11-org/cursus/util"
 )
 
 type ServiceDiscovery struct {
@@ -130,7 +130,7 @@ func (sd *ServiceDiscovery) StartReconciler(ctx context.Context) {
 				}
 				sd.reconcile()
 			case <-ctx.Done():
-				util.Info("reconciler stopping for broker %s due to context cancellation", sd.brokerID)
+				util.Debug("reconciler stopping for broker %s due to context cancellation", sd.brokerID)
 				return
 			}
 		}
@@ -159,6 +159,8 @@ func (sd *ServiceDiscovery) reconcile() {
 			util.Warn("Node %s found in FSM but missing in Raft. Cleaning up...", b.ID)
 			if err := sd.rm.ApplyCommand("DEREGISTER", []byte(b.ID)); err != nil {
 				util.Error("Failed to apply DEREGISTER for node %s: %v", b.ID, err)
+			} else {
+				util.Info("Successfully removed stale node %s from FSM", b.ID)
 			}
 		}
 	}
