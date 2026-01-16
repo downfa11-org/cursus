@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/downfa11-org/cursus/pkg/config"
+	"github.com/downfa11-org/cursus/pkg/types"
 	"github.com/downfa11-org/cursus/util"
 )
 
@@ -23,7 +24,7 @@ func NewDiskManager(cfg *config.Config) *DiskManager {
 }
 
 // GetHandler returns a DiskHandler for a given name or creates one if missing
-func (dm *DiskManager) GetHandler(topic string, partitionID int) (*DiskHandler, error) {
+func (dm *DiskManager) GetHandler(topic string, partitionID int) (types.StorageHandler, error) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 

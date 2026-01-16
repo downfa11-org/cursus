@@ -118,18 +118,15 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 		Epoch:      epoch,
 	}
 
+	partition := t.GetPartitionForMessage(*msg)
 	if ch.Config.EnabledDistribution && ch.Cluster != nil {
-		t := ch.TopicManager.GetTopic(topicName)
-		if t == nil {
-			return "ERROR: topic vanished during processing"
-		}
-
-		partition := t.GetPartitionForMessage(*msg)
 		if !ch.isAuthorizedForPartition(topicName, partition) {
 			util.Error("NOT_AUTHORIZED_FOR_PARTITION %s:%d", topicName, partition)
 			return fmt.Sprintf("ERROR: NOT_AUTHORIZED_FOR_PARTITION %s:%d", topicName, partition)
 		}
 
+		assignedOffset := t.Partitions[partition].NextOffset()
+		msg.Offset = assignedOffset
 		if acks == "-1" || acksLower == "all" {
 			ackResp, err = ch.Cluster.RaftManager.ReplicateWithQuorum(topicName, partition, *msg, ch.Config.MinInSyncReplicas)
 
@@ -139,14 +136,20 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 			goto Respond
 
 		} else {
-			messageData := map[string]interface{}{
-				"topic":      topicName,
-				"partition":  partition,
-				"payload":    message,
-				"producerId": producerID,
-				"seqNum":     seqNum,
-				"epoch":      epoch,
-				"acks":       acks,
+			messageData := types.MessageCommand{
+				Topic:        topicName,
+				Partition:    partition,
+				IsIdempotent: false,
+				Messages: []types.Message{
+					{
+						Offset:     assignedOffset,
+						Payload:    message,
+						ProducerID: producerID,
+						SeqNum:     seqNum,
+						Epoch:      epoch,
+					},
+				},
+				Acks: acks,
 			}
 
 			jsonData, err := json.Marshal(messageData)
@@ -185,7 +188,7 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 
 	ackResp = types.AckResponse{
 		Status:        "OK",
-		LastOffset:    msg.Offset,
+		LastOffset:    ch.TopicManager.GetLastOffset(topicName, partition),
 		ProducerEpoch: epoch,
 		ProducerID:    producerID,
 		SeqStart:      seqNum,
@@ -259,6 +262,23 @@ func (ch *CommandHandler) HandleBatchMessage(data []byte, conn net.Conn) (string
 			return fmt.Sprintf("ERROR: NOT_AUTHORIZED_FOR_PARTITION %s:%d", batch.Topic, batch.Partition), nil
 		}
 
+		t := ch.TopicManager.GetTopic(batch.Topic)
+		if t == nil {
+			util.Error("Batch process failed: topic '%s' not found", batch.Topic)
+			return fmt.Sprintf("ERROR: TOPIC_NOT_FOUND %s", batch.Topic), nil
+		}
+
+		p, err := t.GetPartition(batch.Partition)
+		if err != nil {
+			util.Error("Batch process failed: partition %d not found in topic %s", batch.Partition, batch.Topic)
+			return fmt.Sprintf("ERROR: PARTITION_NOT_FOUND %d", batch.Partition), nil
+		}
+
+		currentOffset := p.NextOffset()
+		for i := range batch.Messages {
+			batch.Messages[i].Offset = currentOffset + uint64(i)
+		}
+
 		if acks == "-1" || acksLower == "all" {
 			respAck, err = ch.Cluster.RaftManager.ReplicateBatchWithQuorum(batch.Topic, batch.Partition, batch.Messages, ch.Config.MinInSyncReplicas, acks)
 			if err != nil {
@@ -309,7 +329,7 @@ func (ch *CommandHandler) HandleBatchMessage(data []byte, conn net.Conn) (string
 
 	respAck = types.AckResponse{
 		Status:        "OK",
-		LastOffset:    lastMsg.Offset,
+		LastOffset:    ch.TopicManager.GetLastOffset(batch.Topic, batch.Partition),
 		SeqStart:      batch.Messages[0].SeqNum,
 		SeqEnd:        lastMsg.SeqNum,
 		ProducerID:    lastMsg.ProducerID,

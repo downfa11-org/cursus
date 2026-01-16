@@ -110,8 +110,8 @@ type ConsumerMetrics struct {
 func NewConsumerMetrics(expected int64, enableCorrectness bool) *ConsumerMetrics {
 	var offsetBF, idBF *BloomFilter
 	if enableCorrectness {
-		offsetBF = NewBloomFilter(uint64(expected), 0.001)
-		idBF = NewBloomFilter(uint64(expected), 0.001)
+		offsetBF = NewBloomFilter(uint64(expected), 0.0001)
+		idBF = NewBloomFilter(uint64(expected), 0.0001)
 	}
 
 	return &ConsumerMetrics{
@@ -157,6 +157,9 @@ func (m *ConsumerMetrics) RecordMessage(partition int, offset int64, producerID 
 	if !m.enableCorrectness {
 		return
 	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	offsetKey := encodeOffset(partition, offset)
 	isDuplicate := m.seenOffsetFilter.Add(offsetKey)

@@ -52,27 +52,13 @@ func NewProducerClient(partitions int, config *config.PublisherConfig) *Producer
 	return pc
 }
 
-func (pc *ProducerClient) CommitSeqRange(partition int, endSeq uint64) {
-	if partition < 0 {
-		panic(fmt.Sprintf("invalid partition index in CommitSeqRange: %d", partition))
-	}
-
+func (pc *ProducerClient) NextSeqNum(partition int) uint64 {
 	for {
 		current := pc.globalSeqNum.Load()
-		if endSeq <= current {
-			return
-		}
-		if pc.globalSeqNum.CompareAndSwap(current, endSeq) {
-			return
+		if pc.globalSeqNum.CompareAndSwap(current, current+1) {
+			return current
 		}
 	}
-}
-
-func (pc *ProducerClient) NextSeqNum(partition int) uint64 {
-	if partition < 0 {
-		panic(fmt.Sprintf("invalid partition index: %d", partition))
-	}
-	return pc.globalSeqNum.Add(1)
 }
 
 func (pc *ProducerClient) connectPartitionLocked(idx int, addr string, useTLS bool, certPath, keyPath string) error {

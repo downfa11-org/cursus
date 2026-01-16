@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/downfa11-org/cursus/pkg/coordinator"
+	"github.com/downfa11-org/cursus/pkg/topic"
 	"github.com/downfa11-org/cursus/util"
 )
 
@@ -574,41 +575,30 @@ func (ch *CommandHandler) handleBatchCommit(cmd string) string {
 }
 
 // resolveOffset determines the starting offset for a consumer
-func (ch *CommandHandler) resolveOffset(topicName string, partition int, requestedOffset uint64, groupName string, autoOffsetReset string) (uint64, error) {
-	dh, err := ch.DiskManager.GetHandler(topicName, partition)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get disk handler: %w", err)
-	}
-
+func (ch *CommandHandler) resolveOffset(p *topic.Partition, topicName string, cArgs CommonArgs) (uint64, error) {
 	if ch.Coordinator != nil {
-		savedOffset, isFind := ch.Coordinator.GetOffset(groupName, topicName, partition)
+		savedOffset, isFind := ch.Coordinator.GetOffset(cArgs.GroupName, topicName, cArgs.PartitionID)
 		if isFind {
-			util.Debug("partition %d: found saved offset %d for topic %s group '%s'", partition, savedOffset, topicName, groupName)
 			return savedOffset, nil
 		}
 	}
 
-	if requestedOffset > 0 {
-		util.Debug("Using explicitly requested offset %d", requestedOffset)
-		return requestedOffset, nil
+	if cArgs.Offset > 0 {
+		util.Debug("Using explicitly requested offset %d", cArgs.Offset)
+		return cArgs.Offset, nil
 	}
 
-	var actualOffset uint64
-	if strings.ToLower(autoOffsetReset) == "latest" {
-		latest, err := dh.GetLatestOffset()
+	if cArgs.AutoOffsetReset == "latest" {
+		latest, err := p.GetLatestOffset()
 		if err != nil {
-			util.Warn("Failed to get latest offset, defaulting to 0: %v", err)
-			actualOffset = 0
-		} else {
-			actualOffset = latest
+			return 0, fmt.Errorf("failed to get latest offset from partition: %w", err)
 		}
-		util.Debug("No saved offset. Reset policy 'latest': starting at %d", actualOffset)
-	} else {
-		actualOffset = 0
-		util.Debug("No saved offset. Reset policy 'earliest': starting at 0")
+		util.Debug("Reset policy 'latest': starting at %d", latest)
+		return latest, nil
 	}
 
-	return actualOffset, nil
+	util.Debug("Reset policy 'earliest': starting at 0")
+	return 0, nil
 }
 
 func (ch *CommandHandler) ValidateOwnership(groupName, memberID string, generation int, partition int) bool {

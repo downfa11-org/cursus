@@ -268,7 +268,7 @@ func (c *Consumer) commitBatch(offsets map[int]uint64, respChannels map[int][]ch
 }
 
 func (c *Consumer) waitForBenchmarkCompletion() {
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {

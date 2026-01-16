@@ -159,6 +159,39 @@ func (t *Topic) PublishBatchSync(msgs []types.Message) error {
 	return nil
 }
 
+func (t *Topic) GetPartition(partitionID int) (*Partition, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if partitionID < 0 || partitionID >= len(t.Partitions) {
+		return nil, fmt.Errorf("partition %d out of range for topic '%s' (0-%d)", partitionID, t.Name, len(t.Partitions)-1)
+	}
+
+	return t.Partitions[partitionID], nil
+}
+
+func (t *Topic) ReadSafeMessages(partitionID int, offset uint64, max int) ([]types.Message, error) {
+	p, err := t.GetPartition(partitionID)
+	if err != nil {
+		return nil, err
+	}
+
+	p.mu.RLock()
+	hwm := p.HWM
+	p.mu.RUnlock()
+
+	if offset >= hwm {
+		return nil, nil
+	}
+
+	canReadCount := int(hwm - offset)
+	if max > canReadCount {
+		max = canReadCount
+	}
+
+	return p.dh.ReadMessages(offset, max)
+}
+
 // applyAssignments connects partitions to consumers according to coordinator results.
 func (t *Topic) applyAssignments(groupName string, assignments map[string][]int) {
 	group := t.consumerGroups[groupName]

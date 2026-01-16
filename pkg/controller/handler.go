@@ -8,7 +8,6 @@ import (
 	clusterController "github.com/downfa11-org/cursus/pkg/cluster/controller"
 	"github.com/downfa11-org/cursus/pkg/config"
 	"github.com/downfa11-org/cursus/pkg/coordinator"
-	"github.com/downfa11-org/cursus/pkg/disk"
 	"github.com/downfa11-org/cursus/pkg/stream"
 	"github.com/downfa11-org/cursus/pkg/topic"
 	"github.com/downfa11-org/cursus/pkg/types"
@@ -20,12 +19,10 @@ const STREAM_DATA_SIGNAL = "STREAM_DATA"
 
 type CommandHandler struct {
 	TopicManager  *topic.TopicManager
-	DiskManager   *disk.DiskManager
 	Config        *config.Config
 	Coordinator   *coordinator.Coordinator
 	StreamManager *stream.StreamManager
-
-	Cluster *clusterController.ClusterController
+	Cluster       *clusterController.ClusterController
 }
 
 type ConsumeArgs struct {
@@ -36,7 +33,6 @@ type ConsumeArgs struct {
 
 func NewCommandHandler(
 	tm *topic.TopicManager,
-	dm *disk.DiskManager,
 	cfg *config.Config,
 	cd *coordinator.Coordinator,
 	sm *stream.StreamManager,
@@ -44,7 +40,6 @@ func NewCommandHandler(
 ) *CommandHandler {
 	return &CommandHandler{
 		TopicManager:  tm,
-		DiskManager:   dm,
 		Config:        cfg,
 		Coordinator:   cd,
 		StreamManager: sm,

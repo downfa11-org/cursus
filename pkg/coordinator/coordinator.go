@@ -17,14 +17,14 @@ type Coordinator struct {
 	cfg    *config.Config            // Configuration reference
 	stopCh chan struct{}
 
-	offsetPublisher           OffsetPublisher
+	topicHandler              TopicHandler
 	offsetTopic               string
 	offsetTopicPartitionCount int
 
 	offsets map[string]map[string]map[int]uint64 // group -> topic -> partition -> offset
 }
 
-type OffsetPublisher interface {
+type TopicHandler interface {
 	Publish(topic string, msg *types.Message) error
 	CreateTopic(topic string, partitionCount int)
 }
@@ -84,22 +84,22 @@ type BulkOffsetMsg struct {
 }
 
 // NewCoordinator creates a new Coordinator instance.
-func NewCoordinator(cfg *config.Config, publisher OffsetPublisher) *Coordinator {
-	if publisher == nil {
-		util.Fatal("Coordinator requires a non-nil OffsetPublisher")
+func NewCoordinator(cfg *config.Config, handler TopicHandler) *Coordinator {
+	if handler == nil {
+		util.Fatal("Coordinator requires a non-nil TopicHandler")
 	}
 
 	c := &Coordinator{
 		groups:                    make(map[string]*GroupMetadata),
 		cfg:                       cfg,
 		stopCh:                    make(chan struct{}),
-		offsetPublisher:           publisher,
+		topicHandler:              handler,
 		offsetTopic:               "__consumer_offsets",
 		offsetTopicPartitionCount: 4, // init. dynamic
 		offsets:                   make(map[string]map[string]map[int]uint64),
 	}
 
-	publisher.CreateTopic(c.offsetTopic, c.offsetTopicPartitionCount)
+	handler.CreateTopic(c.offsetTopic, c.offsetTopicPartitionCount)
 	return c
 }
 

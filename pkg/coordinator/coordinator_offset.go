@@ -39,9 +39,10 @@ func (c *Coordinator) CommitOffset(group, topic string, partition int, offset ui
 		return fmt.Errorf("failed to marshal offset commit: %w", err)
 	}
 
-	if err := c.offsetPublisher.Publish(c.offsetTopic, &types.Message{
-		Payload: string(payload),
-		Key:     fmt.Sprintf("%s-%s-%d", group, topic, partition),
+	if err := c.topicHandler.Publish(c.offsetTopic, &types.Message{
+		ProducerID: "broker",
+		Payload:    string(payload),
+		Key:        fmt.Sprintf("%s-%s-%d", group, topic, partition),
 	}); err != nil {
 		return err
 	}
@@ -69,9 +70,10 @@ func (c *Coordinator) CommitOffsetsBulk(group, topic string, offsets []OffsetIte
 		return fmt.Errorf("failed to marshal: %w", err)
 	}
 
-	if err := c.offsetPublisher.Publish(c.offsetTopic, &types.Message{
-		Payload: string(payload),
-		Key:     fmt.Sprintf("%s-%s-bulk", group, topic),
+	if err := c.topicHandler.Publish(c.offsetTopic, &types.Message{
+		ProducerID: "broker",
+		Payload:    string(payload),
+		Key:        fmt.Sprintf("%s-%s-bulk", group, topic),
 	}); err != nil {
 		return err
 	}
@@ -132,7 +134,7 @@ func (c *Coordinator) updateOffsetPartitionCount() {
 	c.mu.Unlock()
 
 	go func() {
-		c.offsetPublisher.CreateTopic(topicName, newCount)
+		c.topicHandler.CreateTopic(topicName, newCount)
 		util.Info("✅ Offset topic '%s' partitions scaled to %d", topicName, newCount)
 	}()
 }
@@ -168,9 +170,10 @@ func (c *Coordinator) ValidateAndCommit(groupName, topic string, partition int, 
 		return fmt.Errorf("failed to marshal offset: %w", err)
 	}
 
-	err = c.offsetPublisher.Publish(c.offsetTopic, &types.Message{
-		Payload: string(payload),
-		Key:     fmt.Sprintf("%s-%s-%d", groupName, topic, partition),
+	err = c.topicHandler.Publish(c.offsetTopic, &types.Message{
+		ProducerID: "broker",
+		Payload:    string(payload),
+		Key:        fmt.Sprintf("%s-%s-%d", groupName, topic, partition),
 	})
 
 	if err != nil {

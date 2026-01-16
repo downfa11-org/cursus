@@ -6,6 +6,7 @@ import (
 
 	"github.com/downfa11-org/cursus/pkg/config"
 	"github.com/downfa11-org/cursus/pkg/disk"
+	"github.com/downfa11-org/cursus/pkg/types"
 )
 
 func TestDiskManager_GetHandler_CreatesHandler(t *testing.T) {
@@ -55,7 +56,7 @@ func TestDiskManager_CloseAllHandlers(t *testing.T) {
 
 	dm := disk.NewDiskManager(cfg)
 	topics := []string{"topic1", "topic2"}
-	handlers := []*disk.DiskHandler{}
+	handlers := []types.StorageHandler{}
 
 	for i, topic := range topics {
 		dh, err := dm.GetHandler(topic, i)

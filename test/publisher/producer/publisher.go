@@ -162,8 +162,10 @@ func (p *Publisher) PublishMessage(message string) (uint64, error) {
 		return 0, fmt.Errorf("publisher closed")
 	}
 
+	p.closeMu.Lock()
 	part := p.nextPartition()
 	buf := p.buffers[part]
+	p.closeMu.Unlock()
 
 	buf.mu.Lock()
 	if len(buf.msgs) >= p.config.BufferSize {
@@ -501,7 +503,6 @@ func (p *Publisher) markBatchAckedByID(part int, batchID string, batchLen int) {
 	p.partitionBatchMus[part].Unlock()
 
 	p.ackedCount.Store(state.EndSeqNum)
-	p.producer.CommitSeqRange(part, state.EndSeqNum)
 
 	elapsed := time.Since(state.SentTime)
 	p.bmMu.Lock()

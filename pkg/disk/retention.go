@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -76,24 +78,44 @@ func (d *DiskHandler) EnforceRetention(cfg *config.Config) {
 			continue
 		}
 
+		if info.Mode().Perm() != 0444 {
+			if _, err := os.Stat(filePath); err == nil {
+				if err := os.Chmod(filePath, 0444); err != nil {
+					util.Error("failed to set read-only permission: %v", err)
+				}
+			}
+			indexPath := filePath[:len(filePath)-4] + ".index"
+			if _, err := os.Stat(indexPath); err == nil {
+				if err := os.Chmod(indexPath, 0444); err != nil {
+					util.Error("failed to set read-only permission: %v", err)
+				}
+			}
+			util.Debug("Segment %d closed and secured (read-only)", d.CurrentSegment)
+		}
+
 		isExpired := cfg.RetentionHours > 0 && now.Sub(info.ModTime()) > retentionDuration
 		isOverCapacity := cfg.RetentionBytes > 0 && totalSize > cfg.RetentionBytes
 
 		if isExpired || isOverCapacity {
-			if atomic.LoadInt32(&d.activeReaders) > 0 {
+			if atomic.LoadInt32(&d.activeReaders) == 0 {
+				d.markAsDeleted(filePath)
+			} else {
+				util.Debug("Retention: %s is target but busy, skipping", filePath)
 				break
 			}
-			if err := d.markAsDeleted(filePath); err == nil {
-				util.Debug("Retention: marked as deleted %s", filePath)
-				totalSize -= info.Size()
-			}
-		} else {
-			break
 		}
 	}
 }
 
 func (d *DiskHandler) markAsDeleted(logPath string) error {
+	fileName := filepath.Base(logPath)
+	parts := strings.Split(fileName, "_")
+	if len(parts) < 4 {
+		return fmt.Errorf("invalid segment filename: %s", fileName)
+	}
+	numStr := strings.TrimSuffix(parts[3], ".log")
+	segmentOffset, _ := strconv.ParseUint(numStr, 10, 64)
+
 	deletedLogPath := logPath + ".deleted"
 	indexPath := logPath[:len(logPath)-4] + ".index"
 	deletedIndexPath := indexPath + ".deleted"
@@ -107,6 +129,14 @@ func (d *DiskHandler) markAsDeleted(logPath string) error {
 			return fmt.Errorf("rename index failed: %w", err)
 		}
 	}
+
+	for i, s := range d.segments {
+		if s == segmentOffset {
+			d.segments = append(d.segments[:i], d.segments[i+1:]...)
+			break
+		}
+	}
+
 	return nil
 }
 

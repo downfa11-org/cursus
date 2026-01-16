@@ -11,4 +11,4 @@ partitions: 12
 max_inflight_requests: 10
 batch_size: 10000
 buffer_size: 70000
-linger_ms: 40
+linger_ms: 100

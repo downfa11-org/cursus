@@ -5,10 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
 
 	"github.com/downfa11-org/cursus/pkg/types"
 	"github.com/downfa11-org/cursus/util"
@@ -38,6 +35,7 @@ func (d *DiskHandler) openIndexFiles() error {
 
 	d.indexMu.Lock()
 	d.indexFile = f
+	d.indexBytesWritten = uint64(info.Size())
 	d.indexWriter = writer
 	err = d.refreshIndexMapper(indexPath)
 	d.indexMu.Unlock()
@@ -63,6 +61,11 @@ func (d *DiskHandler) closeIndexFiles() error {
 	if d.indexWriter != nil {
 		if err := d.indexWriter.Flush(); err != nil {
 			return fmt.Errorf("flush index writer failed: %w", err)
+		}
+	}
+	if d.indexFile != nil {
+		if err := d.indexFile.Sync(); err != nil {
+			return fmt.Errorf("sync index file fialed: %w", err)
 		}
 	}
 
@@ -114,73 +117,41 @@ func getLastOffsetFromIndex(indexPath string, baseOffset uint64) (lastOffset uin
 // findSegmentForOffset finds which segment contains the given offset
 func (dh *DiskHandler) findSegmentForOffset(offset uint64) (string, uint64, error) {
 	dh.mu.Lock()
-	currSeg := dh.CurrentSegment
-	currPath := dh.GetSegmentPath(currSeg)
-	dh.mu.Unlock()
+	defer dh.mu.Unlock()
 
-	if offset >= currSeg {
-		return currPath, currSeg, nil
+	if len(dh.segments) == 0 {
+		return "", 0, fmt.Errorf("no segments available")
 	}
 
-	pattern := dh.BaseName + "_segment_*.log"
-	files, _ := filepath.Glob(pattern)
-	if len(files) == 0 {
-		return "", 0, fmt.Errorf("no segments found")
+	idx := sort.Search(len(dh.segments), func(i int) bool {
+		return dh.segments[i] > offset
+	})
+
+	var baseOffset uint64
+	if idx > 0 {
+		baseOffset = dh.segments[idx-1]
+	} else {
+		baseOffset = dh.CurrentSegment
 	}
 
-	sort.Strings(files)
-	for i := len(files) - 1; i >= 0; i-- {
-		base := filepath.Base(files[i])
-		parts := strings.Split(strings.TrimSuffix(base, ".log"), "_segment_")
-		if len(parts) < 2 {
-			continue
-		}
-
-		baseOffset, err := strconv.ParseUint(parts[1], 10, 64)
-		if err != nil {
-			continue
-		}
-
-		if offset >= baseOffset {
-			return files[i], baseOffset, nil
-		}
+	if offset >= dh.CurrentSegment {
+		baseOffset = dh.CurrentSegment
 	}
 
-	return "", 0, fmt.Errorf("offset %d not found in any segment", offset)
+	return dh.GetSegmentPath(baseOffset), baseOffset, nil
 }
 
 func (d *DiskHandler) FindOffsetPosition(offset uint64) (uint64, error) {
-	if d.indexFile == nil {
-		return 0, nil
-	}
-
-	stat, err := d.indexFile.Stat()
-	if err != nil {
-		return 0, fmt.Errorf("index stat failed: %w", err)
-	}
-
-	currentFileSize := stat.Size()
-	if d.indexMapper == nil || int64(d.indexMapper.Len()) < currentFileSize {
-		indexPath := d.GetIndexPath(d.CurrentSegment)
-		if err := d.refreshIndexMapper(indexPath); err != nil {
-			return 0, fmt.Errorf("failed to refresh index mapper: %w", err)
-		}
-	}
+	d.indexMu.RLock()
+	defer d.indexMu.RUnlock()
 
 	if d.indexMapper == nil {
 		return 0, fmt.Errorf("index not available")
 	}
 
 	const entrySize = types.IndexEntrySize
-	if d.indexMapper.Len()%entrySize != 0 {
-		return 0, fmt.Errorf("index corruption: size %d is not multiple of %d", d.indexMapper.Len(), entrySize)
-	}
-
 	length := d.indexMapper.Len()
 	entryCount := length / entrySize
-	if entryCount == 0 {
-		return 0, nil
-	}
 
 	low, high := 0, entryCount-1
 	var lastFoundPos uint64 = 0
@@ -196,6 +167,11 @@ func (d *DiskHandler) FindOffsetPosition(offset uint64) (uint64, error) {
 		eOffset := binary.BigEndian.Uint64(buf[0:8])
 		ePosition := binary.BigEndian.Uint64(buf[8:16])
 
+		if eOffset == 0 && ePosition == 0 && mid > 0 {
+			high = mid - 1
+			continue
+		}
+
 		if eOffset == offset {
 			return ePosition, nil
 		} else if eOffset < offset {
@@ -205,6 +181,5 @@ func (d *DiskHandler) FindOffsetPosition(offset uint64) (uint64, error) {
 			high = mid - 1
 		}
 	}
-
 	return lastFoundPos, nil
 }

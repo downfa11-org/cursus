@@ -121,7 +121,7 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 	for i := 0; i < maxWorkers; i++ {
 		go func() {
 			for conn := range workerCh {
-				HandleConnection(ctx, conn, tm, dm, cfg, cd, sm, cc)
+				HandleConnection(ctx, conn, tm, cfg, cd, sm, cc)
 			}
 		}()
 	}
@@ -137,13 +137,13 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 }
 
 // HandleConnection processes a single client connection
-func HandleConnection(ctx context.Context, conn net.Conn, tm *topic.TopicManager, dm *disk.DiskManager, cfg *config.Config, cd *coordinator.Coordinator, sm *stream.StreamManager, cc *clusterController.ClusterController) {
+func HandleConnection(ctx context.Context, conn net.Conn, tm *topic.TopicManager, cfg *config.Config, cd *coordinator.Coordinator, sm *stream.StreamManager, cc *clusterController.ClusterController) {
 	defer conn.Close()
 
 	clientCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	cmdHandler, cmdCtx := initializeConnection(cfg, tm, dm, cd, sm, cc)
+	cmdHandler, cmdCtx := initializeConnection(cfg, tm, cd, sm, cc)
 
 	for {
 		if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
@@ -171,8 +171,8 @@ func HandleConnection(ctx context.Context, conn net.Conn, tm *topic.TopicManager
 	}
 }
 
-func initializeConnection(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager, cd *coordinator.Coordinator, sm *stream.StreamManager, cc *clusterController.ClusterController) (*controller.CommandHandler, *controller.ClientContext) {
-	cmdHandler := controller.NewCommandHandler(tm, dm, cfg, cd, sm, cc)
+func initializeConnection(cfg *config.Config, tm *topic.TopicManager, cd *coordinator.Coordinator, sm *stream.StreamManager, cc *clusterController.ClusterController) (*controller.CommandHandler, *controller.ClientContext) {
+	cmdHandler := controller.NewCommandHandler(tm, cfg, cd, sm, cc)
 	ctx := controller.NewClientContext("default-group", 0)
 	return cmdHandler, ctx
 }

@@ -3,7 +3,8 @@ package disk
 import (
 	"encoding/binary"
 	"fmt"
-	"os"
+	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/downfa11-org/cursus/pkg/types"
@@ -31,8 +32,6 @@ func (d *DiskHandler) flushLoop() {
 			}
 
 			batch = append(batch, msg)
-			util.Debug("Received message, batch size now: %d/%d", len(batch), d.batchSize)
-
 			if len(batch) >= d.batchSize {
 				util.Debug("Batch size threshold reached, flushing %d messages", len(batch))
 				if err := d.WriteBatch(batch); err != nil {
@@ -67,19 +66,33 @@ func (d *DiskHandler) flushLoop() {
 }
 
 func (d *DiskHandler) syncLoop() {
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(time.Duration(d.syncIntervalMS) * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
 			d.ioMu.Lock()
+			syncSuccess := false
+
 			if d.file != nil {
-				if err := d.file.Sync(); err != nil {
-					util.Error("failed to sync file: %v", err)
+				if err := d.file.Sync(); err == nil {
+					syncSuccess = true
+				} else {
+					util.Error("failed to sync data file: %v", err)
 				}
 			}
+
+			if d.indexFile != nil {
+				_ = d.indexFile.Sync()
+			}
+
+			currentOffset := atomic.LoadUint64(&d.AbsoluteOffset)
 			d.ioMu.Unlock()
+
+			if syncSuccess && d.OnSync != nil {
+				d.OnSync(currentOffset)
+			}
 		case <-d.done:
 			return
 		}
@@ -88,14 +101,14 @@ func (d *DiskHandler) syncLoop() {
 
 // WriteBatch writes a batch of messages into the current segment file.
 func (d *DiskHandler) WriteBatch(batch []types.DiskMessage) error {
+	if len(batch) == 0 {
+		return nil
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
 	defer d.ioMu.Unlock()
-
-	if len(batch) == 0 {
-		return nil
-	}
 
 	if d.file == nil {
 		if err := d.openSegment(); err != nil {
@@ -120,33 +133,30 @@ func (d *DiskHandler) WriteBatch(batch []types.DiskMessage) error {
 		totalSize += 4 + len(serialized)
 	}
 
-	buffer := make([]byte, 0, totalSize)
-	lenBuf := make([]byte, 4)
-
-	for _, serialized := range serializedMsgs {
-		msgLen := len(serialized)
-		binary.BigEndian.PutUint32(lenBuf, uint32(msgLen))
-		buffer = append(buffer, lenBuf...)
-		buffer = append(buffer, serialized...)
-	}
-
 	if d.CurrentOffset+uint64(totalSize) > d.SegmentSize {
 		if err := d.rotateSegment(batch[0].Offset); err != nil {
 			return err
 		}
 	}
 
-	if _, err := d.writer.Write(buffer); err != nil {
-		return fmt.Errorf("write batch failed: %w", err)
-	}
+	const entrySize = uint64(types.IndexEntrySize)
+	willExceedData := d.CurrentOffset+uint64(totalSize) > d.SegmentSize
+	willExceedIndex := d.indexBytesWritten+entrySize > d.IndexSize
 
-	if err := d.writer.Flush(); err != nil {
-		return fmt.Errorf("flush failed after batch: %w", err)
+	if willExceedData || willExceedIndex {
+		util.Debug("Rolling segment: DataExceed=%v, IndexExceed=%v, CurrentIdxBytes=%d", willExceedData, willExceedIndex, d.indexBytesWritten)
+
+		if err := d.rotateSegment(batch[0].Offset); err != nil {
+			return err
+		}
 	}
 
 	accumulatedLen := uint64(0)
-	for i, msg := range batch {
+	lenBuf := make([]byte, 4)
+	for i, serialized := range serializedMsgs {
 		msgPosition := d.CurrentOffset + accumulatedLen
+		msg := batch[i]
+
 		if msgPosition-d.lastIndexPosition >= d.indexInterval {
 			if d.indexWriter != nil {
 				entry := types.IndexEntry{
@@ -154,25 +164,35 @@ func (d *DiskHandler) WriteBatch(batch []types.DiskMessage) error {
 					Position: msgPosition,
 				}
 				if err := binary.Write(d.indexWriter, binary.BigEndian, entry); err == nil {
+					d.indexBytesWritten += entrySize
 					d.lastIndexPosition = msgPosition
 				}
 			}
 		}
-		accumulatedLen += uint64(4 + len(serializedMsgs[i]))
+
+		binary.BigEndian.PutUint32(lenBuf, uint32(len(serialized)))
+		if _, err := d.writer.Write(lenBuf); err != nil {
+			return fmt.Errorf("write length failed: %w", err)
+		}
+		if _, err := d.writer.Write(serialized); err != nil {
+			return fmt.Errorf("write payload failed: %w", err)
+		}
+		accumulatedLen += uint64(4 + len(serialized))
+	}
+
+	if err := d.writer.Flush(); err != nil {
+		return fmt.Errorf("flush failed after batch: %w", err)
 	}
 
 	if d.indexWriter != nil {
 		if err := d.indexWriter.Flush(); err != nil {
 			return fmt.Errorf("flush index writer failed: %w", err)
 		}
-		if d.indexFile != nil {
-			if err := d.indexFile.Sync(); err != nil {
-				return fmt.Errorf("sync index file failed: %w", err)
-			}
-		}
 	}
 
-	d.CurrentOffset += uint64(len(buffer))
+	d.CurrentOffset += uint64(totalSize)
+	lastOffset := batch[len(batch)-1].Offset
+	atomic.StoreUint64(&d.AbsoluteOffset, lastOffset+1)
 	return nil
 }
 
@@ -201,25 +221,29 @@ func (d *DiskHandler) WriteDirect(topic string, partition int, msg types.Message
 		return fmt.Errorf("message too large: %d bytes", len(serialized))
 	}
 
-	var lenBuf [4]byte
-	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(serialized)))
 	totalLen := uint64(4 + len(serialized))
-
 	if d.CurrentOffset+totalLen > d.SegmentSize {
 		if err := d.rotateSegment(msg.Offset); err != nil {
 			return fmt.Errorf("rotateSegment failed: %w", err)
 		}
 	}
 
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(serialized)))
+
 	if _, err := d.writer.Write(lenBuf[:]); err != nil {
-		return fmt.Errorf("write length failed: %w", err)
+		return err
 	}
 	if _, err := d.writer.Write(serialized); err != nil {
-		return fmt.Errorf("write payload failed: %w", err)
+		return err
 	}
-
 	if err := d.writer.Flush(); err != nil {
 		return fmt.Errorf("flush failed: %w", err)
+	}
+
+	lastOffset := msg.Offset
+	if lastOffset >= d.AbsoluteOffset {
+		atomic.StoreUint64(&d.AbsoluteOffset, lastOffset+1)
 	}
 
 	msgPosition := d.CurrentOffset
@@ -239,12 +263,6 @@ func (d *DiskHandler) WriteDirect(topic string, partition int, msg types.Message
 		}
 	}
 
-	if d.indexFile != nil {
-		if err := d.indexFile.Sync(); err != nil {
-			util.Error("failed to sync index file: %v", err)
-		}
-	}
-
 	d.CurrentOffset += totalLen
 	return nil
 }
@@ -256,10 +274,6 @@ func (d *DiskHandler) rotateSegment(nextBaseOffset uint64) error {
 	}
 
 	var errs []error
-	oldSegmentID := d.CurrentSegment
-	oldLogPath := d.GetSegmentPath(oldSegmentID)
-	oldIndexPath := d.GetIndexPath(oldSegmentID)
-
 	if d.writer != nil {
 		if err := d.writer.Flush(); err != nil {
 			util.Error("flush failed during rotation: %v", err)
@@ -279,51 +293,42 @@ func (d *DiskHandler) rotateSegment(nextBaseOffset uint64) error {
 	}
 
 	d.indexMu.Lock()
+	if d.indexWriter != nil {
+		if err := d.indexWriter.Flush(); err != nil {
+			util.Error("flush failed during rotation: %v", err)
+			errs = append(errs, err)
+		}
+	}
 	if err := d.closeIndexFiles(); err != nil {
 		util.Error("close index files failed during rotation: %v", err)
 		errs = append(errs, err)
 	}
 	d.indexMu.Unlock()
 
-	if len(errs) == 0 {
-		if _, err := os.Stat(oldLogPath); err == nil {
-			if err := os.Chmod(oldLogPath, 0444); err != nil {
-				util.Error("failed to set read-only permission: %v", err)
-			}
-		}
-
-		if _, err := os.Stat(oldIndexPath); err == nil {
-			if err := os.Chmod(oldIndexPath, 0444); err != nil {
-				util.Error("failed to set read-only permission: %v", err)
-			}
-		}
-		util.Debug("Segment %d closed and secured (read-only)", d.CurrentSegment)
-	}
-
 	d.CurrentSegment = nextBaseOffset
 	d.CurrentOffset = 0
 	d.lastIndexPosition = 0
+	d.indexBytesWritten = 0
 	d.segmentCreatedAt = time.Now()
+
+	d.segments = append(d.segments, nextBaseOffset)
+	sort.Slice(d.segments, func(i, j int) bool {
+		return d.segments[i] < d.segments[j]
+	})
 
 	if err := d.openSegment(); err != nil {
 		util.Error("Failed to open new segment: %v", err)
 		return err
 	}
-	if err := d.openIndexFiles(); err != nil {
-		util.Error("open index files failed during rotation: %v", err)
-		errs = append(errs, err)
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("rotateSegment errors: %v", errs)
-	}
-	return nil
+	return d.openIndexFiles()
 }
 
 // Flush forces all pending data to be written and synced to disk.
 func (d *DiskHandler) Flush() {
-	batch := make([]types.DiskMessage, 0, len(d.writeCh))
+	pendingLen := len(d.writeCh)
+	batch := make([]types.DiskMessage, 0, pendingLen)
 
-	for {
+	for range len(d.writeCh) {
 		select {
 		case msg := <-d.writeCh:
 			batch = append(batch, msg)
@@ -359,9 +364,7 @@ perform_write:
 
 // GetAbsoluteOffset returns the current absolute offset in a thread-safe manner
 func (d *DiskHandler) GetAbsoluteOffset() uint64 {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.AbsoluteOffset
+	return atomic.LoadUint64(&d.AbsoluteOffset)
 }
 
 // GetCurrentSegment returns the current segment number in a thread-safe manner

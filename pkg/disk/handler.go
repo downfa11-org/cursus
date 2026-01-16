@@ -22,23 +22,29 @@ import (
 type DiskHandler struct {
 	BaseName       string
 	SegmentSize    uint64
+	IndexSize      uint64
 	CurrentOffset  uint64
-	CurrentSegment uint64
 	AbsoluteOffset uint64
+	CurrentSegment uint64
+	segments       []uint64
 
 	indexFile         *os.File
 	indexWriter       *bufio.Writer
 	indexMapper       *mmap.ReaderAt
 	indexInterval     uint64
+	indexBytesWritten uint64
 	indexMu           sync.RWMutex
 	activeReaders     int32
 	lastIndexPosition uint64
 
-	writeCh      chan types.DiskMessage
-	done         chan struct{}
-	batchSize    int
-	linger       time.Duration
-	writeTimeout time.Duration
+	writeCh chan types.DiskMessage
+	done    chan struct{}
+	OnSync  func(uint64)
+
+	batchSize      int
+	linger         time.Duration
+	writeTimeout   time.Duration
+	syncIntervalMS int
 
 	segmentRollTime  time.Duration
 	segmentCreatedAt time.Time
@@ -101,17 +107,20 @@ func NewDiskHandler(cfg *config.Config, topicName string, partitionID int) (*Dis
 	dh := &DiskHandler{
 		BaseName:       base,
 		SegmentSize:    uint64(cfg.SegmentSize),
+		IndexSize:      uint64(cfg.IndexSize),
 		CurrentSegment: currentSegmentBase,
+		segments:       make([]uint64, 0),
 		CurrentOffset:  currentOffset,
 		AbsoluteOffset: lastAbsoluteOffset,
 
 		indexInterval: uint64(cfg.IndexIntervalBytes),
 
-		writeCh:      make(chan types.DiskMessage, cfg.ChannelBufferSize),
-		done:         make(chan struct{}),
-		batchSize:    cfg.DiskFlushBatchSize,
-		linger:       time.Duration(cfg.LingerMS) * time.Millisecond,
-		writeTimeout: time.Duration(cfg.DiskWriteTimeoutMS) * time.Millisecond,
+		writeCh:        make(chan types.DiskMessage, cfg.ChannelBufferSize),
+		done:           make(chan struct{}),
+		batchSize:      cfg.DiskFlushBatchSize,
+		linger:         time.Duration(cfg.LingerMS) * time.Millisecond,
+		writeTimeout:   time.Duration(cfg.DiskWriteTimeoutMS) * time.Millisecond,
+		syncIntervalMS: cfg.DiskFlushIntervalMS,
 
 		segmentRollTime:  time.Duration(cfg.SegmentRollTimeMS) * time.Millisecond,
 		segmentCreatedAt: time.Now(),
@@ -122,6 +131,23 @@ func NewDiskHandler(cfg *config.Config, topicName string, partitionID int) (*Dis
 	if err := dh.openIndexFiles(); err != nil {
 		return nil, err
 	}
+
+	for _, f := range files {
+		fileName := filepath.Base(f)
+		prefix := fmt.Sprintf("partition_%d_segment_", partitionID)
+		if strings.HasPrefix(fileName, prefix) {
+			numStr := fileName[len(prefix) : len(fileName)-4]
+			segBase, err := strconv.ParseUint(numStr, 10, 64)
+			if err == nil {
+				dh.segments = append(dh.segments, segBase)
+			}
+		}
+	}
+
+	if len(dh.segments) == 0 {
+		dh.segments = append(dh.segments, currentSegmentBase)
+	}
+	sort.Slice(dh.segments, func(i, j int) bool { return dh.segments[i] < dh.segments[j] })
 
 	dh.shutdown.Add(2)
 	go func() {
@@ -188,8 +214,6 @@ func (d *DiskHandler) AppendMessageSync(topic string, partition int, msg *types.
 
 // AppendMessage sends a message to the internal write channel for asynchronous disk persistence.
 func (d *DiskHandler) AppendMessage(topic string, partition int, msg *types.Message) (uint64, error) {
-	util.Debug("Attempting to append message (len=%d) to disk.writeCh (cap=%d, len=%d)", len(msg.Payload), cap(d.writeCh), len(d.writeCh))
-
 	d.mu.Lock()
 	offset := d.AbsoluteOffset
 	d.AbsoluteOffset++
@@ -235,8 +259,9 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 	atomic.AddInt32(&dh.activeReaders, 1)
 	defer atomic.AddInt32(&dh.activeReaders, -1)
 
-	targetFilePath, _, err := dh.findSegmentForOffset(offset)
+	_, targetSeg, err := dh.findSegmentForOffset(offset)
 	if err != nil {
+		util.Error("Segment not found for offset %d", offset)
 		return nil, err
 	}
 
@@ -244,30 +269,46 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 	position, err := dh.FindOffsetPosition(offset)
 	dh.indexMu.RUnlock()
 
+	idxInfo := fmt.Sprintf("Pos=%d", position) // test
 	if err != nil {
+		idxInfo = "Pos=0(IdxMiss)" // test
 		position = 0
 	}
 
-	pattern := dh.BaseName + "_segment_*.log"
-	files, _ := filepath.Glob(pattern)
-	sort.Strings(files)
+	dh.mu.Lock()
+	readableSegments := make([]uint64, len(dh.segments))
+	copy(readableSegments, dh.segments)
+	if len(readableSegments) == 0 || readableSegments[len(readableSegments)-1] != dh.CurrentSegment {
+		readableSegments = append(readableSegments, dh.CurrentSegment)
+	}
+	dh.mu.Unlock()
 
 	var messages []types.Message
-	foundTargetIdx := -1
+	startReading := false
+	var scannedFiles []uint64 // test
 
-	for i, f := range files {
-		if f == targetFilePath {
-			foundTargetIdx = i
-			break
+	for _, segBase := range readableSegments {
+		if !startReading {
+			if segBase == targetSeg {
+				startReading = true
+			} else {
+				continue
+			}
 		}
-	}
+		scannedFiles = append(scannedFiles, segBase) // test
 
-	if foundTargetIdx == -1 {
-		return nil, fmt.Errorf("target segment file not found in file list")
-	}
+		currentFile := dh.GetSegmentPath(segBase)
+		fi, err := os.Stat(currentFile)
+		if err != nil {
+			continue
+		}
 
-	for i := foundTargetIdx; i < len(files); i++ {
-		currentFile := files[i]
+		actualSize := fi.Size()
+		if actualSize == 0 {
+			util.Debug("Segment %d is currently empty, skipping", segBase)
+			continue
+		}
+
 		reader, err := mmap.Open(currentFile)
 		if err != nil {
 			continue
@@ -275,21 +316,38 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 
 		remaining := max - len(messages)
 		readPos := uint64(0)
-		if i == foundTargetIdx {
+		if segBase == targetSeg {
 			readPos = position
 		}
 
 		batch := dh.readMessagesFromPosition(reader, readPos, remaining, offset)
+		if len(batch) == 0 && uint64(actualSize) > readPos+4 {
+			reader.Close()
+			reader, _ = mmap.Open(currentFile)
+			batch = dh.readMessagesFromPosition(reader, readPos, remaining, offset)
+		}
+
 		messages = append(messages, batch...)
 		reader.Close()
 
 		if len(messages) >= max {
 			break
 		}
-
 		if len(messages) > 0 {
 			offset = messages[len(messages)-1].Offset + 1
 		}
+	}
+
+	if len(messages) > 0 {
+		first := messages[0].Offset
+		last := messages[len(messages)-1].Offset
+		util.Debug("Success: From=%d To=%d (Count=%d)", first, last, len(messages))
+	}
+
+	if len(messages) > 0 {
+		util.Debug("SUCCESS | ReqOff: %d | %s | Seg: %d | Count: %d | Range: [%d-%d] | Scanned: %v", offset, idxInfo, targetSeg, len(messages), messages[0].Offset, messages[len(messages)-1].Offset, scannedFiles)
+	} else {
+		util.Debug("NOT_FOUND | ReqOff: %d | %s | TargetSeg: %d | ScannedSegs: %v", offset, idxInfo, targetSeg, scannedFiles)
 	}
 	return messages, nil
 }

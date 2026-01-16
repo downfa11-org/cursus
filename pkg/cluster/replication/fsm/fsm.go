@@ -229,56 +229,6 @@ func (f *BrokerFSM) Snapshot() (raft.FSMSnapshot, error) {
 	}, nil
 }
 
-func (f *BrokerFSM) persistMessage(topicName string, partition int, msg *types.Message) error {
-	dh, err := f.dm.GetHandler(topicName, partition)
-	if err != nil {
-		return fmt.Errorf("failed to get disk handler for topic %s: %w", topicName, err)
-	}
-
-	assignedOffset := dh.GetAbsoluteOffset()
-	msg.Offset = assignedOffset
-
-	if err := dh.WriteDirect(topicName, partition, *msg); err != nil {
-		return fmt.Errorf("WriteDirect failed: %w", err)
-	}
-	util.Debug("FSM persisted message: topic=%s, offset=%d", topicName, msg.Offset)
-	return nil
-}
-
-func (f *BrokerFSM) persistBatch(topicName string, partition int, msgs []types.Message) error {
-	dh, err := f.dm.GetHandler(topicName, partition)
-	if err != nil {
-		return fmt.Errorf("failed to get disk handler for topic %s: %w", topicName, err)
-	}
-
-	base := dh.GetAbsoluteOffset()
-	diskMsgs := make([]types.DiskMessage, len(msgs))
-	for i := range msgs {
-		msgs[i].Offset = base + uint64(i)
-		serialized, err := util.SerializeMessage(msgs[i])
-		if err != nil {
-			return fmt.Errorf("failed to serialize message at index %d: %w", i, err)
-		}
-
-		diskMsgs[i] = types.DiskMessage{
-			Topic:      topicName,
-			Partition:  int32(partition),
-			Offset:     msgs[i].Offset,
-			ProducerID: msgs[i].ProducerID,
-			SeqNum:     msgs[i].SeqNum,
-			Epoch:      msgs[i].Epoch,
-			Payload:    string(serialized),
-		}
-	}
-
-	if err := dh.WriteBatch(diskMsgs); err != nil {
-		return fmt.Errorf("atomic batch write failed: %w", err)
-	}
-
-	util.Debug("FSM persisted batch: topic=%s, count=%d", topicName, len(msgs))
-	return nil
-}
-
 func (f *BrokerFSM) GetPartitionMetadata(key string) *PartitionMetadata {
 	f.mu.RLock()
 	defer f.mu.RUnlock()

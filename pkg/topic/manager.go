@@ -7,7 +7,6 @@ import (
 
 	"github.com/downfa11-org/cursus/pkg/config"
 	"github.com/downfa11-org/cursus/pkg/coordinator"
-	"github.com/downfa11-org/cursus/pkg/disk"
 	"github.com/downfa11-org/cursus/pkg/metrics"
 	"github.com/downfa11-org/cursus/pkg/stream"
 	"github.com/downfa11-org/cursus/pkg/types"
@@ -28,7 +27,7 @@ type TopicManager struct {
 
 // HandlerProvider defines an interface to provide disk handlers.
 type HandlerProvider interface {
-	GetHandler(topic string, partitionID int) (*disk.DiskHandler, error)
+	GetHandler(topic string, partitionID int) (types.StorageHandler, error)
 }
 
 func (tm *TopicManager) SetCoordinator(cd *coordinator.Coordinator) {
@@ -85,6 +84,20 @@ func (tm *TopicManager) GetTopic(name string) *Topic {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 	return tm.topics[name]
+}
+
+func (tm *TopicManager) GetLastOffset(topicName string, partitionID int) uint64 {
+	t := tm.GetTopic(topicName)
+	if t == nil {
+		return 0
+	}
+
+	if partitionID < 0 || partitionID >= len(t.Partitions) {
+		return 0
+	}
+
+	p := t.Partitions[partitionID]
+	return p.dh.GetAbsoluteOffset()
 }
 
 // Async (acks=0)

@@ -48,10 +48,13 @@ func (cfg *Config) Normalize() {
 		cfg.CleanupInterval = 300
 	}
 	if cfg.SegmentSize < 1024 {
-		cfg.SegmentSize = 1 << 20
+		cfg.SegmentSize = 1 << 20 // 1MB
 	}
 	if cfg.SegmentRollTimeMS < 0 {
 		cfg.SegmentRollTimeMS = 0
+	}
+	if cfg.IndexSize < 1024*1024 {
+		cfg.IndexSize = 10 * 1024 * 1024
 	}
 	if cfg.IndexIntervalBytes <= 0 {
 		cfg.IndexIntervalBytes = 4096
@@ -158,6 +161,14 @@ func overrideEnvInt(target *int, key string) {
 func overrideEnvInt64(target *int64, key string) {
 	if v := os.Getenv(key); v != "" {
 		*target = util.ParseInt64(v, *target)
+	}
+}
+
+func overrideEnvUint64(target *uint64, key string) {
+	if v := os.Getenv(key); v != "" {
+		if u, err := strconv.ParseUint(v, 10, 64); err == nil {
+			*target = u
+		}
 	}
 }
 

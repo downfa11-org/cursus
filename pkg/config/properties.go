@@ -28,16 +28,18 @@ type Config struct {
 	LogLevel        util.LogLevel `yaml:"log_level" json:"log_level"`
 
 	// disk storage
-	LogDir             string `yaml:"log_dir" json:"log.dir"`
-	DiskFlushBatchSize int    `yaml:"disk_flush_batch_size" json:"disk.flush.batch.size"`
-	DiskWriteTimeoutMS int    `yaml:"disk_write_timeout_ms" json:"disk.write.timeout.ms"`
-	LingerMS           int    `yaml:"linger_ms" json:"linger.ms"`
-	CompressionType    string `yaml:"compression_type" json:"compression.type"` // "none", "gzip", "snappy", "lz4"
+	LogDir              string `yaml:"log_dir" json:"log.dir"`
+	DiskFlushBatchSize  int    `yaml:"disk_flush_batch_size" json:"disk.flush.batch.size"`
+	DiskFlushIntervalMS int    `yaml:"disk_flush_interval_ms" json:"disk.flush.interval.ms"`
+	DiskWriteTimeoutMS  int    `yaml:"disk_write_timeout_ms" json:"disk.write.timeout.ms"`
+	LingerMS            int    `yaml:"linger_ms" json:"linger.ms"`
+	CompressionType     string `yaml:"compression_type" json:"compression.type"` // "none", "gzip", "snappy", "lz4"
 
 	// log segment
 	CleanupInterval           int     `yaml:"log_cleanup_interval" json:"log.cleanup.interval"`
-	SegmentSize               int     `yaml:"log_segment_size" json:"log.segment.size"`
-	SegmentRollTimeMS         int     `yaml:"log_segment_roll_time_ms" json:"log.segment.roll.time.ms"`
+	SegmentSize               uint64  `yaml:"log_segment_bytes" json:"log.segment.bytes"`
+	SegmentRollTimeMS         int     `yaml:"log_roll_ms" json:"log.roll.ms"`
+	IndexSize                 uint64  `yaml:"log_index_size_bytes" json:"log.index.size.bytes"`
 	IndexIntervalBytes        int     `yaml:"log_index_interval_bytes" json:"log.index.interval.bytes"`
 	CleanupPolicy             string  `yaml:"log_cleanup_policy" json:"log.cleanup.policy"` // delete, compact
 	RetentionHours            int     `yaml:"log_retention_hours" json:"log.retention.hours"`
@@ -89,16 +91,18 @@ func defaultConfig() *Config {
 		LogLevel:        util.LogLevelInfo,
 
 		// disk storage
-		LogDir:             "broker-logs",
-		DiskFlushBatchSize: 50,
-		DiskWriteTimeoutMS: 10,
-		LingerMS:           50,
-		CompressionType:    "none",
+		LogDir:              "broker-logs",
+		DiskFlushBatchSize:  50,
+		DiskFlushIntervalMS: 500,
+		DiskWriteTimeoutMS:  10,
+		LingerMS:            50,
+		CompressionType:     "none",
 
 		// log segment & retention
 		CleanupInterval:           300,
-		SegmentSize:               1 << 20,
-		SegmentRollTimeMS:         0,
+		SegmentSize:               1 * 1024 * 1024 * 1024,  // 1GB
+		SegmentRollTimeMS:         7 * 24 * 60 * 60 * 1000, // 7day
+		IndexSize:                 10 * 1024 * 1024,        // 10MB
 		IndexIntervalBytes:        4096,
 		CleanupPolicy:             "delete", // delete, compact
 		RetentionHours:            168,
@@ -148,14 +152,18 @@ func LoadConfig() (*Config, error) {
 	// disk storage
 	flag.StringVar(&cfg.LogDir, "log-dir", cfg.LogDir, "Log directory")
 	flag.IntVar(&cfg.DiskFlushBatchSize, "disk-flush-batch", cfg.DiskFlushBatchSize, "Disk flush batch")
+	flag.IntVar(&cfg.DiskFlushIntervalMS, "disk-flush-interval-ms", cfg.DiskFlushIntervalMS, "Disk sync interval in milliseconds")
 	flag.IntVar(&cfg.DiskWriteTimeoutMS, "disk-write-timeout", cfg.DiskWriteTimeoutMS, "Disk write timeout")
 	flag.IntVar(&cfg.LingerMS, "linger-ms", cfg.LingerMS, "Linger ms")
 	flag.StringVar(&cfg.CompressionType, "compression-type", "none", "Compression type (none, gzip, snappy, lz4)")
 
 	// log segment & retention
 	flag.IntVar(&cfg.CleanupInterval, "cleanup-interval", cfg.CleanupInterval, "Cleanup seconds")
-	flag.IntVar(&cfg.SegmentSize, "segment-size", cfg.SegmentSize, "Segment size")
+	var segmentSizeInt64 int64
+	flag.Int64Var(&segmentSizeInt64, "segment-size", int64(cfg.SegmentSize), "Segment size")
 	flag.IntVar(&cfg.SegmentRollTimeMS, "segment-roll-time-ms", cfg.SegmentRollTimeMS, "Segment roll time")
+	var indexSizeInt64 int64
+	flag.Int64Var(&indexSizeInt64, "index-size", int64(cfg.IndexSize), "Max index file size")
 	flag.IntVar(&cfg.IndexIntervalBytes, "index-interval-bytes", cfg.IndexIntervalBytes, "Index interval bytes")
 	flag.StringVar(&cfg.CleanupPolicy, "cleanup-policy", cfg.CleanupPolicy, "Cleanup policy (delete/compact)")
 	flag.IntVar(&cfg.RetentionHours, "retention-hours", cfg.RetentionHours, "Retention hours")
@@ -242,15 +250,25 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 
+	if segmentSizeInt64 != int64(defaultConfig().SegmentSize) {
+		cfg.SegmentSize = uint64(segmentSizeInt64)
+	}
+	if indexSizeInt64 != int64(defaultConfig().IndexSize) {
+		cfg.IndexSize = uint64(indexSizeInt64)
+	}
+
 	overrideEnvInt(&cfg.BrokerPort, "BROKER_PORT")
 	overrideEnvInt(&cfg.HealthCheckPort, "HEALTH_CHECK_PORT")
 	overrideEnvBool(&cfg.EnableExporter, "ENABLE_EXPORTER")
 	overrideEnvInt(&cfg.ExporterPort, "EXPORTER_PORT")
 
 	overrideEnvInt(&cfg.DiskFlushBatchSize, "DISK_FLUSH_BATCH")
+	overrideEnvInt(&cfg.DiskFlushIntervalMS, "DISK_FLUSH_INTERVAL_MS")
 	overrideEnvInt(&cfg.LingerMS, "LINGER_MS")
 	overrideEnvString(&cfg.CompressionType, "COMPRESSION_TYPE")
 
+	overrideEnvUint64(&cfg.SegmentSize, "LOG_SEGMENT_BYTES")
+	overrideEnvUint64(&cfg.IndexSize, "LOG_INDEX_SIZE_BYTES")
 	overrideEnvInt(&cfg.IndexIntervalBytes, "LOG_INDEX_INTERVAL_BYTES")
 	overrideEnvString(&cfg.CleanupPolicy, "LOG_CLEANUP_POLICY")
 	overrideEnvInt(&cfg.RetentionHours, "LOG_RETENTION_HOURS")

@@ -13,10 +13,9 @@ exporter_port: 9100
 log_level: "info"
 log_dir: "broker-logs"
 
-disk_flush_batch_size: 500
-disk_write_timeout_ms: 200
-linger_ms: 200
-log_segment_size: 1048576
+disk_flush_batch_size: 1000
+disk_write_timeout_ms: 500
+linger_ms: 50
 log_cleanup_interval: 300  
 
 channel_buffer_size: 1024 

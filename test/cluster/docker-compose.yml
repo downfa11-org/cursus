@@ -86,7 +86,7 @@ services:
 
   publisher:  
     build:  
-      context: ..  
+      context: ../..  
       dockerfile: test/publisher/Dockerfile  
     container_name: broker-publisher  
     restart: on-failure:3
@@ -102,7 +102,7 @@ services:
 
   consumer:  
     build:  
-      context: ..
+      context: ../..
       dockerfile: test/consumer/Dockerfile  
     container_name: broker-consumer  
     restart: on-failure:3
