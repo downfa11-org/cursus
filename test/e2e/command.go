@@ -36,7 +36,7 @@ func (bc *BrokerClient) PublishIdempotent(topic, producerID string, seqNum uint6
 		if err != nil {
 			return fmt.Errorf("connect: %w", err)
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		cmdBytes := util.EncodeMessage("admin", publishCmd)
 		return util.WriteWithLength(conn, cmdBytes)
 	}
@@ -58,7 +58,7 @@ func (bc *BrokerClient) PublishSimple(topic, payload, acks string) error {
 		if err != nil {
 			return fmt.Errorf("connect: %w", err)
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		cmdBytes := util.EncodeMessage("admin", publishCmd)
 		return util.WriteWithLength(conn, cmdBytes)
 	}

@@ -112,7 +112,7 @@ func TestMain(m *testing.M) {
 	cmd := RunCompose("-f", composeFile, "down", "-v")
 
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: docker compose down failed: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "Warning: docker compose down failed: %v\n", err)
 	}
 
 	os.Exit(code)

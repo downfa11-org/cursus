@@ -135,7 +135,7 @@ func (p *Publisher) CreateTopic(topic string, partitions int) error {
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	createCmd := fmt.Sprintf("CREATE topic=%s partitions=%d", topic, partitions)
 	cmdBytes := util.EncodeMessage("admin", createCmd)
@@ -711,7 +711,10 @@ func (p *Publisher) Close() {
 
 	p.gcTicker.Stop()
 	p.sendersWG.Wait()
-	p.producer.Close()
+
+	if err := p.producer.Close(); err != nil {
+		util.Debug("error closing producer: %v", err)
+	}
 }
 
 // GetPartitionStats returns benchmark statistics for all partitions

@@ -84,7 +84,9 @@ func (bc *BrokerClient) connect() error {
 		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 		if err == nil {
 			if bc.conn != nil {
-				bc.conn.Close()
+				if err := bc.conn.Close(); err != nil {
+					util.Debug("failed to close connection: %v", err)
+				}
 			}
 			bc.conn = conn
 			bc.closed = false
@@ -101,7 +103,9 @@ func (bc *BrokerClient) Close() {
 	defer bc.mu.Unlock()
 
 	if bc.conn != nil {
-		bc.conn.Close()
+		if err := bc.conn.Close(); err != nil {
+			util.Debug("failed to close connection: %v", err)
+		}
 		bc.conn = nil
 	}
 	bc.closed = true

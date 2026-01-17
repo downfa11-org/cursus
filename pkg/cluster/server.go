@@ -63,7 +63,7 @@ func (h *ClusterServer) Start(addr string) (net.Listener, error) {
 }
 
 func (h *ClusterServer) handleConnection(conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	for {
 		data, err := util.ReadWithLength(conn)

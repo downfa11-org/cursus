@@ -174,7 +174,11 @@ func countMessagesInFile(filePath string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			util.Error("failed to close: %v", err)
+		}
+	}()
 
 	count := 0
 	pos := 0
@@ -318,13 +322,17 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 
 		batch := dh.readMessagesFromPosition(reader, readPos, remaining, offset)
 		if len(batch) == 0 && uint64(actualSize) > readPos+4 {
-			reader.Close()
+			if err := reader.Close(); err != nil {
+				util.Debug("error closing reader: %v", err)
+			}
 			reader, _ = mmap.Open(currentFile)
 			batch = dh.readMessagesFromPosition(reader, readPos, remaining, offset)
 		}
 
 		messages = append(messages, batch...)
-		reader.Close()
+		if err := reader.Close(); err != nil {
+			util.Debug("error closing reader: %v", err)
+		}
 
 		if len(messages) >= max {
 			break
@@ -392,7 +400,11 @@ func (d *DiskHandler) countMessagesInSegmentID(segmentID uint64) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("mmap open failed: %w", err)
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			util.Error("failed to close: %v", err)
+		}
+	}()
 
 	count := 0
 	pos := 0

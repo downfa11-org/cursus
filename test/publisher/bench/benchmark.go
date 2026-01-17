@@ -117,35 +117,33 @@ func PrintBenchmarkSummaryFixedTo(
 
 	p95, p99 := CalculateLatencyPercentiles(allLatencies)
 
-	fmt.Fprint(w, "\r\n")
-	fmt.Fprintln(w, sep)
-	fmt.Fprintln(w, "📊 PRODUCER BENCHMARK SUMMARY")
-	fmt.Fprintf(w, "%-28s : %d\n", "Partitions", len(partitionStats))
-	fmt.Fprintf(w, "%-28s : %d\n", "Total Batches", totalBatches)
+	_, _ = fmt.Fprint(w, "\r\n")
+	_, _ = fmt.Fprintln(w, sep)
+	_, _ = fmt.Fprintln(w, "📊 PRODUCER BENCHMARK SUMMARY")
+	_, _ = fmt.Fprintf(w, "%-28s : %d\n", "Partitions", len(partitionStats))
+	_, _ = fmt.Fprintf(w, "%-28s : %d\n", "Total Batches", totalBatches)
+	_, _ = fmt.Fprintf(w, "%-28s : %d / %d (rate: %.2f%%)\n", "Total Messages", publishedMessages, targetCount, successRate)
+	_, _ = fmt.Fprintf(w, "%-28s : %d\n", "Failed messages", failedCount)
+	_, _ = fmt.Fprintf(w, "%-28s : %d\n", "Retry Count", retryCount)
+	_, _ = fmt.Fprintf(w, "%-28s : %.3fs\n", "Publish elapsed Time", seconds)
+	_, _ = fmt.Fprintf(w, "%-28s : %.2f batches/s\n", "Publish Batch Throughput", batchesPerSec)
+	_, _ = fmt.Fprintf(w, "%-28s : %.2f msg/s\n", "Publish Message Throughput", messagesPerSec)
+	_, _ = fmt.Fprintf(w, "%-28s : %.2f ms\n", "Latency P95", float64(p95.Microseconds())/1000.0)
+	_, _ = fmt.Fprintf(w, "%-28s : %.2f ms\n", "Latency P99", float64(p99.Microseconds())/1000.0)
+	_, _ = fmt.Fprint(w, "\r\n")
 
-	fmt.Fprintf(w, "%-28s : %d / %d (rate: %.2f%%)\n", "Total Messages", publishedMessages, targetCount, successRate)
-
-	fmt.Fprintf(w, "%-28s : %d\n", "Failed messages", failedCount)
-	fmt.Fprintf(w, "%-28s : %d\n", "Retry Count", retryCount)
-	fmt.Fprintf(w, "%-28s : %.3fs\n", "Publish elapsed Time", seconds)
-	fmt.Fprintf(w, "%-28s : %.2f batches/s\n", "Publish Batch Throughput", batchesPerSec)
-	fmt.Fprintf(w, "%-28s : %.2f msg/s\n", "Publish Message Throughput", messagesPerSec)
-	fmt.Fprintf(w, "%-28s : %.2f ms\n", "Latency P95", float64(p95.Microseconds())/1000.0)
-	fmt.Fprintf(w, "%-28s : %.2f ms\n", "Latency P99", float64(p99.Microseconds())/1000.0)
-	fmt.Fprint(w, "\r\n")
-
-	fmt.Fprintln(w, "Partition Breakdown:")
+	_, _ = fmt.Fprintln(w, "Partition Breakdown:")
 	for _, ps := range partitionStats {
-		fmt.Fprintf(w, "  #%-2d batches=%-4d avg_batch=%.2fms\n", ps.PartitionID, ps.BatchCount, float64(ps.AvgDuration.Microseconds())/1000.0)
+		_, _ = fmt.Fprintf(w, "  #%-2d batches=%-4d avg_batch=%.2fms\n", ps.PartitionID, ps.BatchCount, float64(ps.AvgDuration.Microseconds())/1000.0)
 	}
 
 	if len(errSummary) > 0 {
-		fmt.Fprintln(w, "\n❌ Error Root Cause Analysis:")
+		_, _ = fmt.Fprintln(w, "\n❌ Error Root Cause Analysis:")
 		for msg, count := range errSummary {
-			fmt.Fprintf(w, "  - [%d occurrences]: %s\n", count, msg)
+			_, _ = fmt.Fprintf(w, "  - [%d occurrences]: %s\n", count, msg)
 		}
 	}
-	fmt.Fprintln(w, sep)
+	_, _ = fmt.Fprintln(w, sep)
 
 	result := BenchmarkResult{
 		Timestamp:      time.Now(),

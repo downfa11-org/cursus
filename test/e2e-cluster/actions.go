@@ -35,12 +35,12 @@ func (a *ClusterActions) waitForNodeHealth(nodeIndex int, healthUrl string) erro
 	for retry := 0; retry < 30; retry++ {
 		resp, err := http.Get(healthUrl)
 		if err == nil && resp.StatusCode == 200 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			a.ctx.GetT().Logf("Node %d is healthy", nodeIndex)
 			return nil
 		}
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		time.Sleep(2 * time.Second)
 	}

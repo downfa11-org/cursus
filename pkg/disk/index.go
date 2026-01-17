@@ -38,12 +38,13 @@ func (d *DiskHandler) openIndexFiles() error {
 	}
 
 	if err := f.Truncate(int64(d.IndexSize)); err != nil {
-		f.Close()
+		if err := f.Close(); err != nil {
+			util.Error("failed to close file: %v", err)
+		}
 		return fmt.Errorf("failed to truncate index file: %w", err)
 	}
 
-	var writer *bufio.Writer
-	writer = bufio.NewWriter(f)
+	writer := bufio.NewWriter(f)
 
 	d.indexMu.Lock()
 	d.indexFile = f
@@ -61,7 +62,9 @@ func (d *DiskHandler) openIndexFiles() error {
 
 func (d *DiskHandler) refreshIndexMapper(path string) error {
 	if d.indexMapper != nil {
-		d.indexMapper.Close()
+		if err := d.indexMapper.Close(); err != nil {
+			util.Error("failed to close indexMapper: %v", err)
+		}
 	}
 	mapper, err := mmap.Open(path)
 	if err != nil {
@@ -117,7 +120,11 @@ func getLastOffsetFromIndex(indexPath string, baseOffset uint64) (lastOffset uin
 	if err != nil {
 		return 0, 0, err
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			util.Error("failed to close file: %v", err)
+		}
+	}()
 
 	buf := make([]byte, entrySize)
 	_, err = f.ReadAt(buf, info.Size()-entrySize)

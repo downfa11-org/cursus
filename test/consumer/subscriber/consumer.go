@@ -118,14 +118,14 @@ func (c *Consumer) validateCommitConn() bool {
 
 	if err := c.commitConn.SetReadDeadline(time.Now().Add(1 * time.Millisecond)); err != nil {
 		util.Debug("failed to set read deadline: %v", err)
-		c.commitConn.Close()
+		_ = c.commitConn.Close()
 		c.commitConn = nil
 		return false
 	}
 
 	_, err := c.commitConn.Read(make([]byte, 0))
 	if err != nil && !os.IsTimeout(err) {
-		c.commitConn.Close()
+		_ = c.commitConn.Close()
 		c.commitConn = nil
 		return false
 	}
@@ -185,7 +185,9 @@ func (c *Consumer) Start() error {
 	if c.config.EnableBenchmark {
 		go func() {
 			c.waitForBenchmarkCompletion()
-			c.Close()
+			if err := c.Close(); err != nil {
+				util.Debug("failed to close consumer: %v", err)
+			}
 		}()
 	}
 	<-c.mainCtx.Done()
@@ -433,7 +435,7 @@ func (c *Consumer) heartbeatLoop() {
 func (c *Consumer) resetHeartbeatConn() {
 	c.hbMu.Lock()
 	if c.hbConn != nil {
-		c.hbConn.Close()
+		_ = c.hbConn.Close()
 		c.hbConn = nil
 	}
 	c.hbMu.Unlock()
@@ -475,7 +477,7 @@ func (c *Consumer) handleRebalanceSignal() {
 	c.resetHeartbeatConn()
 	c.commitMu.Lock()
 	if c.commitConn != nil {
-		c.commitConn.Close()
+		_ = c.commitConn.Close()
 		c.commitConn = nil
 	}
 	c.commitMu.Unlock()
@@ -597,7 +599,11 @@ func (c *Consumer) TriggerBenchmarkStop() {
 		c.metrics.PrintSummary()
 	}
 
-	go c.Close()
+	go func() {
+		if err := c.Close(); err != nil {
+			util.Debug("failed to close consumer: %v", err)
+		}
+	}()
 }
 
 func (c *Consumer) joinGroup() (generation int64, memberID string, assignments []int, err error) {
@@ -616,7 +622,7 @@ func (c *Consumer) joinGroup() (generation int64, memberID string, assignments [
 	if err != nil {
 		return 0, "", nil, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	joinCmd := fmt.Sprintf("JOIN_GROUP topic=%s group=%s member=%s", c.config.Topic, c.config.GroupID, c.config.ConsumerID)
 	if err := util.WriteWithLength(conn, util.EncodeMessage("", joinCmd)); err != nil {
@@ -684,7 +690,7 @@ func (c *Consumer) syncGroup(generation int64, memberID string) ([]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	syncCmd := fmt.Sprintf("SYNC_GROUP topic=%s group=%s member=%s generation=%d", c.config.Topic, c.config.GroupID, memberID, generation)
 	if err := util.WriteWithLength(conn, util.EncodeMessage("", syncCmd)); err != nil {
@@ -733,7 +739,7 @@ func (c *Consumer) fetchOffset(partition int) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	fetchCmd := fmt.Sprintf("FETCH_OFFSET topic=%s partition=%d group=%s", c.config.Topic, partition, c.config.GroupID)
@@ -818,7 +824,7 @@ func (c *Consumer) sendBatchCommit(offsets map[int]uint64) bool {
 		c.commitMu.Lock()
 		if c.commitConn == conn {
 			c.commitConn = nil
-			conn.Close()
+			_ = conn.Close()
 		}
 		c.commitMu.Unlock()
 		return false
@@ -828,7 +834,7 @@ func (c *Consumer) sendBatchCommit(offsets map[int]uint64) bool {
 	if err != nil {
 		util.Error("Batch commit response read failed: %v", err)
 		c.commitMu.Lock()
-		conn.Close()
+		_ = conn.Close()
 		c.commitConn = nil
 		c.commitMu.Unlock()
 		return false
@@ -863,7 +869,7 @@ func (c *Consumer) directCommit(partition int, offset uint64) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	commitCmd := fmt.Sprintf("COMMIT_OFFSET topic=%s partition=%d group=%s offset=%d generation=%d member=%s",
 		c.config.Topic, partition, c.config.GroupID, offset, generation, memberID)
@@ -906,7 +912,7 @@ func (c *Consumer) Close() error {
 		if conn, err := c.getLeaderConn(); err == nil {
 			leaveCmd := fmt.Sprintf("LEAVE_GROUP topic=%s group=%s member=%s", c.config.Topic, c.config.GroupID, c.memberID)
 			_ = util.WriteWithLength(conn, util.EncodeMessage("", leaveCmd))
-			conn.Close()
+			_ = conn.Close()
 		}
 	}
 
@@ -915,7 +921,9 @@ func (c *Consumer) Close() error {
 		pc.mu.Lock()
 		pc.closed = true
 		if pc.conn != nil {
-			pc.conn.Close()
+			if err := pc.conn.Close(); err != nil {
+				util.Debug("failed to close connection: %v", err)
+			}
 		}
 		pc.mu.Unlock()
 	}
@@ -926,7 +934,7 @@ func (c *Consumer) Close() error {
 }
 
 func (c *Consumer) cleanupHbConn(badConn net.Conn) {
-	badConn.Close()
+	_ = badConn.Close()
 	c.hbMu.Lock()
 	if c.hbConn == badConn {
 		c.hbConn = nil

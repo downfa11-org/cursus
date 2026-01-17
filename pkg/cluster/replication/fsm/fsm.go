@@ -151,7 +151,11 @@ func (f *BrokerFSM) Apply(log *raft.Log) interface{} {
 }
 
 func (f *BrokerFSM) Restore(rc io.ReadCloser) error {
-	defer rc.Close()
+	defer func() {
+		if err := rc.Close(); err != nil {
+			util.Error("failed to close rc: %v", err)
+		}
+	}()
 
 	util.Info("Starting FSM restore from snapshot")
 

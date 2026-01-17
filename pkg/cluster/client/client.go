@@ -117,7 +117,7 @@ func (c *TCPClusterClient) sendJoinCommand(ctx context.Context, addr, joinCmd st
 	if err != nil {
 		return fmt.Errorf("connect failed: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if err := util.WriteWithLength(conn, util.EncodeMessage("cluster", joinCmd)); err != nil {
 		return fmt.Errorf("send command failed: %w", err)

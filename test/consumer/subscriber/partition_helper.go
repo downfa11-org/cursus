@@ -38,7 +38,7 @@ func (pc *PartitionConsumer) ensureConnection() error {
 		if connectErr == nil {
 			pc.mu.Lock()
 			if pc.closed {
-				conn.Close()
+				_ = conn.Close()
 				pc.mu.Unlock()
 				return fmt.Errorf("partition consumer closed")
 			}
@@ -202,7 +202,9 @@ func (pc *PartitionConsumer) close() {
 
 	pc.closed = true
 	if pc.conn != nil {
-		pc.conn.Close()
+		if err := pc.conn.Close(); err != nil {
+			util.Debug("failed to close connection: %v", err)
+		}
 		pc.conn = nil
 	}
 	pc.closeDataCh()
@@ -213,7 +215,9 @@ func (pc *PartitionConsumer) closeConnection() {
 	defer pc.mu.Unlock()
 
 	if pc.conn != nil {
-		pc.conn.Close()
+		if err := pc.conn.Close(); err != nil {
+			util.Debug("failed to close connection: %v", err)
+		}
 		pc.conn = nil
 	}
 }

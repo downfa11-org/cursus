@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/downfa11-org/cursus/pkg/types"
+	"github.com/downfa11-org/cursus/util"
 )
 
 var readFn = func(offset uint64, max int) ([]types.Message, error) {
@@ -19,7 +20,7 @@ func TestAddRemoveStream(t *testing.T) {
 	sm := NewStreamManager(2, 500*time.Millisecond, 100*time.Millisecond)
 
 	conn1, _ := net.Pipe()
-	defer conn1.Close()
+	defer func() { _ = conn1.Close() }()
 	stream1 := NewStreamConnection(conn1, "topic1", 0, "group1", 0)
 
 	key1 := "topic1:0:group1"
@@ -41,7 +42,7 @@ func TestMaxConnections(t *testing.T) {
 	sm := NewStreamManager(1, time.Second, 100*time.Millisecond)
 
 	conn1, _ := net.Pipe()
-	defer conn1.Close()
+	defer func() { _ = conn1.Close() }()
 
 	stream1 := NewStreamConnection(conn1, "topic", 0, "group1", 0)
 	if err := sm.AddStream("key1", stream1, readFn, DefaultStreamCommitInterval); err != nil {
@@ -49,7 +50,7 @@ func TestMaxConnections(t *testing.T) {
 	}
 
 	conn2, _ := net.Pipe()
-	defer conn2.Close()
+	defer func() { _ = conn2.Close() }()
 	stream2 := NewStreamConnection(conn2, "topic", 0, "group2", 0)
 	if err := sm.AddStream("key2", stream2, readFn, DefaultStreamCommitInterval); err == nil {
 		t.Fatalf("expected error when adding stream beyond maxConn")
@@ -76,13 +77,15 @@ func TestGetStreamsForPartition(t *testing.T) {
 	}
 
 	for _, c := range conns {
-		c.Close()
+		if err := c.Close(); err != nil {
+			util.Debug("failed to close connection: %v", err)
+		}
 	}
 }
 
 func TestStreamConnectionOffsetAndActive(t *testing.T) {
 	conn, _ := net.Pipe()
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	sc := NewStreamConnection(conn, "topic", 0, "group", 0)
 	if sc.Offset() != 0 {

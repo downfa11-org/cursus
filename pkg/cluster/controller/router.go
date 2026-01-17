@@ -97,7 +97,7 @@ func (r *ClusterRouter) sendDataRequest(addr string, data []byte) (string, error
 	if err != nil {
 		return "", err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if err := conn.SetDeadline(time.Now().Add(r.timeout)); err != nil {
 		return "", err

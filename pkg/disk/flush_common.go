@@ -298,6 +298,10 @@ func (d *DiskHandler) rotateSegment(nextBaseOffset uint64) error {
 	}
 	d.indexMu.Unlock()
 
+	if len(errs) > 0 {
+		return fmt.Errorf("rotation completed with errors: %v", errs)
+	}
+
 	d.CurrentSegment = nextBaseOffset
 	d.CurrentOffset = 0
 	d.lastIndexPosition = 0

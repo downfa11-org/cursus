@@ -138,7 +138,7 @@ func RunServer(cfg *config.Config, tm *topic.TopicManager, dm *disk.DiskManager,
 
 // HandleConnection processes a single client connection
 func HandleConnection(ctx context.Context, conn net.Conn, tm *topic.TopicManager, cfg *config.Config, cd *coordinator.Coordinator, sm *stream.StreamManager, cc *clusterController.ClusterController) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	clientCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

@@ -54,7 +54,11 @@ func DecompressMessage(data []byte, compressionType string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer gr.Close()
+		defer func() {
+			if err := gr.Close(); err != nil {
+				Error("failed to close gr: %v", err)
+			}
+		}()
 		return io.ReadAll(gr)
 
 	case "snappy":
