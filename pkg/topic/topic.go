@@ -45,6 +45,9 @@ func NewTopic(name string, partitionCount int, hp HandlerProvider, cfg *config.C
 }
 
 func (t *Topic) GetPartitionForMessage(msg types.Message) int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	partitionsLen := uint64(len(t.Partitions))
 	if partitionsLen == 0 {
 		return -1
@@ -118,12 +121,15 @@ func (t *Topic) DeregisterConsumerGroup(groupName string) error {
 // Publish sends a message to one partition.
 func (t *Topic) Publish(msg types.Message) {
 	idx := t.GetPartitionForMessage(msg)
+
+	t.mu.RLock()
 	if idx == -1 {
 		util.Error("❌ No partitions available for topic '%s'", t.Name)
 		return
 	}
-
 	p := t.Partitions[idx]
+	t.mu.RUnlock()
+
 	p.Enqueue(msg)
 }
 
@@ -141,8 +147,8 @@ func (t *Topic) PublishBatchSync(msgs []types.Message) error {
 	if len(msgs) == 0 {
 		return nil
 	}
-	partitioned := make(map[int][]types.Message)
 
+	partitioned := make(map[int][]types.Message)
 	for _, msg := range msgs {
 		idx := t.GetPartitionForMessage(msg)
 		if idx != -1 {
@@ -150,7 +156,14 @@ func (t *Topic) PublishBatchSync(msgs []types.Message) error {
 		}
 	}
 
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	for idx, pm := range partitioned {
+		if idx < 0 || idx >= len(t.Partitions) {
+			continue
+		}
+
 		p := t.Partitions[idx]
 		if err := p.EnqueueBatchSync(pm); err != nil {
 			return fmt.Errorf("partition %d: failed to publish batch: %w", idx, err)

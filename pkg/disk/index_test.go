@@ -20,6 +20,7 @@ func setupDiskHandlerWithIndex(t *testing.T) *DiskHandler {
 		SegmentSize:         1024,
 		IndexIntervalBytes:  10,
 		IndexSize:           1024 * 1024,
+		ChannelBufferSize:   100,
 	}
 
 	dh, err := NewDiskHandler(cfg, "testTopic", 0)
@@ -32,11 +33,7 @@ func setupDiskHandlerWithIndex(t *testing.T) *DiskHandler {
 
 func TestOpenAndCloseIndexFiles(t *testing.T) {
 	dh := setupDiskHandlerWithIndex(t)
-	defer dh.Close()
-
-	if err := dh.OpenIndexFiles(); err != nil {
-		t.Fatalf("failed to open index files: %v", err)
-	}
+	defer func() { _ = dh.Close() }()
 
 	indexPath := dh.GetIndexPath(0)
 	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
@@ -50,22 +47,22 @@ func TestOpenAndCloseIndexFiles(t *testing.T) {
 
 func TestIndexFileErrorHandling(t *testing.T) {
 	dh := setupDiskHandlerWithIndex(t)
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
 	originalBaseName := dh.BaseName
+	defer func() { dh.BaseName = originalBaseName }()
+
 	dh.BaseName = "/invalid/path/that/does/not/exist"
 
 	err := dh.OpenIndexFiles()
 	if err == nil {
 		t.Errorf("expected error when opening index files in invalid path")
 	}
-
-	dh.BaseName = originalBaseName
 }
 
 func TestFindOffsetPosition(t *testing.T) {
 	dh := setupDiskHandlerWithIndex(t)
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
 	messages := []string{"msg1", "msg2", "msg3", "msg4", "msg5"}
 	offsets := make([]uint64, len(messages))

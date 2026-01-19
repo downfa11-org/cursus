@@ -150,9 +150,7 @@ func (pc *PartitionConsumer) pollAndProcess() {
 	if err != nil {
 		util.Error("Partition [%d] read batch error: %v", pc.partitionID, err)
 		pc.closeConnection()
-		if !pc.waitWithBackoff(bo) {
-			return
-		}
+		pc.waitWithBackoff(bo)
 		return
 	}
 
@@ -262,14 +260,14 @@ func (pc *PartitionConsumer) startStreamLoop() {
 			batchData, err := util.ReadWithLength(conn)
 			if err != nil {
 				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					if !pc.waitWithBackoff(bo) {
-						return
-					}
 					continue
 				}
 
 				util.Error("Partition [%d] Stream read fatal error: %v", pid, err)
 				pc.closeConnection()
+				if !pc.waitWithBackoff(bo) {
+					return
+				}
 				break
 			}
 

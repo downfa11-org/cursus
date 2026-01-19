@@ -30,6 +30,10 @@ func (cfg *Config) Normalize() {
 	if cfg.DiskWriteTimeoutMS <= 0 {
 		cfg.DiskWriteTimeoutMS = 10
 	}
+	if cfg.DiskFlushIntervalMS <= 0 {
+		util.Warn("Invalid DiskFlushIntervalMS (%d), defaulting to 1000ms", cfg.DiskFlushIntervalMS)
+		cfg.DiskFlushIntervalMS = 1000
+	}
 	if cfg.LingerMS < 0 {
 		cfg.LingerMS = 0
 	}
@@ -44,6 +48,13 @@ func (cfg *Config) Normalize() {
 	}
 
 	// log segment & retention
+	cfg.CleanupPolicy = strings.ToLower(strings.TrimSpace(cfg.CleanupPolicy))
+	switch cfg.CleanupPolicy {
+	case "delete", "compact":
+	default:
+		util.Warn("Invalid cleanup_policy '%s', defaulting to 'delete'", cfg.CleanupPolicy)
+		cfg.CleanupPolicy = "delete"
+	}
 	if cfg.CleanupInterval <= 0 {
 		cfg.CleanupInterval = 300
 	}

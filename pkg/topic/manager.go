@@ -87,6 +87,9 @@ func (tm *TopicManager) GetTopic(name string) *Topic {
 }
 
 func (tm *TopicManager) GetLastOffset(topicName string, partitionID int) uint64 {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+
 	t := tm.GetTopic(topicName)
 	if t == nil {
 		return 0
@@ -163,9 +166,14 @@ func (tm *TopicManager) executeBatch(t *Topic, partitioned map[int][]types.Messa
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(partitioned))
 
+	t.mu.RLock()
 	for idx, msgs := range partitioned {
-		wg.Add(1)
+		if idx < 0 || idx >= len(t.Partitions) {
+			util.Error("tm: invalid partition index %d in batch", idx)
+			continue
+		}
 
+		wg.Add(1)
 		targetPartition := t.Partitions[idx]
 		batch := msgs
 
@@ -183,6 +191,7 @@ func (tm *TopicManager) executeBatch(t *Topic, partitioned map[int][]types.Messa
 			}
 		}(targetPartition, batch)
 	}
+	t.mu.RUnlock()
 
 	wg.Wait()
 	close(errCh)

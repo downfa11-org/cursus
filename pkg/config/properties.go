@@ -38,7 +38,7 @@ type Config struct {
 	// log segment
 	CleanupInterval           int     `yaml:"log_cleanup_interval" json:"log.cleanup.interval"`
 	SegmentSize               uint64  `yaml:"log_segment_bytes" json:"log.segment.bytes"`
-	SegmentRollTimeMS         int     `yaml:"log_roll_ms" json:"log.roll.ms"`
+	SegmentRollTimeMS         int     `yaml:"log_segment_roll_ms" json:"log.segment.roll.ms"`
 	IndexSize                 uint64  `yaml:"log_index_size_bytes" json:"log.index.size.bytes"`
 	IndexIntervalBytes        int     `yaml:"log_index_interval_bytes" json:"log.index.interval.bytes"`
 	CleanupPolicy             string  `yaml:"log_cleanup_policy" json:"log.cleanup.policy"` // delete, compact
@@ -250,10 +250,14 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 
-	if segmentSizeInt64 != int64(defaultConfig().SegmentSize) {
+	if segmentSizeInt64 <= 0 {
+		cfg.SegmentSize = defaultConfig().SegmentSize
+	} else {
 		cfg.SegmentSize = uint64(segmentSizeInt64)
 	}
-	if indexSizeInt64 != int64(defaultConfig().IndexSize) {
+	if indexSizeInt64 <= 0 {
+		cfg.IndexSize = defaultConfig().IndexSize
+	} else {
 		cfg.IndexSize = uint64(indexSizeInt64)
 	}
 

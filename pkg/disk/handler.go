@@ -19,6 +19,8 @@ import (
 	"golang.org/x/exp/mmap"
 )
 
+const MaxMessageSize = 16 * 1024 * 1024 // 16MB
+
 type DiskHandler struct {
 	BaseName       string
 	SegmentSize    uint64
@@ -72,14 +74,20 @@ func NewDiskHandler(cfg *config.Config, topicName string, partitionID int) (*Dis
 
 	var lastAbsoluteOffset uint64
 	var currentSegmentBase uint64
+	prefix := fmt.Sprintf("partition_%d_segment_", partitionID)
 
 	if len(files) > 0 {
 		lastFile := files[len(files)-1]
 		fileName := filepath.Base(lastFile)
-		prefix := fmt.Sprintf("partition_%d_segment_", partitionID)
+
 		if strings.HasPrefix(fileName, prefix) {
 			numStr := fileName[len(prefix) : len(fileName)-4]
-			currentSegmentBase, _ = strconv.ParseUint(numStr, 10, 64)
+
+			var err error
+			currentSegmentBase, err = strconv.ParseUint(numStr, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("critical: failed to parse last segment filename %s: %w", fileName, err)
+			}
 		}
 
 		indexPath := tempDh.GetIndexPath(currentSegmentBase)
@@ -87,7 +95,10 @@ func NewDiskHandler(cfg *config.Config, topicName string, partitionID int) (*Dis
 		if err == nil {
 			lastAbsoluteOffset = lastOffset + 1
 		} else {
-			c, _ := countMessagesInFile(lastFile) // fallback
+			c, countErr := countMessagesInFile(lastFile) // fallback
+			if countErr != nil {
+				util.Error("failed to count messages in last segment %s: %v", lastFile, countErr)
+			}
 			lastAbsoluteOffset = currentSegmentBase + uint64(c)
 		}
 	}
@@ -134,13 +145,14 @@ func NewDiskHandler(cfg *config.Config, topicName string, partitionID int) (*Dis
 
 	for _, f := range files {
 		fileName := filepath.Base(f)
-		prefix := fmt.Sprintf("partition_%d_segment_", partitionID)
 		if strings.HasPrefix(fileName, prefix) {
 			numStr := fileName[len(prefix) : len(fileName)-4]
 			segBase, err := strconv.ParseUint(numStr, 10, 64)
-			if err == nil {
-				dh.segments = append(dh.segments, segBase)
+			if err != nil {
+				util.Error("skipping invalid segment file %s: %v", fileName, err)
+				continue
 			}
+			dh.segments = append(dh.segments, segBase)
 		}
 	}
 
@@ -190,6 +202,10 @@ func countMessagesInFile(filePath string) (int, error) {
 		}
 
 		msgLen := binary.BigEndian.Uint32(lenBytes)
+		if msgLen == 0 || msgLen > MaxMessageSize {
+			util.Error("Corrupted data: invalid msgLen %d at pos %d", msgLen, pos)
+			break
+		}
 
 		if pos+4+int(msgLen) > reader.Len() {
 			util.Error("⚠️ Incomplete message at pos %d in %s (expected %d bytes, file ends at %d)",
@@ -325,7 +341,14 @@ func (dh *DiskHandler) ReadMessages(offset uint64, max int) ([]types.Message, er
 			if err := reader.Close(); err != nil {
 				util.Debug("error closing reader: %v", err)
 			}
-			reader, _ = mmap.Open(currentFile)
+
+			var reErr error
+			reader, reErr = mmap.Open(currentFile)
+			if reErr != nil {
+				util.Error("mmap re-open failed for %s: %v", currentFile, reErr)
+				continue
+			}
+
 			batch = dh.readMessagesFromPosition(reader, readPos, remaining, offset)
 		}
 
@@ -360,7 +383,17 @@ func (dh *DiskHandler) readMessagesFromPosition(reader *mmap.ReaderAt, position 
 		if _, err := reader.ReadAt(lenBytes, int64(pos)); err != nil {
 			break
 		}
+
 		msgLen := binary.BigEndian.Uint32(lenBytes)
+		if msgLen == 0 || msgLen > MaxMessageSize {
+			util.Error("Corrupted message length detected at pos %d: %d bytes (limit: %d)", pos, msgLen, MaxMessageSize)
+			break
+		}
+
+		if pos+4+int(msgLen) > reader.Len() {
+			util.Error("Incomplete message at pos %d: expected %d bytes but reached EOF", pos, msgLen)
+			break
+		}
 		data := make([]byte, msgLen)
 		if _, err := reader.ReadAt(data, int64(pos+4)); err != nil {
 			break
@@ -412,12 +445,19 @@ func (d *DiskHandler) countMessagesInSegmentID(segmentID uint64) (int, error) {
 		if pos+4 > reader.Len() {
 			break
 		}
+
 		lenBytes := make([]byte, 4)
 		_, err := reader.ReadAt(lenBytes, int64(pos))
 		if err != nil {
 			break
 		}
+
 		msgLen := binary.BigEndian.Uint32(lenBytes)
+		if msgLen == 0 || msgLen > MaxMessageSize {
+			util.Error("Corrupted data: invalid msgLen %d at pos %d", msgLen, pos)
+			break
+		}
+
 		if pos+4+int(msgLen) > reader.Len() {
 			break
 		}

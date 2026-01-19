@@ -3,6 +3,7 @@ package topic
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/downfa11-org/cursus/pkg/config"
@@ -18,7 +19,7 @@ type Partition struct {
 	topic         string
 	newMessageCh  chan struct{}
 	broadcastCh   chan types.Message
-	LEO           uint64
+	LEO           atomic.Uint64
 	HWM           uint64
 	mu            sync.RWMutex
 	dh            types.StorageHandler
@@ -33,16 +34,20 @@ func NewPartition(id int, topic string, dh types.StorageHandler, sm *stream.Stre
 		bufSize = cfg.BroadcastChannelBufferSize
 	}
 
+	latest := dh.GetLatestOffset()
+	initialOffset := latest + 1
+
 	p := &Partition{
 		id:            id,
 		topic:         topic,
-		LEO:           0,
-		HWM:           0,
 		dh:            dh,
 		streamManager: sm,
 		newMessageCh:  make(chan struct{}, 1),
 		broadcastCh:   make(chan types.Message, bufSize),
 	}
+
+	p.LEO.Store(initialOffset)
+	p.HWM = initialOffset
 
 	if handler, ok := dh.(*disk.DiskHandler); ok {
 		p.HWM = handler.GetAbsoluteOffset()
@@ -81,15 +86,15 @@ func (p *Partition) Enqueue(msg types.Message) {
 	}
 
 	msg.Offset = offset
-	p.LEO = offset + 1
+	p.LEO.Store(offset + 1)
 
 	p.NotifyNewMessage()
 	p.enqueueToBroadcast(msg)
 }
 
 func (p *Partition) EnqueueSync(msg types.Message) error {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.closed {
 		return fmt.Errorf("partition %d is closed", p.id)
 	}
@@ -99,6 +104,7 @@ func (p *Partition) EnqueueSync(msg types.Message) error {
 		return fmt.Errorf("disk write failed: %w", err)
 	}
 	msg.Offset = offset
+	p.LEO.Store(offset + 1)
 
 	p.NotifyNewMessage()
 	p.enqueueToBroadcast(msg)
@@ -114,18 +120,16 @@ func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
 		return fmt.Errorf("partition %d is closed", p.id)
 	}
 
-	var lastOffset uint64
 	for i := range msgs {
 		offset, err := p.dh.AppendMessageSync(p.topic, p.id, &msgs[i])
 		if err != nil {
 			return fmt.Errorf("disk write failed for partition %d: %w", p.id, err)
 		}
 		msgs[i].Offset = offset
-		lastOffset = offset
+		p.LEO.Store(offset + 1)
 		p.enqueueToBroadcast(msgs[i])
+		p.NotifyNewMessage()
 	}
-	p.LEO = lastOffset + 1
-	p.NotifyNewMessage()
 	return nil
 }
 
@@ -137,7 +141,6 @@ func (p *Partition) EnqueueBatch(msgs []types.Message) error {
 		return fmt.Errorf("partition %d is closed", p.id)
 	}
 
-	var lastOffset uint64
 	for i := range msgs {
 		offset, err := p.dh.AppendMessage(p.topic, p.id, &msgs[i])
 		if err != nil {
@@ -145,12 +148,10 @@ func (p *Partition) EnqueueBatch(msgs []types.Message) error {
 		}
 
 		msgs[i].Offset = offset
-		lastOffset = offset
+		p.LEO.Store(offset + 1)
 		p.enqueueToBroadcast(msgs[i])
+		p.NotifyNewMessage()
 	}
-
-	p.LEO = lastOffset + 1
-	p.NotifyNewMessage()
 	return nil
 }
 
@@ -200,18 +201,20 @@ func (p *Partition) ReadMessages(offset uint64, max int) ([]types.Message, error
 	return p.dh.ReadMessages(offset, max)
 }
 
-func (p *Partition) GetLatestOffset() (uint64, error) {
+func (p *Partition) GetLatestOffset() uint64 {
 	if p.dh == nil {
-		return 0, fmt.Errorf("disk handler not initialized for partition")
+		return 0
 	}
 	return p.dh.GetLatestOffset()
 }
 
 // NextOffset returns the next available offset in the partition (Log End Offset).
 func (p *Partition) NextOffset() uint64 {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.LEO
+	return p.LEO.Load()
+}
+
+func (p *Partition) ReserveOffsets(count int) uint64 {
+	return p.LEO.Add(uint64(count)) - uint64(count)
 }
 
 // Close shuts down the partition.

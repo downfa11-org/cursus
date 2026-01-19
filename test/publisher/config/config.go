@@ -115,9 +115,9 @@ func LoadPublisherConfig(explicitPath string) (*PublisherConfig, error) {
 		cfg.LogLevel = util.LogLevelInfo
 	}
 
-	finalPath := explicitPath
-	if finalPath == "" {
-		finalPath = *configPath
+	finalPath := *configPath
+	if explicitPath != "" {
+		finalPath = explicitPath
 	}
 
 	if finalPath != "" {

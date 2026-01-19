@@ -168,8 +168,13 @@ func (p *Publisher) PublishMessage(message string) (uint64, error) {
 	p.closeMu.Unlock()
 
 	buf.mu.Lock()
+	defer buf.mu.Unlock()
+
+	if buf.closed {
+		return 0, fmt.Errorf("partition %d buffer is closed", part)
+	}
+
 	if len(buf.msgs) >= p.config.BufferSize {
-		buf.mu.Unlock()
 		return 0, fmt.Errorf("partition %d buffer full", part)
 	}
 
@@ -183,7 +188,6 @@ func (p *Publisher) PublishMessage(message string) (uint64, error) {
 
 	buf.msgs = append(buf.msgs, bm)
 	buf.cond.Signal()
-	buf.mu.Unlock()
 
 	return seqNum, nil
 }

@@ -13,6 +13,11 @@ import (
 )
 
 func (d *DiskHandler) openIndexFiles() error {
+	if d.indexFile != nil {
+		if err := d.indexFile.Close(); err != nil {
+			return fmt.Errorf("failed to close index file: %w", err)
+		}
+	}
 	indexPath := d.GetIndexPath(d.CurrentSegment)
 
 	info, statErr := os.Stat(indexPath)
@@ -24,6 +29,7 @@ func (d *DiskHandler) openIndexFiles() error {
 		existingSize = uint64(info.Size())
 	}
 
+	isReadOnly := false
 	f, err := os.OpenFile(indexPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		if os.IsPermission(err) {
@@ -32,32 +38,62 @@ func (d *DiskHandler) openIndexFiles() error {
 			if err != nil {
 				return fmt.Errorf("failed to open read-only index: %w", err)
 			}
+			isReadOnly = true
 		} else {
 			return fmt.Errorf("failed to open index file: %w", err)
 		}
 	}
 
-	if err := f.Truncate(int64(d.IndexSize)); err != nil {
-		if err := f.Close(); err != nil {
-			util.Error("failed to close file: %v", err)
+	if !isReadOnly {
+		if err := f.Truncate(int64(d.IndexSize)); err != nil {
+			if err := f.Close(); err != nil {
+				util.Error("failed to close file: %v", err)
+			}
+			return fmt.Errorf("failed to truncate index file: %w", err)
 		}
-		return fmt.Errorf("failed to truncate index file: %w", err)
 	}
 
-	writer := bufio.NewWriter(f)
-
 	d.indexMu.Lock()
+	defer d.indexMu.Unlock()
+
 	d.indexFile = f
 	if isNew {
 		d.indexBytesWritten = 0
 	} else {
-		d.indexBytesWritten = existingSize
+		d.indexBytesWritten = d.seekLastValidIndexEntry(f, existingSize)
 	}
-	d.indexWriter = writer
-	err = d.refreshIndexMapper(indexPath)
-	d.indexMu.Unlock()
 
-	return err
+	if !isReadOnly {
+		d.indexWriter = bufio.NewWriter(f)
+	}
+
+	return d.refreshIndexMapper(indexPath)
+}
+
+func (d *DiskHandler) seekLastValidIndexEntry(f *os.File, fileSize uint64) uint64 {
+	const entrySize = uint64(types.IndexEntrySize)
+	if fileSize < entrySize {
+		return 0
+	}
+
+	buf := make([]byte, entrySize)
+	for pos := fileSize - entrySize; ; pos -= entrySize {
+		_, err := f.ReadAt(buf, int64(pos))
+		if err != nil {
+			break
+		}
+
+		if binary.BigEndian.Uint64(buf[0:8]) != 0 || binary.BigEndian.Uint64(buf[8:16]) != 0 {
+			return pos + entrySize
+		}
+		if pos == 0 {
+			break
+		}
+		if pos < entrySize {
+			break
+		}
+	}
+	return 0
 }
 
 func (d *DiskHandler) refreshIndexMapper(path string) error {
@@ -84,7 +120,7 @@ func (d *DiskHandler) closeIndexFiles() error {
 	}
 	if d.indexFile != nil {
 		if err := d.indexFile.Sync(); err != nil {
-			return fmt.Errorf("sync index file fialed: %w", err)
+			return fmt.Errorf("sync index file failed: %w", err)
 		}
 	}
 

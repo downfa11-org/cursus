@@ -588,10 +588,7 @@ func (ch *CommandHandler) resolveOffset(p *topic.Partition, topicName string, cA
 	}
 
 	if cArgs.AutoOffsetReset == "latest" {
-		latest, err := p.GetLatestOffset()
-		if err != nil {
-			return 0, fmt.Errorf("failed to get latest offset from partition: %w", err)
-		}
+		latest := p.GetLatestOffset()
 		util.Debug("Reset policy 'latest': starting at %d", latest)
 		return latest, nil
 	}

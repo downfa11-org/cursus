@@ -125,7 +125,7 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 			return fmt.Sprintf("ERROR: NOT_AUTHORIZED_FOR_PARTITION %s:%d", topicName, partition)
 		}
 
-		assignedOffset := t.Partitions[partition].NextOffset()
+		assignedOffset := t.Partitions[partition].ReserveOffsets(1)
 		msg.Offset = assignedOffset
 		if acks == "-1" || acksLower == "all" {
 			ackResp, err = ch.Cluster.RaftManager.ReplicateWithQuorum(topicName, partition, *msg, ch.Config.MinInSyncReplicas)
@@ -274,9 +274,10 @@ func (ch *CommandHandler) HandleBatchMessage(data []byte, conn net.Conn) (string
 			return fmt.Sprintf("ERROR: PARTITION_NOT_FOUND %d", batch.Partition), nil
 		}
 
-		currentOffset := p.NextOffset()
+		batchSize := len(batch.Messages)
+		startOffset := p.ReserveOffsets(batchSize)
 		for i := range batch.Messages {
-			batch.Messages[i].Offset = currentOffset + uint64(i)
+			batch.Messages[i].Offset = startOffset + uint64(i)
 		}
 
 		if acks == "-1" || acksLower == "all" {

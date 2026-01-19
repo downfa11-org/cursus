@@ -23,7 +23,7 @@ func NewDiskManager(cfg *config.Config) *DiskManager {
 	}
 }
 
-// GetHandler returns a DiskHandler for a given name or creates one if missing
+// GetHandler returns a StorageHandler for a given name or creates one if missing
 func (dm *DiskManager) GetHandler(topic string, partitionID int) (types.StorageHandler, error) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
@@ -53,7 +53,7 @@ func (dm *DiskManager) CloseAllHandlers() {
 
 	for name, dh := range dm.handlers {
 		util.Debug("Closing DiskHandler for %s", name)
-		dh.Close()
+		_ = dh.Close()
 		delete(dm.handlers, name)
 	}
 }

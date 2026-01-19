@@ -3,7 +3,7 @@ package types
 type StorageHandler interface {
 	ReadMessages(offset uint64, max int) ([]Message, error)
 	GetAbsoluteOffset() uint64
-	GetLatestOffset() (uint64, error)
+	GetLatestOffset() uint64
 	GetSegmentPath(baseOffset uint64) string
 
 	AppendMessage(topic string, partition int, msg *Message) (uint64, error)
@@ -11,5 +11,5 @@ type StorageHandler interface {
 	WriteBatch(batch []DiskMessage) error
 
 	Flush()
-	Close()
+	Close() error
 }

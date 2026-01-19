@@ -74,8 +74,14 @@ func TestDiskHandler_EnforceRetention(t *testing.T) {
 				assert.FileExists(t, dh.GetIndexPath(uint64(segNum))+".deleted", "Index %d should be marked as deleted", segNum)
 			}
 			for _, segNum := range tt.expectedKeep {
-				assert.FileExists(t, dh.GetSegmentPath(uint64(segNum)), "Log %d should still exist", segNum)
-				assert.NoFileExists(t, dh.GetSegmentPath(uint64(segNum))+".deleted")
+				logPath := dh.GetSegmentPath(uint64(segNum))
+				indexPath := dh.GetIndexPath(uint64(segNum))
+
+				assert.FileExists(t, logPath, "Log %d should still exist", segNum)
+				assert.NoFileExists(t, logPath+".deleted", "Log %d should NOT have .deleted suffix", segNum)
+
+				assert.FileExists(t, indexPath, "Index %d should still exist", segNum)
+				assert.NoFileExists(t, indexPath+".deleted", "Index %d should NOT have .deleted suffix", segNum)
 			}
 		})
 	}

@@ -3,19 +3,20 @@ package disk
 import (
 	"fmt"
 	"os"
-
-	"github.com/downfa11-org/cursus/util"
 )
 
-func (dh *DiskHandler) GetLatestOffset() (uint64, error) {
+func (dh *DiskHandler) GetLatestOffset() uint64 {
 	dh.mu.Lock()
 	defer dh.mu.Unlock()
 
-	return dh.AbsoluteOffset, nil
+	return dh.AbsoluteOffset
 }
 
 // GetIndexFile returns the current index file
 func (d *DiskHandler) GetIndexFile() *os.File {
+	d.indexMu.Lock()
+	defer d.indexMu.Unlock()
+
 	return d.indexFile
 }
 
@@ -38,19 +39,41 @@ func (d *DiskHandler) CloseIndexFiles() error {
 }
 
 // Close signals the flushLoop to terminate and cleans up resources.
-func (d *DiskHandler) Close() {
+func (d *DiskHandler) Close() error {
+	var errs []error
+
 	d.closeOnce.Do(func() {
 		close(d.done)
 		d.shutdown.Wait()
+
+		d.ioMu.Lock()
+		defer d.ioMu.Unlock()
+
 		if d.writer != nil {
 			if err := d.writer.Flush(); err != nil {
-				util.Error("flush error on close: %v", err)
+				errs = append(errs, fmt.Errorf("data writer flush error: %w", err))
 			}
 		}
+
 		if d.file != nil {
-			if err := d.file.Close(); err != nil {
-				util.Error("file close error: %v", err)
+			if err := d.file.Sync(); err != nil {
+				errs = append(errs, fmt.Errorf("data file sync error: %w", err))
 			}
+			if err := d.file.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("data file close error: %w", err))
+			}
+			d.file = nil
 		}
+
+		d.indexMu.Lock()
+		if err := d.closeIndexFiles(); err != nil {
+			errs = append(errs, fmt.Errorf("index cleanup error: %w", err))
+		}
+		d.indexMu.Unlock()
 	})
+
+	if len(errs) > 0 {
+		return fmt.Errorf("DiskHandler close failures: %v", errs)
+	}
+	return nil
 }

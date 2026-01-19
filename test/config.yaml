@@ -6,8 +6,7 @@ log_level: "info"
 linger_ms: 50
 disk_flush_batch_size: 1000            
 log_cleanup_interval: 60            
-log_segment_bytes: 10485760             
-log_segment_roll_time_ms: 300000       
+log_segment_bytes: 10485760                  
 
 channel_buffer_size: 8192
 partition_channel_buffer_size: 20000

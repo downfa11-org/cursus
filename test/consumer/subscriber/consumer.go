@@ -48,8 +48,8 @@ type Consumer struct {
 	hbConn net.Conn
 	hbMu   sync.Mutex
 
-	closed  bool
-	closeMu sync.Mutex
+	closed     int32
+	bmFinished int32 // 0: running, 1: finished
 
 	bmStartTime time.Time
 	metrics     *bench.ConsumerMetrics
@@ -519,8 +519,6 @@ func (c *Consumer) handleRebalanceSignal() {
 	}
 	c.mu.Unlock()
 
-	c.startCommitWorker()
-
 	if c.config.Mode != config.ModePolling {
 		go c.startStreaming()
 	} else {
@@ -586,14 +584,9 @@ func (c *Consumer) ownsPartition(pid int) bool {
 }
 
 func (c *Consumer) TriggerBenchmarkStop() {
-	c.closeMu.Lock()
-	defer c.closeMu.Unlock()
-
-	if c.closed {
+	if !atomic.CompareAndSwapInt32(&c.bmFinished, 0, 1) {
 		return
 	}
-
-	c.closed = true
 
 	if c.metrics != nil {
 		c.metrics.PrintSummary()
@@ -895,13 +888,11 @@ func (c *Consumer) directCommit(partition int, offset uint64) error {
 }
 
 func (c *Consumer) Close() error {
-	c.closeMu.Lock()
-	if c.closed {
-		c.closeMu.Unlock()
+	if !atomic.CompareAndSwapInt32(&c.closed, 0, 1) {
 		return nil
 	}
-	c.closed = true
-	c.closeMu.Unlock()
+
+	c.flushOffsets()
 
 	close(c.doneCh)
 	c.mainCancel()

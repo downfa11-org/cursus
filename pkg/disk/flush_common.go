@@ -80,11 +80,15 @@ func (d *DiskHandler) syncLoop() {
 					syncSuccess = true
 				} else {
 					util.Error("failed to sync data file: %v", err)
+					syncSuccess = false
 				}
 			}
 
 			if d.indexFile != nil {
-				_ = d.indexFile.Sync()
+				if err := d.indexFile.Sync(); err != nil {
+					util.Error("failed to sync index file: %v", err)
+					syncSuccess = false
+				}
 			}
 
 			currentOffset := atomic.LoadUint64(&d.AbsoluteOffset)
@@ -156,10 +160,13 @@ func (d *DiskHandler) WriteBatch(batch []types.DiskMessage) error {
 					Offset:   msg.Offset,
 					Position: msgPosition,
 				}
-				if err := binary.Write(d.indexWriter, binary.BigEndian, entry); err == nil {
-					d.indexBytesWritten += entrySize
-					d.lastIndexPosition = msgPosition
+
+				if err := binary.Write(d.indexWriter, binary.BigEndian, entry); err != nil {
+					return fmt.Errorf("failed to write index entry for offset %d: %w", msg.Offset, err)
 				}
+
+				d.indexBytesWritten += entrySize
+				d.lastIndexPosition = msgPosition
 			}
 		}
 

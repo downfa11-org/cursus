@@ -25,9 +25,6 @@ func (s *ReadSession) Close() error {
 }
 
 func (d *DiskHandler) OpenForRead(offset uint64) (*ReadSession, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	path, _, err := d.findSegmentForOffset(offset)
 	if err != nil {
 		return nil, err
@@ -38,7 +35,10 @@ func (d *DiskHandler) OpenForRead(offset uint64) (*ReadSession, error) {
 		return nil, err
 	}
 
+	d.mu.Lock()
 	atomic.AddInt32(&d.activeReaders, 1)
+	d.mu.Unlock()
+
 	return &ReadSession{
 		File:    f,
 		handler: d,
@@ -49,21 +49,29 @@ func (d *DiskHandler) EnforceRetention(cfg *config.Config) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if readers := atomic.LoadInt32(&d.activeReaders); readers > 0 {
-		util.Debug("Retention: deferred (active readers: %d)", readers)
+	if atomic.LoadInt32(&d.activeReaders) > 0 {
 		return
 	}
 
 	pattern := d.BaseName + "_segment_*.log"
-	files, _ := filepath.Glob(pattern)
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		util.Error("retention glob failed: %v", err)
+	}
 	if len(files) <= 1 {
 		return
 	}
 	sort.Strings(files)
 
+	type fileMeta struct {
+		path string
+		info os.FileInfo
+	}
+	var metas []fileMeta
 	var totalSize int64
 	for _, f := range files {
 		if info, err := os.Stat(f); err == nil {
+			metas = append(metas, fileMeta{f, info})
 			totalSize += info.Size()
 		}
 	}
@@ -71,38 +79,24 @@ func (d *DiskHandler) EnforceRetention(cfg *config.Config) {
 	now := time.Now()
 	retentionDuration := time.Duration(cfg.RetentionHours) * time.Hour
 
-	for i := 0; i < len(files)-1; i++ {
-		filePath := files[i]
-		info, err := os.Stat(filePath)
-		if err != nil {
-			continue
+	for i := 0; i < len(metas)-1; i++ {
+		meta := metas[i]
+
+		if meta.info.Mode().Perm() != 0444 {
+			_ = os.Chmod(meta.path, 0444)
+			indexPath := strings.TrimSuffix(meta.path, ".log") + ".index"
+			_ = os.Chmod(indexPath, 0444)
+			util.Debug("Segment %s secured (read-only)", filepath.Base(meta.path))
 		}
 
-		if info.Mode().Perm() != 0444 {
-			if _, err := os.Stat(filePath); err == nil {
-				if err := os.Chmod(filePath, 0444); err != nil {
-					util.Error("failed to set read-only permission: %v", err)
-				}
-			}
-			indexPath := filePath[:len(filePath)-4] + ".index"
-			if _, err := os.Stat(indexPath); err == nil {
-				if err := os.Chmod(indexPath, 0444); err != nil {
-					util.Error("failed to set read-only permission: %v", err)
-				}
-			}
-			util.Debug("Segment %d closed and secured (read-only)", d.CurrentSegment)
-		}
-
-		isExpired := cfg.RetentionHours > 0 && now.Sub(info.ModTime()) > retentionDuration
+		isExpired := cfg.RetentionHours > 0 && now.Sub(meta.info.ModTime()) > retentionDuration
 		isOverCapacity := cfg.RetentionBytes > 0 && totalSize > cfg.RetentionBytes
-
 		if isExpired || isOverCapacity {
-			fileSize := info.Size()
-			if err := d.markAsDeleted(filePath); err == nil {
+			fileSize := meta.info.Size()
+			if err := d.markAsDeleted(meta.path); err == nil {
 				totalSize -= fileSize
-				util.Debug("Retention: deleted %s, remaining totalSize: %d", filePath, totalSize)
 			} else {
-				util.Debug("Retention: %s is target but busy, skipping", filePath)
+				util.Debug("retention failed to delete %s: %v", meta.path, err)
 				break
 			}
 		}
@@ -115,8 +109,12 @@ func (d *DiskHandler) markAsDeleted(logPath string) error {
 	if len(parts) < 4 {
 		return fmt.Errorf("invalid segment filename: %s", fileName)
 	}
+
 	numStr := strings.TrimSuffix(parts[3], ".log")
-	segmentOffset, _ := strconv.ParseUint(numStr, 10, 64)
+	segmentOffset, err := strconv.ParseUint(numStr, 10, 64)
+	if err != nil {
+		return fmt.Errorf("failed to parse offset from filename %s: %w", fileName, err)
+	}
 
 	deletedLogPath := logPath + ".deleted"
 	indexPath := logPath[:len(logPath)-4] + ".index"
@@ -138,7 +136,6 @@ func (d *DiskHandler) markAsDeleted(logPath string) error {
 			break
 		}
 	}
-
 	return nil
 }
 

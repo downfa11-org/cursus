@@ -22,8 +22,10 @@ func (ch *CommandHandler) HandleConsumeCommand(conn net.Conn, rawCmd string, ctx
 	if err := ch.validateConsumeArgs(argsMap); err != nil {
 		return 0, err
 	}
-	cArgs := ch.parseCommonArgs(argsMap)
-
+	cArgs, err := ch.parseCommonArgs(argsMap)
+	if err != nil {
+		return 0, err
+	}
 	if err := ch.checkLeaderOrRedirect(conn); err != nil {
 		if err.Error() == "not leader" {
 			return 0, nil
@@ -81,7 +83,11 @@ func (ch *CommandHandler) consumeFromTopic(conn net.Conn, topicName string, cArg
 		return 0, err
 	}
 
-	currentGen := ch.Coordinator.GetGeneration(cArgs.GroupName)
+	var currentGen int
+	if ch.Coordinator != nil {
+		currentGen = ch.Coordinator.GetGeneration(cArgs.GroupName)
+	}
+
 	if ctx.Generation != currentGen {
 		ctx.OffsetCache = make(map[string]uint64)
 		ctx.Generation = currentGen
@@ -194,7 +200,10 @@ func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx 
 	if err := ch.validateStreamArgs(argsMap); err != nil {
 		return err
 	}
-	cArgs := ch.parseCommonArgs(argsMap)
+	cArgs, err := ch.parseCommonArgs(argsMap)
+	if err != nil {
+		return err
+	}
 	ctx.ConsumerGroup = cArgs.GroupName
 
 	if err := ch.checkLeaderOrRedirect(conn); err != nil {
@@ -316,9 +325,16 @@ type CommonArgs struct {
 	AutoOffsetReset string
 }
 
-func (ch *CommandHandler) parseCommonArgs(args map[string]string) CommonArgs {
-	pID, _ := strconv.Atoi(args["partition"])
-	offset, _ := strconv.ParseUint(args["offset"], 10, 64)
+func (ch *CommandHandler) parseCommonArgs(args map[string]string) (CommonArgs, error) {
+	pID, err := strconv.Atoi(args["partition"])
+	if err != nil && args["partition"] != "" {
+		return CommonArgs{}, fmt.Errorf("invalid partition value: %s", args["partition"])
+	}
+
+	offset, err := strconv.ParseUint(args["offset"], 10, 64)
+	if err != nil && args["offset"] != "" {
+		return CommonArgs{}, fmt.Errorf("invalid offset value: %s", args["offset"])
+	}
 
 	batch := DefaultMaxPollRecords
 	if b, err := strconv.Atoi(args["batch"]); err == nil && b > 0 {
@@ -339,7 +355,7 @@ func (ch *CommandHandler) parseCommonArgs(args map[string]string) CommonArgs {
 		BatchSize:       batch,
 		WaitTimeout:     wait,
 		AutoOffsetReset: strings.ToLower(args["autoOffsetReset"]),
-	}
+	}, nil
 }
 
 func (ch *CommandHandler) validateConsumeArgs(args map[string]string) error {

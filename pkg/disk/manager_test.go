@@ -29,7 +29,7 @@ func TestDiskManager_GetHandler_CreatesHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetHandler failed: %v", err)
 	}
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
 	if dh == nil {
 		t.Fatalf("expected DiskHandler, got nil")
@@ -73,7 +73,7 @@ func TestDiskManager_CloseAllHandlers(t *testing.T) {
 
 	defer func() {
 		for _, dh := range handlers {
-			dh.Close()
+			_ = dh.Close()
 		}
 	}()
 

@@ -31,11 +31,13 @@ func (f *BrokerFSM) applyMessageBatch(cmd *types.MessageCommand) interface{} {
 	last := cmd.Messages[len(cmd.Messages)-1]
 
 	f.mu.Lock()
-	exists, lastSeq := f.getProducerSequence(cmd.Topic, cmd.Partition, first.ProducerID)
-	if exists && int64(last.SeqNum) <= lastSeq {
-		f.mu.Unlock()
-		util.Debug("FSM: Duplicate detected for %s, skipping", first.ProducerID)
-		return f.makeSuccessAck(&last, first.SeqNum)
+	if cmd.IsIdempotent {
+		exists, lastSeq := f.getProducerSequence(cmd.Topic, cmd.Partition, first.ProducerID)
+		if exists && int64(last.SeqNum) <= lastSeq {
+			f.mu.Unlock()
+			util.Debug("FSM: Duplicate detected for idempotent producer %s, skipping", first.ProducerID)
+			return f.makeSuccessAck(&last, first.SeqNum)
+		}
 	}
 
 	topic := f.tm.GetTopic(cmd.Topic)

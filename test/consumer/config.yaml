@@ -10,8 +10,8 @@ consumer_id: "consumer-1"
 mode: "polling"
 
 poll_interval: 100ms
-poll-timeout-ms: 3000
-batch-size: 10000
+poll_timeout_ms: 3000
+batch_size: 10000
 session_timeout_ms: 8000
 streaming_read_deadline_ms: 10000
-max-poll-records: 10000
+max_poll_records: 10000

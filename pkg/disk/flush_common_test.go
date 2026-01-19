@@ -32,7 +32,7 @@ func setupDiskHandler(t *testing.T) *disk.DiskHandler {
 
 func TestWriteDirectAndFlush(t *testing.T) {
 	dh := setupDiskHandler(t)
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
 	for i := 0; i < 3; i++ {
 		msg := types.Message{
@@ -62,9 +62,10 @@ func TestWriteDirectAndFlush(t *testing.T) {
 
 func TestWriteBatchRotation(t *testing.T) {
 	dh := setupDiskHandler(t)
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
-	payload := make([]byte, dh.SegmentSize/2)
+	payloadSize := int(dh.SegmentSize / 2)
+	payload := make([]byte, payloadSize)
 	for i := range payload {
 		payload[i] = 'x'
 	}
@@ -84,7 +85,7 @@ func TestWriteBatchRotation(t *testing.T) {
 
 func TestFlushLoopAsync(t *testing.T) {
 	dh := setupDiskHandler(t)
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
 	msgs := []struct {
 		payload string
@@ -125,7 +126,7 @@ func TestFlushLoopAsync(t *testing.T) {
 
 func TestReadMessagesWithMetadata(t *testing.T) {
 	dh := setupDiskHandler(t)
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
 	testMessages := []struct {
 		topic     string
@@ -206,13 +207,13 @@ func TestDrainAndShutdown(t *testing.T) {
 		}
 	}
 
-	dh.Close()
+	_ = dh.Close()
 
 	newDh, err := disk.NewDiskHandler(cfg, "testTopic", 0)
 	if err != nil {
 		t.Fatalf("failed to reopen DiskHandler: %v", err)
 	}
-	defer newDh.Close()
+	defer func() { _ = newDh.Close() }()
 
 	msgs, err := newDh.ReadMessages(0, 2)
 	if err != nil {

@@ -165,15 +165,15 @@ func (m *ConsumerMetrics) RecordMessage(partition int, offset int64, producerID 
 	isDuplicate := m.seenOffsetFilter.Add(offsetKey)
 
 	if isDuplicate {
-		atomic.AddInt64(&m.dupOffsetCount, 1)
+		m.dupOffsetCount++
 		util.Debug("duplicated offset. (partition: %d, offset: %d)", partition, offset)
 	}
 
 	messageKey := encodeMessageID(partition, producerID, seqNum)
 	if !m.seenIDFilter.Add(messageKey) {
-		atomic.AddInt64(&m.uniqueMsgs, 1)
+		m.uniqueMsgs++
 	} else {
-		atomic.AddInt64(&m.dupCount, 1)
+		m.dupCount++
 		util.Debug("duplicated message. (partition: %d, offset: %d, seqNum: %d)", partition, offset, seqNum)
 	}
 }

@@ -27,7 +27,7 @@ func TestDiskHandlerBasic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDiskHandler: %v", err)
 	}
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
 	messages := []string{"msg1", "msg2", "msg3", "msg4", "msg5"}
 	for i, payload := range messages {
@@ -94,7 +94,7 @@ func TestDiskHandlerChannelOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDiskHandler: %v", err)
 	}
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
 	off1, err := dh.AppendMessage(topic, 0, &types.Message{
 		Payload: "first",
@@ -177,7 +177,7 @@ func TestDiskHandlerRotation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDiskHandler: %v", err)
 	}
-	defer dh.Close()
+	defer func() { _ = dh.Close() }()
 
 	msgs := []string{"12345", "67890", "abcde"}
 	for i, m := range msgs {

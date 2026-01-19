@@ -14,6 +14,8 @@ func (pc *PartitionConsumer) ensureConnection() error {
 		return fmt.Errorf("consumer shutting down")
 	}
 
+	bo := pc.getBackoff()
+
 	pc.mu.Lock()
 	if pc.conn != nil {
 		pc.mu.Unlock()
@@ -48,9 +50,10 @@ func (pc *PartitionConsumer) ensureConnection() error {
 		}
 
 		err = connectErr
-		util.Warn("Partition [%d] connect fail (attempt %d): %v. Retrying in %v", pc.partitionID, attempt+1, err)
+		waitDur := bo.duration()
+		util.Warn("Partition [%d] connect fail (attempt %d): %v. Retrying in %v", pc.partitionID, attempt+1, err, waitDur)
 
-		if !pc.waitWithBackoff(pc.backoff) {
+		if !pc.waitDuration(waitDur) {
 			return fmt.Errorf("connection aborted by shutdown")
 		}
 	}
@@ -153,6 +156,17 @@ func (pc *PartitionConsumer) waitWithBackoff(bo *backoff) bool {
 	case <-pc.consumer.doneCh:
 		return false
 	case <-time.After(waitDur):
+		return true
+	}
+}
+
+func (pc *PartitionConsumer) waitDuration(d time.Duration) bool {
+	select {
+	case <-pc.consumer.mainCtx.Done():
+		return false
+	case <-pc.consumer.doneCh:
+		return false
+	case <-time.After(d):
 		return true
 	}
 }

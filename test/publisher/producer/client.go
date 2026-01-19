@@ -53,12 +53,7 @@ func NewProducerClient(partitions int, config *config.PublisherConfig) *Producer
 }
 
 func (pc *ProducerClient) NextSeqNum(partition int) uint64 {
-	for {
-		current := pc.globalSeqNum.Load()
-		if pc.globalSeqNum.CompareAndSwap(current, current+1) {
-			return current
-		}
-	}
+	return pc.globalSeqNum.Add(1)
 }
 
 func (pc *ProducerClient) connectPartitionLocked(idx int, addr string, useTLS bool, certPath, keyPath string) error {
