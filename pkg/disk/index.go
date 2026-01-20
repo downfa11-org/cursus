@@ -162,13 +162,29 @@ func getLastOffsetFromIndex(indexPath string, baseOffset uint64) (lastOffset uin
 		}
 	}()
 
+	fileSize := uint64(info.Size())
 	buf := make([]byte, entrySize)
-	_, err = f.ReadAt(buf, info.Size()-entrySize)
-	if err != nil {
-		return 0, 0, err
+	found := false
+
+	for pos := fileSize - entrySize; ; pos -= entrySize {
+		_, err := f.ReadAt(buf, int64(pos))
+		if err != nil {
+			break
+		}
+
+		if binary.BigEndian.Uint64(buf[0:8]) != 0 || binary.BigEndian.Uint64(buf[8:16]) != 0 {
+			lastOffset = binary.BigEndian.Uint64(buf[0:8])
+			found = true
+			break
+		}
+		if pos < entrySize {
+			break
+		}
 	}
 
-	lastOffset = binary.BigEndian.Uint64(buf[0:8])
+	if !found {
+		return 0, 0, fmt.Errorf("index empty (contains only zeros)")
+	}
 	if lastOffset < baseOffset {
 		return 0, 0, fmt.Errorf("index empty or corrupt")
 	}

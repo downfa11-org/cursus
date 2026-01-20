@@ -83,10 +83,13 @@ func (pc *PartitionConsumer) handleBrokerError(data []byte) bool {
 }
 
 func (pc *PartitionConsumer) commitOffsetWithRetry(offset uint64) error {
-	const maxRetries = 3
+	maxRetries := pc.consumer.config.MaxCommitRetries
 	var lastErr error
 
-	bo := newBackoff(200*time.Millisecond, 2*time.Second)
+	minBackoff := pc.consumer.config.CommitRetryBackoff
+	maxBackoff := pc.consumer.config.CommitRetryMaxBackoff
+	bo := newBackoff(minBackoff, maxBackoff)
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if pc.consumer.mainCtx.Err() != nil {
 			return fmt.Errorf("stopping commit: consumer context cancelled")

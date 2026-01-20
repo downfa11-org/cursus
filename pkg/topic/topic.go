@@ -199,21 +199,7 @@ func (t *Topic) ReadSafeMessages(partitionID int, offset uint64, max int) ([]typ
 	if err != nil {
 		return nil, err
 	}
-
-	p.mu.RLock()
-	hwm := p.HWM
-	p.mu.RUnlock()
-
-	if offset >= hwm {
-		return nil, nil
-	}
-
-	canReadCount := int(hwm - offset)
-	if max > canReadCount {
-		max = canReadCount
-	}
-
-	return p.dh.ReadMessages(offset, max)
+	return p.ReadCommitted(offset, max)
 }
 
 // applyAssignments connects partitions to consumers according to coordinator results.

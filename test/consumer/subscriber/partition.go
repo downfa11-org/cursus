@@ -295,7 +295,14 @@ func (pc *PartitionConsumer) startStreamLoop() {
 					atomic.StoreUint64(&pc.fetchOffset, lastOffset+1)
 				} else {
 					bo.reset()
-					time.Sleep(100 * time.Millisecond)
+
+					select {
+					case <-time.After(100 * time.Millisecond):
+					case <-c.doneCh:
+						return
+					case <-c.mainCtx.Done():
+						return
+					}
 				}
 			case <-c.doneCh:
 				return

@@ -19,6 +19,7 @@ func TestDiskHandlerBasic(t *testing.T) {
 		LingerMS:            50,
 		ChannelBufferSize:   5,
 		DiskWriteTimeoutMS:  100,
+		IndexIntervalBytes:  4096,
 		LogDir:              dir,
 	}
 
@@ -86,6 +87,7 @@ func TestDiskHandlerChannelOverflow(t *testing.T) {
 		LingerMS:            50,
 		ChannelBufferSize:   2,
 		DiskWriteTimeoutMS:  100,
+		IndexIntervalBytes:  4096,
 		LogDir:              dir,
 	}
 
@@ -168,6 +170,7 @@ func TestDiskHandlerRotation(t *testing.T) {
 		LingerMS:            10,
 		ChannelBufferSize:   10,
 		DiskWriteTimeoutMS:  100,
+		IndexIntervalBytes:  4096,
 		LogDir:              dir,
 		SegmentSize:         20,
 	}

@@ -239,9 +239,7 @@ func (c *Consumer) startCommitWorker() {
 				c.processRetryQueue()
 
 			case <-c.mainCtx.Done():
-				if len(pendingOffsets) > 0 {
-					c.commitBatch(pendingOffsets, respChannels)
-				}
+				flush()
 				return
 			}
 		}
@@ -453,20 +451,21 @@ func (c *Consumer) handleRebalanceSignal() {
 	}
 	defer atomic.StoreInt32(&c.rebalancing, 0)
 
+	util.Info("🔄 Rebalance started - Stop existing workers")
+
 	if c.metrics != nil {
 		c.metrics.RebalanceStart()
 	}
 
-	util.Info("🔄 Rebalance started - Stop existing workers")
 	c.mainCancel()
 
 	drainDone := make(chan struct{})
 	go func() {
-		maxTimeout := time.After(5 * time.Second)
+		maxTimeout := time.After(3 * time.Second)
 		for {
 			select {
 			case <-c.commitCh:
-			case <-time.After(200 * time.Millisecond):
+			case <-time.After(100 * time.Millisecond):
 				close(drainDone)
 				return
 			case <-maxTimeout:
@@ -501,6 +500,14 @@ func (c *Consumer) handleRebalanceSignal() {
 	if err != nil {
 		util.Error("Rebalance join failed: %v", err)
 		return
+	}
+
+	if len(assignments) == 0 {
+		assignments, err = c.syncGroup(gen, mid)
+		if err != nil {
+			util.Error("❌ Rebalance sync failed: %v", err)
+			return
+		}
 	}
 
 	c.mu.Lock()
@@ -575,6 +582,8 @@ func (c *Consumer) startConsuming() {
 					case <-time.After(c.config.PollInterval):
 					case <-c.mainCtx.Done():
 						return
+					case <-c.doneCh:
+						return
 					}
 				}
 			}
@@ -606,22 +615,16 @@ func (c *Consumer) TriggerBenchmarkStop() {
 }
 
 func (c *Consumer) joinGroup() (generation int64, memberID string, assignments []int, err error) {
-	if c.memberID != "" {
-		c.mu.RLock()
-		assignments = make([]int, 0, len(c.partitionConsumers))
-		for pid := range c.partitionConsumers {
-			assignments = append(assignments, pid)
-		}
-		c.mu.RUnlock()
-
-		return c.generation, c.memberID, assignments, nil
-	}
-
 	conn, err := c.getLeaderConn()
 	if err != nil {
 		return 0, "", nil, err
 	}
 	defer func() { _ = conn.Close() }()
+
+	mID := c.memberID
+	if mID == "" {
+		mID = c.config.ConsumerID
+	}
 
 	joinCmd := fmt.Sprintf("JOIN_GROUP topic=%s group=%s member=%s", c.config.Topic, c.config.GroupID, c.config.ConsumerID)
 	if err := util.WriteWithLength(conn, util.EncodeMessage("", joinCmd)); err != nil {
@@ -901,9 +904,10 @@ func (c *Consumer) Close() error {
 	close(c.doneCh)
 	c.mainCancel()
 
+	c.wg.Wait()
 	c.flushOffsets()
-	close(c.commitCh)
 
+	close(c.commitCh)
 	c.resetHeartbeatConn()
 
 	if c.memberID != "" {
@@ -938,7 +942,6 @@ func (c *Consumer) Close() error {
 	c.partitionConsumers = make(map[int]*PartitionConsumer)
 	c.mu.Unlock()
 
-	c.wg.Wait()
 	return nil
 }
 

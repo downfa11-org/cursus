@@ -109,6 +109,11 @@ func (d *DiskHandler) WriteBatch(batch []types.DiskMessage) error {
 		return nil
 	}
 
+	interval := d.indexInterval
+	if interval == 0 {
+		interval = 4096 // default interval (4KB)
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
@@ -139,7 +144,8 @@ func (d *DiskHandler) WriteBatch(batch []types.DiskMessage) error {
 
 	const entrySize = uint64(types.IndexEntrySize)
 	willExceedData := d.CurrentOffset+uint64(totalSize) > d.SegmentSize
-	maxIndexEntries := (uint64(totalSize) / d.indexInterval) + 1
+
+	maxIndexEntries := (uint64(totalSize) / interval) + 1
 	requiredIndexSpace := maxIndexEntries * entrySize
 	willExceedIndex := d.indexBytesWritten+requiredIndexSpace > d.IndexSize
 
@@ -156,7 +162,7 @@ func (d *DiskHandler) WriteBatch(batch []types.DiskMessage) error {
 		msgPosition := d.CurrentOffset + accumulatedLen
 		msg := batch[i]
 
-		if msgPosition-d.lastIndexPosition >= d.indexInterval {
+		if msgPosition-d.lastIndexPosition >= interval {
 			if d.indexWriter != nil {
 				entry := types.IndexEntry{
 					Offset:   msg.Offset,
@@ -194,12 +200,27 @@ func (d *DiskHandler) WriteBatch(batch []types.DiskMessage) error {
 
 	d.CurrentOffset += uint64(totalSize)
 	lastOffset := batch[len(batch)-1].Offset
-	atomic.StoreUint64(&d.AbsoluteOffset, lastOffset+1)
+
+	newAbsOffset := lastOffset + 1
+	for {
+		currentAbs := atomic.LoadUint64(&d.AbsoluteOffset)
+		if newAbsOffset <= currentAbs {
+			break
+		}
+		if atomic.CompareAndSwapUint64(&d.AbsoluteOffset, currentAbs, newAbsOffset) {
+			break
+		}
+	}
 	return nil
 }
 
 // WriteDirect writes a single message immediately without batching.
 func (d *DiskHandler) WriteDirect(topic string, partition int, msg types.Message) error {
+	interval := d.indexInterval
+	if interval == 0 {
+		interval = 4096 // default interval (4KB)
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ioMu.Lock()
@@ -224,10 +245,19 @@ func (d *DiskHandler) WriteDirect(topic string, partition int, msg types.Message
 	}
 
 	totalLen := uint64(4 + len(serialized))
-	if d.CurrentOffset+totalLen > d.SegmentSize {
+	const entrySize = uint64(types.IndexEntrySize)
+	msgPosition := d.CurrentOffset
+
+	willWriteIndex := msgPosition-d.lastIndexPosition >= interval
+	willExceedData := d.CurrentOffset+totalLen > d.SegmentSize
+	willExceedIndex := willWriteIndex && (d.indexBytesWritten+entrySize > d.IndexSize)
+
+	if willExceedData || willExceedIndex {
+		util.Debug("rolling segment: data exceed=%v, index exceed=%v", willExceedData, willExceedIndex)
 		if err := d.rotateSegment(msg.Offset); err != nil {
 			return fmt.Errorf("rotateSegment failed: %w", err)
 		}
+		msgPosition = d.CurrentOffset
 	}
 
 	var lenBuf [4]byte
@@ -243,13 +273,12 @@ func (d *DiskHandler) WriteDirect(topic string, partition int, msg types.Message
 		return fmt.Errorf("flush failed: %w", err)
 	}
 
-	lastOffset := msg.Offset
-	if lastOffset >= d.AbsoluteOffset {
-		atomic.StoreUint64(&d.AbsoluteOffset, lastOffset+1)
+	d.CurrentOffset += totalLen
+	if msg.Offset >= atomic.LoadUint64(&d.AbsoluteOffset) {
+		atomic.StoreUint64(&d.AbsoluteOffset, msg.Offset+1)
 	}
 
-	msgPosition := d.CurrentOffset
-	if msgPosition-d.lastIndexPosition >= d.indexInterval {
+	if msgPosition-d.lastIndexPosition >= interval {
 		indexEntry := types.IndexEntry{
 			Offset:   msg.Offset,
 			Position: msgPosition,
@@ -265,7 +294,6 @@ func (d *DiskHandler) WriteDirect(topic string, partition int, msg types.Message
 			d.indexBytesWritten += uint64(types.IndexEntrySize)
 		}
 	}
-	d.CurrentOffset += totalLen
 	return nil
 }
 

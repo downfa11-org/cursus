@@ -21,6 +21,7 @@ func setupDiskHandler(t *testing.T) *disk.DiskHandler {
 		DiskWriteTimeoutMS:  500,
 		SegmentRollTimeMS:   500,
 		SegmentSize:         1024,
+		IndexIntervalBytes:  4096,
 	}
 
 	dh, err := disk.NewDiskHandler(cfg, "testTopic", 0)

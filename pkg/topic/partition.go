@@ -203,6 +203,23 @@ func (p *Partition) ReadMessages(offset uint64, max int) ([]types.Message, error
 	return p.dh.ReadMessages(offset, max)
 }
 
+func (p *Partition) ReadCommitted(offset uint64, max int) ([]types.Message, error) {
+	p.mu.RLock()
+	hwm := p.HWM
+	p.mu.RUnlock()
+
+	if offset >= hwm {
+		return nil, nil
+	}
+
+	canRead := int(hwm - offset)
+	if max > canRead {
+		max = canRead
+	}
+
+	return p.ReadMessages(offset, max)
+}
+
 func (p *Partition) GetLatestOffset() uint64 {
 	if p.dh == nil {
 		return 0
