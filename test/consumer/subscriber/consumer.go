@@ -626,7 +626,7 @@ func (c *Consumer) joinGroup() (generation int64, memberID string, assignments [
 		mID = c.config.ConsumerID
 	}
 
-	joinCmd := fmt.Sprintf("JOIN_GROUP topic=%s group=%s member=%s", c.config.Topic, c.config.GroupID, c.config.ConsumerID)
+	joinCmd := fmt.Sprintf("JOIN_GROUP topic=%s group=%s member=%s", c.config.Topic, c.config.GroupID, mID)
 	if err := util.WriteWithLength(conn, util.EncodeMessage("", joinCmd)); err != nil {
 		return 0, "", nil, fmt.Errorf("send join command: %w", err)
 	}
