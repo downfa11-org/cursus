@@ -8,6 +8,7 @@ import (
 	"github.com/downfa11-org/cursus/pkg/config"
 	"github.com/downfa11-org/cursus/pkg/disk"
 	"github.com/downfa11-org/cursus/pkg/types"
+	"github.com/downfa11-org/cursus/util"
 )
 
 func setupDiskHandler(t *testing.T) *disk.DiskHandler {
@@ -208,7 +209,9 @@ func TestDrainAndShutdown(t *testing.T) {
 		}
 	}
 
-	_ = dh.Close()
+	if err := dh.Close(); err != nil {
+		util.Warn("Failed to close DiskHandler: %v", err)
+	}
 
 	newDh, err := disk.NewDiskHandler(cfg, "testTopic", 0)
 	if err != nil {

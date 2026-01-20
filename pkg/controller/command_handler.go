@@ -582,7 +582,7 @@ func (ch *CommandHandler) resolveOffset(p *topic.Partition, topicName string, cA
 		}
 	}
 
-	if cArgs.Offset > 0 {
+	if cArgs.HasOffset {
 		util.Debug("Using explicitly requested offset %d", cArgs.Offset)
 		return cArgs.Offset, nil
 	}

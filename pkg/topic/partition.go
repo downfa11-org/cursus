@@ -123,13 +123,14 @@ func (p *Partition) EnqueueBatchSync(msgs []types.Message) error {
 	for i := range msgs {
 		offset, err := p.dh.AppendMessageSync(p.topic, p.id, &msgs[i])
 		if err != nil {
+			p.NotifyNewMessage()
 			return fmt.Errorf("disk write failed for partition %d: %w", p.id, err)
 		}
 		msgs[i].Offset = offset
 		p.LEO.Store(offset + 1)
 		p.enqueueToBroadcast(msgs[i])
-		p.NotifyNewMessage()
 	}
+	p.NotifyNewMessage()
 	return nil
 }
 
@@ -144,14 +145,15 @@ func (p *Partition) EnqueueBatch(msgs []types.Message) error {
 	for i := range msgs {
 		offset, err := p.dh.AppendMessage(p.topic, p.id, &msgs[i])
 		if err != nil {
+			p.NotifyNewMessage()
 			return fmt.Errorf("batch enqueue failed at index %d: %w", i, err)
 		}
 
 		msgs[i].Offset = offset
 		p.LEO.Store(offset + 1)
 		p.enqueueToBroadcast(msgs[i])
-		p.NotifyNewMessage()
 	}
+	p.NotifyNewMessage()
 	return nil
 }
 

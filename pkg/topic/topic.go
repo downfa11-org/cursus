@@ -123,23 +123,34 @@ func (t *Topic) Publish(msg types.Message) {
 	idx := t.GetPartitionForMessage(msg)
 
 	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	if idx == -1 {
 		util.Error("❌ No partitions available for topic '%s'", t.Name)
 		return
 	}
-	p := t.Partitions[idx]
-	t.mu.RUnlock()
+	if idx < 0 || idx >= len(t.Partitions) {
+		util.Error("❌ Partition index %d out of range for topic '%s'", idx, t.Name)
+		return
+	}
 
+	p := t.Partitions[idx]
 	p.Enqueue(msg)
 }
 
 func (t *Topic) PublishSync(msg types.Message) error {
 	idx := t.GetPartitionForMessage(msg)
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	if idx == -1 {
 		return fmt.Errorf("no partitions available for topic '%s'", t.Name)
 	}
+	if idx < 0 || idx >= len(t.Partitions) {
+		return fmt.Errorf("partition index %d out of range", idx)
+	}
 
-	util.Debug("Sync publish to topic: %s, partition: %d", t.Name, idx)
 	return t.Partitions[idx].EnqueueSync(msg)
 }
 

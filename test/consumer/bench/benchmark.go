@@ -162,18 +162,16 @@ func (m *ConsumerMetrics) RecordMessage(partition int, offset int64, producerID 
 	defer m.mu.Unlock()
 
 	offsetKey := encodeOffset(partition, offset)
-	isDuplicate := m.seenOffsetFilter.Add(offsetKey)
-
-	if isDuplicate {
-		m.dupOffsetCount++
+	if m.seenOffsetFilter.Add(offsetKey) {
+		atomic.AddInt64(&m.dupOffsetCount, 1)
 		util.Debug("duplicated offset. (partition: %d, offset: %d)", partition, offset)
 	}
 
 	messageKey := encodeMessageID(partition, producerID, seqNum)
 	if !m.seenIDFilter.Add(messageKey) {
-		m.uniqueMsgs++
+		atomic.AddInt64(&m.uniqueMsgs, 1)
 	} else {
-		m.dupCount++
+		atomic.AddInt64(&m.dupCount, 1)
 		util.Debug("duplicated message. (partition: %d, offset: %d, seqNum: %d)", partition, offset, seqNum)
 	}
 }
@@ -227,9 +225,9 @@ func (m *ConsumerMetrics) Finalize() {
 	unique := atomic.LoadInt64(&m.uniqueMsgs)
 
 	if consumed < m.expectedTotal {
-		m.missingCount = m.expectedTotal - consumed
+		atomic.StoreInt64(&m.missingCount, m.expectedTotal-consumed)
 	} else {
-		m.missingCount = 0
+		atomic.StoreInt64(&m.missingCount, 0)
 	}
 
 	if m.enableCorrectness && unique < m.expectedTotal && consumed >= m.expectedTotal {
@@ -267,9 +265,9 @@ func (m *ConsumerMetrics) PrintSummaryTo(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "Overall TPS          : %.2f msg/s\n", overallTPS)
 
 	if m.enableCorrectness {
-		_, _ = fmt.Fprintf(w, "Duplicate (MessageID) : %d (fp possible)\n", m.dupCount)
-		_, _ = fmt.Fprintf(w, "Duplicate (Offset)    : %d (fp possible)\n", m.dupOffsetCount)
-		_, _ = fmt.Fprintf(w, "Message missing       : %d\n", m.missingCount)
+		_, _ = fmt.Fprintf(w, "Duplicate (MessageID) : %d (fp possible)\n", atomic.LoadInt64(&m.dupCount))
+		_, _ = fmt.Fprintf(w, "Duplicate (Offset)    : %d (fp possible)\n", atomic.LoadInt64(&m.dupOffsetCount))
+		_, _ = fmt.Fprintf(w, "Message missing       : %d\n", atomic.LoadInt64(&m.missingCount))
 	} else {
 		_, _ = fmt.Fprintf(w, "Correctness Check     : disabled (no Bloom filter)\n")
 	}

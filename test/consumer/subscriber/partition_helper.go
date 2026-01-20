@@ -93,7 +93,6 @@ func (pc *PartitionConsumer) commitOffsetWithRetry(offset uint64) error {
 		}
 
 		resultCh := make(chan error, 1)
-
 		err := func() error {
 			select {
 			case pc.consumer.commitCh <- commitEntry{
@@ -101,12 +100,15 @@ func (pc *PartitionConsumer) commitOffsetWithRetry(offset uint64) error {
 				offset:    offset,
 				respCh:    resultCh,
 			}:
+
+				timer := time.NewTimer(5 * time.Second)
+				defer timer.Stop()
 				select {
 				case err := <-resultCh:
 					return err
 				case <-pc.consumer.mainCtx.Done():
 					return fmt.Errorf("commit cancelled during wait")
-				case <-time.After(5 * time.Second):
+				case <-timer.C:
 					return fmt.Errorf("commit timeout")
 				}
 
@@ -161,12 +163,15 @@ func (pc *PartitionConsumer) waitWithBackoff(bo *backoff) bool {
 }
 
 func (pc *PartitionConsumer) waitDuration(d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+
 	select {
 	case <-pc.consumer.mainCtx.Done():
 		return false
 	case <-pc.consumer.doneCh:
 		return false
-	case <-time.After(d):
+	case <-t.C:
 		return true
 	}
 }

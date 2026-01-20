@@ -118,14 +118,18 @@ func (c *Consumer) validateCommitConn() bool {
 
 	if err := c.commitConn.SetReadDeadline(time.Now().Add(1 * time.Millisecond)); err != nil {
 		util.Debug("failed to set read deadline: %v", err)
-		_ = c.commitConn.Close()
+		if err := c.commitConn.Close(); err != nil {
+			util.Debug("failed to close invalid commit connection: %v", err)
+		}
 		c.commitConn = nil
 		return false
 	}
 
 	_, err := c.commitConn.Read(make([]byte, 0))
 	if err != nil && !os.IsTimeout(err) {
-		_ = c.commitConn.Close()
+		if err := c.commitConn.Close(); err != nil {
+			util.Debug("failed to close broken commit connection: %v", err)
+		}
 		c.commitConn = nil
 		return false
 	}
@@ -204,10 +208,19 @@ func (c *Consumer) startCommitWorker() {
 		pendingOffsets := make(map[int]uint64)
 		respChannels := make(map[int][]chan error)
 
+		flush := func() {
+			if len(pendingOffsets) > 0 {
+				c.commitBatch(pendingOffsets, respChannels)
+				pendingOffsets = make(map[int]uint64)
+				respChannels = make(map[int][]chan error)
+			}
+		}
+
 		for {
 			select {
 			case entry, ok := <-c.commitCh:
 				if !ok {
+					flush()
 					return
 				}
 
@@ -217,19 +230,12 @@ func (c *Consumer) startCommitWorker() {
 
 				if entry.respCh != nil {
 					respChannels[entry.partition] = append(respChannels[entry.partition], entry.respCh)
-					c.commitBatch(pendingOffsets, respChannels)
-					pendingOffsets = make(map[int]uint64)
-					respChannels = make(map[int][]chan error)
+					flush()
 				}
 
 			case <-ticker.C:
 				c.flushOffsets()
-
-				if len(pendingOffsets) > 0 {
-					c.commitBatch(pendingOffsets, respChannels)
-					pendingOffsets = make(map[int]uint64)
-					respChannels = make(map[int][]chan error)
-				}
+				flush()
 				c.processRetryQueue()
 
 			case <-c.mainCtx.Done():
@@ -892,10 +898,11 @@ func (c *Consumer) Close() error {
 		return nil
 	}
 
-	c.flushOffsets()
-
 	close(c.doneCh)
 	c.mainCancel()
+
+	c.flushOffsets()
+	close(c.commitCh)
 
 	c.resetHeartbeatConn()
 
@@ -907,6 +914,15 @@ func (c *Consumer) Close() error {
 		}
 	}
 
+	c.commitMu.Lock()
+	if c.commitConn != nil {
+		if err := c.commitConn.Close(); err != nil {
+			util.Debug("failed to close commit connection during shutdown: %v", err)
+		}
+		c.commitConn = nil
+	}
+	c.commitMu.Unlock()
+
 	c.mu.Lock()
 	for _, pc := range c.partitionConsumers {
 		pc.mu.Lock()
@@ -915,9 +931,11 @@ func (c *Consumer) Close() error {
 			if err := pc.conn.Close(); err != nil {
 				util.Debug("failed to close connection: %v", err)
 			}
+			pc.conn = nil
 		}
 		pc.mu.Unlock()
 	}
+	c.partitionConsumers = make(map[int]*PartitionConsumer)
 	c.mu.Unlock()
 
 	c.wg.Wait()

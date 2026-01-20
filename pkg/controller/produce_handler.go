@@ -125,7 +125,13 @@ func (ch *CommandHandler) handlePublish(cmd string) string {
 			return fmt.Sprintf("ERROR: NOT_AUTHORIZED_FOR_PARTITION %s:%d", topicName, partition)
 		}
 
-		assignedOffset := t.Partitions[partition].ReserveOffsets(1)
+		p, err := t.GetPartition(partition)
+		if err != nil {
+			util.Error("Publish failed: partition %d not found in topic %s: %v", partition, topicName, err)
+			return fmt.Sprintf("ERROR: PARTITION_NOT_FOUND %d", partition)
+		}
+
+		assignedOffset := p.ReserveOffsets(1)
 		msg.Offset = assignedOffset
 		if acks == "-1" || acksLower == "all" {
 			ackResp, err = ch.Cluster.RaftManager.ReplicateWithQuorum(topicName, partition, *msg, ch.Config.MinInSyncReplicas)

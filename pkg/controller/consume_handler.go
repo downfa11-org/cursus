@@ -83,7 +83,7 @@ func (ch *CommandHandler) consumeFromTopic(conn net.Conn, topicName string, cArg
 		return 0, err
 	}
 
-	var currentGen int
+	currentGen := -1
 	if ch.Coordinator != nil {
 		currentGen = ch.Coordinator.GetGeneration(cArgs.GroupName)
 	}
@@ -91,16 +91,19 @@ func (ch *CommandHandler) consumeFromTopic(conn net.Conn, topicName string, cArg
 	if ctx.Generation != currentGen {
 		ctx.OffsetCache = make(map[string]uint64)
 		ctx.Generation = currentGen
+		util.Debug("Generation changed to %d, cache cleared", currentGen)
 	}
 
 	cacheKey := fmt.Sprintf("%s-%d", topicName, cArgs.PartitionID)
 	var currentOffset uint64
-	if cached, ok := ctx.OffsetCache[cacheKey]; ok && cArgs.Offset == 0 {
+	if cArgs.HasOffset {
+		currentOffset = cArgs.Offset
+		util.Debug("Using explicit offset: %d", currentOffset)
+	} else if cached, ok := ctx.OffsetCache[cacheKey]; ok {
 		currentOffset = cached
 	} else {
 		actualOffset, err := ch.resolveOffset(p, topicName, cArgs)
 		if err != nil {
-			util.Debug("resolveOffset error")
 			return 0, err
 		}
 		currentOffset = actualOffset
@@ -207,6 +210,9 @@ func (ch *CommandHandler) HandleStreamCommand(conn net.Conn, rawCmd string, ctx 
 	ctx.ConsumerGroup = cArgs.GroupName
 
 	if err := ch.checkLeaderOrRedirect(conn); err != nil {
+		if err.Error() == "not leader" {
+			return nil
+		}
 		return err
 	}
 
@@ -319,6 +325,7 @@ type CommonArgs struct {
 	PartitionID     int
 	GroupName       string
 	MemberID        string
+	HasOffset       bool
 	Offset          uint64
 	BatchSize       int
 	WaitTimeout     time.Duration
@@ -331,9 +338,14 @@ func (ch *CommandHandler) parseCommonArgs(args map[string]string) (CommonArgs, e
 		return CommonArgs{}, fmt.Errorf("invalid partition value: %s", args["partition"])
 	}
 
-	offset, err := strconv.ParseUint(args["offset"], 10, 64)
-	if err != nil && args["offset"] != "" {
-		return CommonArgs{}, fmt.Errorf("invalid offset value: %s", args["offset"])
+	offsetStr, hasOffsetKey := args["offset"]
+	var offset uint64
+	if hasOffsetKey && offsetStr != "" {
+		val, err := strconv.ParseUint(offsetStr, 10, 64)
+		if err != nil {
+			return CommonArgs{}, fmt.Errorf("invalid offset value: %s", offsetStr)
+		}
+		offset = val
 	}
 
 	batch := DefaultMaxPollRecords
@@ -351,6 +363,7 @@ func (ch *CommandHandler) parseCommonArgs(args map[string]string) (CommonArgs, e
 		PartitionID:     pID,
 		GroupName:       ch.resolveConsumerGroup(args["group"]),
 		MemberID:        args["member"],
+		HasOffset:       hasOffsetKey && offsetStr != "",
 		Offset:          offset,
 		BatchSize:       batch,
 		WaitTimeout:     wait,

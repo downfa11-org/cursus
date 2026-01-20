@@ -7,6 +7,7 @@ import (
 	"github.com/downfa11-org/cursus/pkg/config"
 	"github.com/downfa11-org/cursus/pkg/disk"
 	"github.com/downfa11-org/cursus/pkg/types"
+	"github.com/downfa11-org/cursus/util"
 )
 
 func TestDiskManager_GetHandler_CreatesHandler(t *testing.T) {
@@ -73,7 +74,9 @@ func TestDiskManager_CloseAllHandlers(t *testing.T) {
 
 	defer func() {
 		for _, dh := range handlers {
-			_ = dh.Close()
+			if err := dh.Close(); err != nil {
+				util.Warn("Failed to close DiskHandler: %v", err)
+			}
 		}
 	}()
 

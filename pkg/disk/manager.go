@@ -53,7 +53,9 @@ func (dm *DiskManager) CloseAllHandlers() {
 
 	for name, dh := range dm.handlers {
 		util.Debug("Closing DiskHandler for %s", name)
-		_ = dh.Close()
+		if err := dh.Close(); err != nil {
+			util.Warn("Failed to close DiskHandler for %s: %v", name, err)
+		}
 		delete(dm.handlers, name)
 	}
 }

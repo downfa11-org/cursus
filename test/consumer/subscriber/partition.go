@@ -294,9 +294,8 @@ func (pc *PartitionConsumer) startStreamLoop() {
 					lastOffset := batch.Messages[len(batch.Messages)-1].Offset
 					atomic.StoreUint64(&pc.fetchOffset, lastOffset+1)
 				} else {
-					if !pc.waitWithBackoff(bo) {
-						return
-					}
+					bo.reset()
+					time.Sleep(100 * time.Millisecond)
 				}
 			case <-c.doneCh:
 				return

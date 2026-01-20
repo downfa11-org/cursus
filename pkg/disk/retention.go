@@ -35,9 +35,7 @@ func (d *DiskHandler) OpenForRead(offset uint64) (*ReadSession, error) {
 		return nil, err
 	}
 
-	d.mu.Lock()
 	atomic.AddInt32(&d.activeReaders, 1)
-	d.mu.Unlock()
 
 	return &ReadSession{
 		File:    f,
@@ -46,6 +44,11 @@ func (d *DiskHandler) OpenForRead(offset uint64) (*ReadSession, error) {
 }
 
 func (d *DiskHandler) EnforceRetention(cfg *config.Config) {
+	if atomic.LoadInt32(&d.activeReaders) > 0 {
+		util.Debug("Retention skipped: %d active readers", atomic.LoadInt32(&d.activeReaders))
+		return
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 

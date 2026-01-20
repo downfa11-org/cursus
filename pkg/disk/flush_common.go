@@ -139,7 +139,9 @@ func (d *DiskHandler) WriteBatch(batch []types.DiskMessage) error {
 
 	const entrySize = uint64(types.IndexEntrySize)
 	willExceedData := d.CurrentOffset+uint64(totalSize) > d.SegmentSize
-	willExceedIndex := d.indexBytesWritten+entrySize > d.IndexSize
+	maxIndexEntries := (uint64(totalSize) / d.indexInterval) + 1
+	requiredIndexSpace := maxIndexEntries * entrySize
+	willExceedIndex := d.indexBytesWritten+requiredIndexSpace > d.IndexSize
 
 	if willExceedData || willExceedIndex {
 		util.Debug("Rolling segment: DataExceed=%v, IndexExceed=%v, CurrentIdxBytes=%d", willExceedData, willExceedIndex, d.indexBytesWritten)
@@ -254,10 +256,10 @@ func (d *DiskHandler) WriteDirect(topic string, partition int, msg types.Message
 		}
 		if d.indexWriter != nil {
 			if err := binary.Write(d.indexWriter, binary.BigEndian, indexEntry); err != nil {
-				util.Error("failed to write index entry: %v", err)
+				return fmt.Errorf("failed to write index entry for offset %d: %w", msg.Offset, err)
 			}
 			if err := d.indexWriter.Flush(); err != nil {
-				util.Error("failed to flush index writer: %v", err)
+				return fmt.Errorf("failed to flush index writer: %w", err)
 			}
 			d.lastIndexPosition = msgPosition
 			d.indexBytesWritten += uint64(types.IndexEntrySize)

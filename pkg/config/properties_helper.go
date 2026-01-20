@@ -70,9 +70,6 @@ func (cfg *Config) Normalize() {
 	if cfg.IndexIntervalBytes <= 0 {
 		cfg.IndexIntervalBytes = 4096
 	}
-	if cfg.CleanupPolicy == "" {
-		cfg.CleanupPolicy = "delete"
-	}
 	if cfg.RetentionHours <= 0 {
 		cfg.RetentionHours = 168
 	}

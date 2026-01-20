@@ -169,6 +169,10 @@ func getLastOffsetFromIndex(indexPath string, baseOffset uint64) (lastOffset uin
 	}
 
 	lastOffset = binary.BigEndian.Uint64(buf[0:8])
+	if lastOffset < baseOffset {
+		return 0, 0, fmt.Errorf("index empty or corrupt")
+	}
+
 	count = int(lastOffset - baseOffset + 1)
 	return lastOffset, count, nil
 }
