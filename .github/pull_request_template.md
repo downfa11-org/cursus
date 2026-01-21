@@ -5,7 +5,7 @@ If the DCO check fails, one or more of your commits are not signed off.
 Please sign off your commits with `git commit -s` before submitting the PR.
 -->
 
-Fixes [ISSUE #]
+Fixes 
 
 Checklist:
 

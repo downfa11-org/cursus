@@ -1,0 +1,34 @@
+name: DCO Check
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate-dco:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (Full History)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate DCO (Signed-off-by)
+        run: |
+          COMMITS=$(git rev-list --no-merges origin/main..HEAD)
+          EXIT_CODE=0
+
+          for sha in $COMMITS; do
+            if ! git show -s --format='%B' "$sha" | grep -iq "Signed-off-by:"; then
+              echo "❌ Error: Commit $sha is missing 'Signed-off-by:'"
+              EXIT_CODE=1
+            else
+              echo "✅ DCO passed: $sha"
+            fi
+          done
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "🚨 All commits must include 'Signed-off-by:' in the message body."
+            exit 1
+          fi

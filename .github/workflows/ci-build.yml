@@ -1,10 +1,36 @@
-name: CI (pull_request & push)  
+name: CI
   
 on:  
   push:  
-    branches: [main, release-*]  
+    branches: [main, release-*]
+    paths:
+      - '.github/workflows/**'
+      - '.github/actions/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'Dockerfile'
+      - 'entrypoint.sh'
+      - 'broker.go'
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'test/**'
+      - 'util/**'  
   pull_request:  
     branches: [main, release-*]  
+    paths:
+      - '.github/workflows/**'
+      - '.github/actions/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'Dockerfile'
+      - 'entrypoint.sh'
+      - 'broker.go'
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'test/**'
+      - 'util/**'
   
 jobs:  
   lint:  
@@ -31,7 +57,8 @@ jobs:
       - name: Upload coverage reports to Codecov  
         uses: codecov/codecov-action@v5  
         with:  
-          files: ./coverage.out  
+          files: ./coverage.out 
+          token: ${{ secrets.CODECOV_TOKEN }} 
   
   build:  
     runs-on: ubuntu-latest  
