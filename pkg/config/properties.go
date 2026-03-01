@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/downfa11-org/cursus/util"
+	"github.com/cursus-io/cursus/util"
 	"gopkg.in/yaml.v3"
 )
 
@@ -82,7 +82,7 @@ type Config struct {
 	TLSKeyPath  string `yaml:"tls_key_path" json:"tls.key_path"`
 }
 
-func defaultConfig() *Config {
+func DefaultConfig() *Config {
 	return &Config{
 		BrokerPort:      9000,
 		HealthCheckPort: 9080,
@@ -140,7 +140,7 @@ func defaultConfig() *Config {
 }
 
 func LoadConfig() (*Config, error) {
-	cfg := defaultConfig()
+	cfg := DefaultConfig()
 	configPath := flag.String("config", "", "Path to YAML/JSON config file")
 
 	flag.IntVar(&cfg.BrokerPort, "port", cfg.BrokerPort, "Broker port")
@@ -251,12 +251,12 @@ func LoadConfig() (*Config, error) {
 	}
 
 	if segmentSizeInt64 <= 0 {
-		cfg.SegmentSize = defaultConfig().SegmentSize
+		cfg.SegmentSize = DefaultConfig().SegmentSize
 	} else {
 		cfg.SegmentSize = uint64(segmentSizeInt64)
 	}
 	if indexSizeInt64 <= 0 {
-		cfg.IndexSize = defaultConfig().IndexSize
+		cfg.IndexSize = DefaultConfig().IndexSize
 	} else {
 		cfg.IndexSize = uint64(indexSizeInt64)
 	}
